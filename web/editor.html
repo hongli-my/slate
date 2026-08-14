@@ -398,6 +398,7 @@
             <div class="editor-area" id="editorArea">
                 <div class="editor-pane" id="editorPane">
                     <button class="editor-format-btn" id="btnFormat" onclick="formatSQL()">&#9998; 格式化 SQL</button>
+                    <button class="editor-format-btn" id="btnFormatJson" onclick="formatJSON()">&#9998; 格式化 JSON</button>
                     <button class="editor-preview-btn" id="btnPreviewFloat" onclick="togglePreview()">&#128065; 预览</button>
                     <div class="empty-state" id="emptyState">
                         <div class="big-icon">&#128221;</div>
@@ -1240,6 +1241,7 @@ function closeTab(id, evt) {
         document.getElementById('emptyState').style.display = 'flex';
         cmEditor.setValue('');
         document.getElementById('btnFormat').style.display = 'none';
+        document.getElementById('btnFormatJson').style.display = 'none';
         document.getElementById('btnPreviewFloat').style.display = 'none';
         if (previewVisible) togglePreview();
     } else if (activeTabId === id) {
@@ -1431,8 +1433,8 @@ function isSQLFile() {
 }
 
 function updateFormatButton() {
-    const fmtBtn = document.getElementById('btnFormat');
-    fmtBtn.style.display = isSQLFile() ? 'block' : 'none';
+    document.getElementById('btnFormat').style.display = isSQLFile() ? 'block' : 'none';
+    document.getElementById('btnFormatJson').style.display = isJsonFile() ? 'block' : 'none';
     // 预览按钮：有活动 tab 时显示
     const pvBtn = document.getElementById('btnPreviewFloat');
     pvBtn.style.display = activeTabId ? 'block' : 'none';
@@ -1486,6 +1488,36 @@ function formatSQL() {
         toast('SQL 格式化完成');
     } catch (e) {
         console.error('SQL 格式化失败:', e);
+        toast('格式化失败: ' + e.message);
+    }
+}
+
+// ========== JSON 格式化 ==========
+function isJsonFile() {
+    const tab = openTabs.find(t => t.id === activeTabId);
+    return tab && /\.json$/i.test(tab.name);
+}
+
+function formatJSON() {
+    if (!cmEditor || !isJsonFile()) return;
+    const btn = document.getElementById('btnFormatJson');
+    try {
+        const raw = cmEditor.getValue();
+        const parsed = JSON.parse(raw);  // 解析失败会抛 SyntaxError
+        const formatted = JSON.stringify(parsed, null, 4);
+        const cursor = cmEditor.getCursor();
+        cmEditor.setValue(formatted);
+        const maxLine = cmEditor.lineCount() - 1;
+        cmEditor.setCursor(Math.min(cursor.line, maxLine), 0);
+        btn.textContent = '\u2713 已格式化';
+        btn.classList.add('done');
+        setTimeout(() => {
+            btn.textContent = '\u270E 格式化 JSON';
+            btn.classList.remove('done');
+        }, 1500);
+        toast('JSON 格式化完成');
+    } catch (e) {
+        console.error('JSON 格式化失败:', e);
         toast('格式化失败: ' + e.message);
     }
 }
