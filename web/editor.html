@@ -1435,9 +1435,9 @@ function isSQLFile() {
 function updateFormatButton() {
     document.getElementById('btnFormat').style.display = isSQLFile() ? 'block' : 'none';
     document.getElementById('btnFormatJson').style.display = isJsonFile() ? 'block' : 'none';
-    // 预览按钮：有活动 tab 时显示
+    // 预览按钮：仅 Markdown 文件显示
     const pvBtn = document.getElementById('btnPreviewFloat');
-    pvBtn.style.display = activeTabId ? 'block' : 'none';
+    pvBtn.style.display = isMarkdownFile() ? 'block' : 'none';
 }
 
 function formatSQL() {
