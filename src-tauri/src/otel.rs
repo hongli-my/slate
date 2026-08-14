@@ -31,13 +31,24 @@ fn open_otel_db_at(path: &str) -> Result<Connection, String> {
     Ok(conn)
 }
 
+static DB_POOL: std::sync::OnceLock<Mutex<Vec<Connection>>> = std::sync::OnceLock::new();
+
 /// 打开 opencode + pi 两个 otel.db；缺失或打开失败的库被静默跳过，
 /// 因此 Slate 在仅有 opencode 库（或 pi 库尚未创建）时也能正常工作。
-fn open_otel_dbs() -> Vec<Connection> {
-    [DB_PATH_OPENCODE, DB_PATH_PI]
-        .iter()
-        .filter_map(|path| open_otel_db_at(path).ok())
-        .collect()
+///
+/// 复用全局连接池：只读连接打开后缓存，避免每次命令调用都重开（大体积
+/// 库重开需重建 mmap 映射 + page cache，30s 自动刷新下累积开销明显）。
+/// 池为空（首次调用或库此前缺失）时重新探测打开；已缓存连接直接复用。
+fn open_otel_dbs() -> std::sync::MutexGuard<'static, Vec<Connection>> {
+    let pool = DB_POOL.get_or_init(|| Mutex::new(Vec::new()));
+    let mut guard = pool.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_empty() {
+        *guard = [DB_PATH_OPENCODE, DB_PATH_PI]
+            .iter()
+            .filter_map(|path| open_otel_db_at(path).ok())
+            .collect();
+    }
+    guard
 }
 
 // ============================================================
@@ -651,7 +662,7 @@ pub fn otel_stats() -> Result<Value, String> {
     let mut total_output_tokens: i64 = 0;
     let mut today_sessions: i64 = 0;
 
-    for conn in &conns {
+    for conn in &*conns {
         let stats: (i64, i64, i64, i64) = conn
             .query_row(stats_sql, [], |row| {
                 Ok((ri(row, 0)?, ri(row, 1)?, ri(row, 2)?, ri(row, 3)?))
@@ -687,7 +698,17 @@ pub fn otel_sessions(limit: Option<i64>) -> Result<Vec<Value>, String> {
     let conns = open_otel_dbs();
     let limit = limit.unwrap_or(100);
 
-    let sql = r#"SELECT
+    let sql = r#"WITH task_meta AS MATERIALIZED (
+        SELECT
+          json_extract(json_extract(attributes_json,'$."ai.toolCall.result"'),'$.metadata.sessionId') AS child_sid,
+          json_extract(json_extract(attributes_json,'$."ai.toolCall.result"'),'$.metadata.parentSessionId') AS parent_sid,
+          json_extract(json_extract(attributes_json,'$."ai.toolCall.args"'),'$.subagent_type') AS subagent_type,
+          json_extract(json_extract(attributes_json,'$."ai.toolCall.args"'),'$.description') AS description
+        FROM spans
+        WHERE name='ai.toolCall'
+          AND json_extract(attributes_json,'$."ai.toolCall.name"')='task'
+      )
+      SELECT
       s.session_id AS session_id,
       MIN(s.start_ms) AS first_seen_ms,
       MAX(s.end_ms) AS last_seen_ms,
@@ -706,11 +727,12 @@ pub fn otel_sessions(limit: Option<i64>) -> Result<Vec<Value>, String> {
       COALESCE(
         (SELECT sp.session_id FROM spans sr JOIN spans sp ON sp.span_id = sr.parent_span_id WHERE sr.session_id = s.session_id AND sr.name = 'pi.session' AND sr.parent_span_id IS NOT NULL LIMIT 1),
         (SELECT sub.session_id FROM spans sr2 JOIN spans sub ON sub.name = 'pi.tool.subagent' AND sub.session_id != sr2.session_id WHERE sr2.session_id = s.session_id AND sr2.name = 'pi.session' AND sr2.start_ms BETWEEN sub.start_ms AND sub.end_ms LIMIT 1),
-        (SELECT json_extract(json_extract(sp.attributes_json,'$."ai.toolCall.result"'),'$.metadata.parentSessionId') FROM spans sp WHERE sp.name='ai.toolCall' AND json_extract(sp.attributes_json,'$."ai.toolCall.name"')='task' AND json_extract(json_extract(sp.attributes_json,'$."ai.toolCall.result"'),'$.metadata.sessionId') = s.session_id LIMIT 1)
+        tm.parent_sid
       ) AS parent_session_id,
-      (SELECT json_extract(json_extract(sp.attributes_json,'$."ai.toolCall.args"'),'$.subagent_type') FROM spans sp WHERE sp.name='ai.toolCall' AND json_extract(sp.attributes_json,'$."ai.toolCall.name"')='task' AND json_extract(json_extract(sp.attributes_json,'$."ai.toolCall.result"'),'$.metadata.sessionId') = s.session_id LIMIT 1) AS subagent_type,
-      (SELECT json_extract(json_extract(sp.attributes_json,'$."ai.toolCall.args"'),'$.description') FROM spans sp WHERE sp.name='ai.toolCall' AND json_extract(sp.attributes_json,'$."ai.toolCall.name"')='task' AND json_extract(json_extract(sp.attributes_json,'$."ai.toolCall.result"'),'$.metadata.sessionId') = s.session_id LIMIT 1) AS subagent_desc
+      tm.subagent_type AS subagent_type,
+      tm.description AS subagent_desc
     FROM spans s
+    LEFT JOIN task_meta tm ON tm.child_sid = s.session_id
     WHERE s.session_id IS NOT NULL
     GROUP BY s.session_id
     ORDER BY last_seen_ms DESC
@@ -718,7 +740,7 @@ pub fn otel_sessions(limit: Option<i64>) -> Result<Vec<Value>, String> {
 
     let mut out: Vec<Value> = vec![];
 
-    for conn in &conns {
+    for conn in &*conns {
         let mut stmt = match conn.prepare(sql) {
             Ok(s) => s,
             Err(e) => return Err(format!("prepare sessions: {}", e)),
@@ -939,7 +961,7 @@ pub fn otel_spans(trace_id: String) -> Result<Vec<Value>, String> {
 
     // 一个 trace_id 只存在于一个 db：逐个连接跑完整 BFS，命中（非空）即返回。
     // 跨 trace 的 parent_span_id 链在 PI 子代理场景下都在同一 db 内，所以单库 BFS 已完备。
-    for conn in &conns {
+    for conn in &*conns {
         let mut out: Vec<Value> = vec![];
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();
