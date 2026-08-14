@@ -291,51 +291,55 @@ window.Hermes = window.Hermes || {};
     }
 
     // 确保缓存最新
-    await ensureFresh(sid);
+    try {
+      await ensureFresh(sid);
 
-    // S#3: 如果在 await 期间用户又切换了会话，放弃本次渲染
-    if (mySeq !== _enterSeq || state.focusedSessionId !== sid) return;
+      // S#3: 如果在 await 期间用户又切换了会话，放弃本次渲染
+      if (mySeq !== _enterSeq || state.focusedSessionId !== sid) return;
 
-    // 切换视图
-    if (mode === 'chat') {
-      H.showView('chat');
-      var dom = H.dom;
-      if (dom.chatSessionLabel) {
-        dom.chatSessionLabel.textContent = '对话: ' + sid.substring(0, 16);
-      }
-      H.renderCurrentChat();
-      // E#13: 清除切换 loading
-      if (dom.messageList) dom.messageList.classList.remove('switching');
-      // 根据当前焦点会话的流状态，正确设置输入框启用/禁用
-      if (H.updateChatUIState) H.updateChatUIState();
-      // P2: 切回有 running 工具步骤的会话时重启实时计时器（秒数跳动）
-      if (H._startLiveTimer && hasActiveStream(sid)) {
-        var _msgs = getMsgs(sid);
-        if (_msgs) {
-          var _hasRunning = _msgs.some(function(m) {
-            return m._streaming && m._toolSteps && m._toolSteps.some(function(ts) { return ts.running; });
-          });
-          if (_hasRunning) H._startLiveTimer();
+      // 切换视图
+      if (mode === 'chat') {
+        H.showView('chat');
+        var dom = H.dom;
+        if (dom.chatSessionLabel) {
+          dom.chatSessionLabel.textContent = '对话: ' + sid.substring(0, 16);
         }
+        H.renderCurrentChat();
+        // 根据当前焦点会话的流状态，正确设置输入框启用/禁用
+        if (H.updateChatUIState) H.updateChatUIState();
+        // P2: 切回有 running 工具步骤的会话时重启实时计时器（秒数跳动）
+        if (H._startLiveTimer && hasActiveStream(sid)) {
+          var _msgs = getMsgs(sid);
+          if (_msgs) {
+            var _hasRunning = _msgs.some(function(m) {
+              return m._streaming && m._toolSteps && m._toolSteps.some(function(ts) { return ts.running; });
+            });
+            if (_hasRunning) H._startLiveTimer();
+          }
+        }
+        H.loadContextInfo(sid, true);
+      } else {
+        H.showView('session');
+        // 先用缓存渲染消息
+        var msgs = getMsgs(sid);
+        if (msgs) {
+          H.renderMessages(msgs, H.dom.messageList);
+        }
+        H.loadContextInfo(sid, true);
+        // 加载 session 详情填充 header（异步，不阻塞渲染）
+        loadSessionHeader(sid);
       }
-      H.loadContextInfo(sid, true);
-    } else {
-      H.showView('session');
-      // 先用缓存渲染消息
-      var msgs = getMsgs(sid);
-      if (msgs) {
-        H.renderMessages(msgs, H.dom.messageList);
-      }
-      // E#13: 清除切换 loading
-      if (H.dom.messageList) H.dom.messageList.classList.remove('switching');
-      H.loadContextInfo(sid, true);
-      // 加载 session 详情填充 header（异步，不阻塞渲染）
-      loadSessionHeader(sid);
-    }
 
-    H.updateStreamingHints();
-    updateSidebar();
-    updateURL();
+      H.updateStreamingHints();
+      updateSidebar();
+      updateURL();
+    } finally {
+      if (H.dom && H.dom.messageList) {
+        H.dom.messageList.classList.remove('switching');
+        var sl = H.dom.messageList.querySelector('.switch-loading');
+        if (sl) sl.remove();
+      }
+    }
   }
 
   /** 加载 session 详情填充 session view header */

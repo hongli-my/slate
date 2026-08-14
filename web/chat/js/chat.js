@@ -1471,11 +1471,9 @@ window.Hermes = window.Hermes || {};
     // ---- 流结束后的收尾 ----
     // onStreamComplete 已负责 re-fetch + 渲染，这里只做额外清理
 
-    // 刷新左侧会话列表（走 loadSessions 以保持项目过滤逻辑一致）
-    try {
-      await window.Hermes.loadSessions();
-      window.Hermes.renderQuickStats();
-    } catch(e) { console.warn('[sendMessage] 刷新会话列表失败', e); }
+    // 刷新左侧会话列表（防抖合并，避免多流并发结束时重复刷新）
+    window.Hermes.debouncedLoadSessions();
+    try { window.Hermes.renderQuickStats(); } catch(e) { console.warn('[sendMessage] 刷新统计失败', e); }
 
     const effectiveSid = streamState.sessionId;
 

@@ -1004,6 +1004,15 @@ window.Hermes = window.Hermes || {};
     }
   }
 
+  var _loadSessionsTimer = null;
+  function debouncedLoadSessions(delay) {
+    if (_loadSessionsTimer) clearTimeout(_loadSessionsTimer);
+    _loadSessionsTimer = setTimeout(function() {
+      _loadSessionsTimer = null;
+      loadSessions();
+    }, delay || 1500);
+  }
+
   function initSessionListEvents() {
     const dom = window.Hermes.dom;
     dom.sessionList.addEventListener('click', function(e) {
@@ -1136,7 +1145,16 @@ window.Hermes = window.Hermes || {};
     }
 
     // 统一走 enterSession
-    await window.Hermes.enterSession(sessionId, 'view');
+    try {
+      await window.Hermes.enterSession(sessionId, 'view');
+    } catch(e) {
+      console.error('[selectSession] enterSession failed:', e);
+      if (dom.messageList) {
+        dom.messageList.classList.remove('switching');
+        var sl = dom.messageList.querySelector('.switch-loading');
+        if (sl) sl.remove();
+      }
+    }
   }
 
   // ---- 删除会话 ----
@@ -1209,6 +1227,7 @@ window.Hermes = window.Hermes || {};
 
   // ---- Exports ----
   window.Hermes.loadSessions = loadSessions;
+  window.Hermes.debouncedLoadSessions = debouncedLoadSessions;
   window.Hermes.renderSessionList = renderSessionList;
   window.Hermes.searchSessions = searchSessions;
   window.Hermes.selectSession = selectSession;

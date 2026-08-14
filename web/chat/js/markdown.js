@@ -19,6 +19,7 @@ window.Hermes = window.Hermes || {};
       const text = typeof codeObj === 'string' ? codeObj : (codeObj.text || '');
       const lang = typeof codeObj === 'string' ? arguments[1] : (codeObj.lang || '');
       let highlighted;
+      var needAutoHighlight = false;
       if (_streamingMode) {
         // 流式阶段跳过 hljs（highlightAuto 可达 100-500ms），仅转义
         // 代码块结构（header/语言标签/复制按钮）与最终渲染一致
@@ -31,15 +32,17 @@ window.Hermes = window.Hermes || {};
         if (text.length > 2000) {
           highlighted = esc(text);
         } else {
-          try { highlighted = hljs.highlightAuto(text).value; }
-          catch(e) { highlighted = esc(text); }
+          // 异步高亮：先转义，标记待 highlightAuto（避免同步 100-500ms 阻塞主线程）
+          highlighted = esc(text);
+          needAutoHighlight = true;
         }
       }
       const langLabel = lang ? '<span class="code-lang">' + esc(lang) + '</span>' : '';
+      var codeClass = 'hljs language-' + esc(lang || 'text') + (needAutoHighlight ? ' need-auto-highlight' : '');
       return '<div class="code-block">' +
         '<div class="code-header">' + langLabel +
         '<button class="code-copy-btn" data-action="copy-code">复制</button></div>' +
-        '<pre><code class="hljs language-' + esc(lang || 'text') + '">' + highlighted + '</code></pre></div>';
+        '<pre><code class="' + codeClass + '">' + highlighted + '</code></pre></div>';
     };
     marked.setOptions({
       renderer: renderer,
@@ -159,6 +162,7 @@ window.Hermes = window.Hermes || {};
     root.querySelectorAll('.tool-result:not(.tool-result-expanded):not(.tool-result-collapsed) .tool-result-body').forEach(function(el) {
       el.scrollTop = el.scrollHeight;
     });
+    scheduleIdleHighlight(root);
   };
 
   // ---- 流式轻量渲染（P#1: 流式中不做完整 marked.parse，仅转义+基础格式）----
@@ -297,23 +301,54 @@ window.Hermes = window.Hermes || {};
     else _mdStreamCache = {};
   }
 
+  // 异步高亮：用 requestIdleCallback 分批处理 need-auto-highlight 的代码块，避免阻塞主线程
+  function scheduleIdleHighlight(container) {
+    var scope = container || document;
+    var pending = scope.querySelectorAll('code.need-auto-highlight');
+    if (pending.length === 0) return;
+    var i = 0;
+    function processOne(deadline) {
+      while (i < pending.length) {
+        if (deadline && deadline.timeRemaining && deadline.timeRemaining() <= 0) break;
+        var codeEl = pending[i];
+        try {
+          var text = codeEl.textContent;
+          codeEl.innerHTML = hljs.highlightAuto(text).value;
+        } catch(e) {}
+        codeEl.classList.remove('need-auto-highlight');
+        i++;
+      }
+      if (i < pending.length) {
+        if (window.requestIdleCallback) window.requestIdleCallback(processOne);
+        else setTimeout(function() { processOne(); }, 16);
+      }
+    }
+    if (window.requestIdleCallback) window.requestIdleCallback(processOne);
+    else setTimeout(function() { processOne(); }, 16);
+  }
+
   // ---- Exports ----
   // Define as function declarations first so they're hoisted within the IIFE
+  var _mdCache = new Map();
+  var _MD_CACHE_MAX = 80;
   function renderMarkdown(md) {
     if (!md) return '';
+    if (_mdCache.has(md)) return _mdCache.get(md);
+    var html;
     try {
-      var html = marked.parse(md);
-      // S#1: DOMPurify 消毒，防止 XSS
+      html = marked.parse(md);
       if (typeof DOMPurify !== 'undefined') {
-        return DOMPurify.sanitize(html, {
-          ADD_TAGS: ['del', 'input'],
-          ADD_ATTR: ['type', 'checked', 'disabled'],
-        });
+        html = DOMPurify.sanitize(html, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
       }
-      return html;
     } catch(e) {
-      return '<p>' + esc(md) + '</p>';
+      html = '<p>' + esc(md) + '</p>';
     }
+    if (_mdCache.size >= _MD_CACHE_MAX) {
+      var firstKey = _mdCache.keys().next().value;
+      _mdCache.delete(firstKey);
+    }
+    _mdCache.set(md, html);
+    return html;
   }
 
   window.Hermes.renderMarkdown = renderMarkdown;
@@ -321,5 +356,6 @@ window.Hermes = window.Hermes || {};
   window.Hermes.renderStreamingMarkdown = renderStreamingMarkdown;
   window.Hermes.clearStreamingMdCache = clearStreamingMdCache;
   window.Hermes.renderAnswerBlock = renderAnswerBlock;
+  window.Hermes.scheduleIdleHighlight = scheduleIdleHighlight;
 
 })();
