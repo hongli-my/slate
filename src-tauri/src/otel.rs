@@ -6,7 +6,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
-const DB_PATH: &str = "/Users/honglichang/openresty/nginx/html/otel/data/otel.db";
+const DB_PATH_OPENCODE: &str = "/Users/honglichang/.local/share/opencode/otel.db";
+const DB_PATH_PI: &str = "/Users/honglichang/.local/share/pi/otel.db";
 
 static TITLE_CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::OnceLock::new();
@@ -15,9 +16,9 @@ fn title_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
     TITLE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn open_otel_db() -> Result<Connection, String> {
+fn open_otel_db_at(path: &str) -> Result<Connection, String> {
     let conn = Connection::open_with_flags(
-        DB_PATH,
+        path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("open otel.db: {}", e))?;
@@ -28,6 +29,15 @@ fn open_otel_db() -> Result<Connection, String> {
     )
     .map_err(|e| format!("set pragmas: {}", e))?;
     Ok(conn)
+}
+
+/// 打开 opencode + pi 两个 otel.db；缺失或打开失败的库被静默跳过，
+/// 因此 Slate 在仅有 opencode 库（或 pi 库尚未创建）时也能正常工作。
+fn open_otel_dbs() -> Vec<Connection> {
+    [DB_PATH_OPENCODE, DB_PATH_PI]
+        .iter()
+        .filter_map(|path| open_otel_db_at(path).ok())
+        .collect()
 }
 
 // ============================================================
@@ -624,7 +634,7 @@ fn list_calls(conn: &Connection, session_id: &str) -> Result<Vec<Value>, String>
 
 #[tauri::command]
 pub fn otel_stats() -> Result<Value, String> {
-    let conn = open_otel_db()?;
+    let conns = open_otel_dbs();
 
     let stats_sql = r#"SELECT
         COUNT(DISTINCT session_id) AS total_sessions,
@@ -633,27 +643,33 @@ pub fn otel_stats() -> Result<Value, String> {
         COALESCE(SUM(output_tokens), 0) AS total_output_tokens
     FROM spans"#;
 
-    let (total_sessions, total_spans, total_input_tokens, total_output_tokens): (
-        i64, i64, i64, i64,
-    ) = conn
-        .query_row(stats_sql, [], |row| {
-            Ok((
-                ri(row, 0)?,
-                ri(row, 1)?,
-                ri(row, 2)?,
-                ri(row, 3)?,
-            ))
-        })
-        .map_err(|e| format!("stats query: {}", e))?;
-
     let today_start = today_start_ms();
-    let today_sessions: i64 = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT session_id) AS today_sessions FROM spans WHERE start_ms >= ? AND session_id IS NOT NULL",
-            params![today_start],
-            |row| ri(row, 0),
-        )
-        .unwrap_or(0);
+
+    let mut total_sessions: i64 = 0;
+    let mut total_spans: i64 = 0;
+    let mut total_input_tokens: i64 = 0;
+    let mut total_output_tokens: i64 = 0;
+    let mut today_sessions: i64 = 0;
+
+    for conn in &conns {
+        let stats: (i64, i64, i64, i64) = conn
+            .query_row(stats_sql, [], |row| {
+                Ok((ri(row, 0)?, ri(row, 1)?, ri(row, 2)?, ri(row, 3)?))
+            })
+            .unwrap_or((0, 0, 0, 0));
+        total_sessions += stats.0;
+        total_spans += stats.1;
+        total_input_tokens += stats.2;
+        total_output_tokens += stats.3;
+
+        today_sessions += conn
+            .query_row(
+                "SELECT COUNT(DISTINCT session_id) AS today_sessions FROM spans WHERE start_ms >= ? AND session_id IS NOT NULL",
+                params![today_start],
+                |row| ri(row, 0),
+            )
+            .unwrap_or(0);
+    }
 
     Ok(json!({
         "today_sessions": today_sessions,
@@ -668,7 +684,7 @@ pub fn otel_stats() -> Result<Value, String> {
 
 #[tauri::command]
 pub fn otel_sessions(limit: Option<i64>) -> Result<Vec<Value>, String> {
-    let conn = open_otel_db()?;
+    let conns = open_otel_dbs();
     let limit = limit.unwrap_or(100);
 
     let sql = r#"SELECT
@@ -700,15 +716,20 @@ pub fn otel_sessions(limit: Option<i64>) -> Result<Vec<Value>, String> {
     ORDER BY last_seen_ms DESC
     LIMIT ?"#;
 
-    let mut stmt = conn.prepare(sql).map_err(|e| format!("prepare sessions: {}", e))?;
+    let mut out: Vec<Value> = vec![];
 
-    // 先收集所有行（stmt 借用 conn，collect 后释放）
-    let rows: Vec<(
-        String, i64, i64, i64, i64, i64, i64, i64, i64,
-        Option<String>, Option<String>, Option<String>,
-        String, Option<String>, Option<String>, Option<String>,
-    )> = stmt
-        .query_map(params![limit], |row| {
+    for conn in &conns {
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => return Err(format!("prepare sessions: {}", e)),
+        };
+
+        // 先收集所有行（stmt 借用 conn，collect 后释放）
+        let rows: Vec<(
+            String, i64, i64, i64, i64, i64, i64, i64, i64,
+            Option<String>, Option<String>, Option<String>,
+            String, Option<String>, Option<String>, Option<String>,
+        )> = match stmt.query_map(params![limit], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 ri(row, 1)?,
@@ -727,63 +748,72 @@ pub fn otel_sessions(limit: Option<i64>) -> Result<Vec<Value>, String> {
                 row.get::<_, Option<String>>(14)?,
                 row.get::<_, Option<String>>(15)?,
             ))
-        })
-        .map_err(|e| format!("query sessions: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("collect sessions: {}", e))?;
-    drop(stmt); // 释放 conn 借用
+        }) {
+            Ok(rows) => rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("collect sessions: {}", e))?,
+            Err(e) => return Err(format!("query sessions: {}", e)),
+        };
+        drop(stmt); // 释放 conn 借用
 
-    // 批量查 opencode.db title（一次连接查全部，而非 N 次开连接）
-    let title_items: Vec<(String, Option<String>)> = rows
-        .iter()
-        .map(|r| (r.0.clone(), r.11.clone()))
-        .collect();
-    let titles = batch_get_opencode_titles(&title_items);
+        // 批量查 opencode.db title（一次连接查全部，而非 N 次开连接）
+        let title_items: Vec<(String, Option<String>)> = rows
+            .iter()
+            .map(|r| (r.0.clone(), r.11.clone()))
+            .collect();
+        let titles = batch_get_opencode_titles(&title_items);
 
-    let mut out = vec![];
-    for row in rows {
-        let (session_id, first_seen_ms, last_seen_ms, time_created, span_count,
-            llm_call_count, tool_call_count, total_input_tokens, total_output_tokens,
-            model_id, model_provider, profile, agent_type, parent_session_id,
-            subagent_type, subagent_desc) = row;
+        for row in rows {
+            let (session_id, first_seen_ms, last_seen_ms, time_created, span_count,
+                llm_call_count, tool_call_count, total_input_tokens, total_output_tokens,
+                model_id, model_provider, profile, agent_type, parent_session_id,
+                subagent_type, subagent_desc) = row;
 
-        let title = titles.get(&session_id).cloned().flatten()
-            .or(subagent_desc.clone())
-            .or_else(|| {
-                if agent_type == "pi" {
-                    get_pi_session_summary(&conn, &session_id)
-                } else {
-                    None
-                }
-            });
+            let title = titles.get(&session_id).cloned().flatten()
+                .or(subagent_desc.clone())
+                .or_else(|| {
+                    if agent_type == "pi" {
+                        get_pi_session_summary(conn, &session_id)
+                    } else {
+                        None
+                    }
+                });
 
-        out.push(json!({
-            "session_id": session_id,
-            "title": title,
-            "agent": subagent_type,
-            "model_provider": model_provider,
-            "model_id": model_id,
-            "profile": profile,
-            "agent_type": agent_type,
-            "parent_session_id": parent_session_id,
-            "time_created": time_created,
-            "first_seen_ms": first_seen_ms,
-            "last_seen_ms": last_seen_ms,
-            "total_input_tokens": total_input_tokens,
-            "total_output_tokens": total_output_tokens,
-            "total_cost": 0.0,
-            "span_count": span_count,
-            "llm_call_count": llm_call_count,
-            "tool_call_count": tool_call_count,
-            "error_span_count": 0,
-        }));
+            out.push(json!({
+                "session_id": session_id,
+                "title": title,
+                "agent": subagent_type,
+                "model_provider": model_provider,
+                "model_id": model_id,
+                "profile": profile,
+                "agent_type": agent_type,
+                "parent_session_id": parent_session_id,
+                "time_created": time_created,
+                "first_seen_ms": first_seen_ms,
+                "last_seen_ms": last_seen_ms,
+                "total_input_tokens": total_input_tokens,
+                "total_output_tokens": total_output_tokens,
+                "total_cost": 0.0,
+                "span_count": span_count,
+                "llm_call_count": llm_call_count,
+                "tool_call_count": tool_call_count,
+                "error_span_count": 0,
+            }));
+        }
     }
+
+    // 合并多库结果后按 last_seen_ms 倒序重排，再截断到 limit
+    out.sort_by(|a, b| {
+        let la = a.get("last_seen_ms").and_then(|s| s.as_i64()).unwrap_or(0);
+        let lb = b.get("last_seen_ms").and_then(|s| s.as_i64()).unwrap_or(0);
+        lb.cmp(&la)
+    });
+    out.truncate(limit as usize);
+
     Ok(out)
 }
 
 #[tauri::command]
 pub fn otel_session(id: String) -> Result<Value, String> {
-    let conn = open_otel_db()?;
+    let conns = open_otel_dbs();
 
     // Session summary
     let session_sql = r#"SELECT
@@ -803,8 +833,11 @@ pub fn otel_session(id: String) -> Result<Value, String> {
     WHERE s.session_id = ?
     GROUP BY s.session_id"#;
 
-    let session_row = conn
-        .query_row(session_sql, params![&id], |row| {
+    // 一个 session_id 只存在于一个 db：逐个连接尝试，命中的 conn 即为“归属 conn”，后续 traces/calls 均用该 conn
+    let mut owning_idx: Option<usize> = None;
+    let mut session_row = None;
+    for (i, conn) in conns.iter().enumerate() {
+        if let Ok(row) = conn.query_row(session_sql, params![&id], |row| {
             Ok((
                 row.get::<_, String>(0)?,           // session_id
                 ri(row, 1)?,              // first_seen_ms
@@ -819,15 +852,25 @@ pub fn otel_session(id: String) -> Result<Value, String> {
                 row.get::<_, Option<String>>(10)?,  // model_provider
                 row.get::<_, Option<String>>(11)?,  // profile
             ))
-        })
-        .map_err(|e| format!("session not found: {}", e))?;
+        }) {
+            session_row = Some(row);
+            owning_idx = Some(i);
+            break;
+        }
+    }
+
+    let conn = match owning_idx {
+        Some(i) => &conns[i],
+        None => return Err(format!("session not found: {}", id)),
+    };
+    let session_row = session_row.unwrap();
 
     let (session_id, first_seen_ms, last_seen_ms, time_created, span_count,
         llm_call_count, tool_call_count, total_input_tokens, total_output_tokens,
         model_id, model_provider, profile) = session_row;
 
     let title = get_opencode_title(&session_id, profile.as_deref())
-        .or_else(|| get_pi_session_summary(&conn, &session_id));
+        .or_else(|| get_pi_session_summary(conn, &session_id));
 
     let session = json!({
         "session_id": session_id,
@@ -871,7 +914,7 @@ pub fn otel_session(id: String) -> Result<Value, String> {
         .collect();
 
     // Calls
-    let calls = list_calls(&conn, &id)?;
+    let calls = list_calls(conn, &id)?;
 
     Ok(json!({
         "session": session,
@@ -882,7 +925,7 @@ pub fn otel_session(id: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub fn otel_spans(trace_id: String) -> Result<Vec<Value>, String> {
-    let conn = open_otel_db()?;
+    let conns = open_otel_dbs();
 
     let spans_sql = r#"SELECT
       trace_id, span_id, parent_span_id, name, kind,
@@ -894,90 +937,103 @@ pub fn otel_spans(trace_id: String) -> Result<Vec<Value>, String> {
     WHERE parent_span_id IN (SELECT span_id FROM spans WHERE trace_id = ?1)
       AND trace_id != ?1"#;
 
-    let mut out: Vec<Value> = vec![];
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back(trace_id);
+    // 一个 trace_id 只存在于一个 db：逐个连接跑完整 BFS，命中（非空）即返回。
+    // 跨 trace 的 parent_span_id 链在 PI 子代理场景下都在同一 db 内，所以单库 BFS 已完备。
+    for conn in &conns {
+        let mut out: Vec<Value> = vec![];
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<String> = VecDeque::new();
+        queue.push_back(trace_id.clone());
 
-    // prepare 在循环外（避免每层递归重新编译 SQL）
-    let mut spans_stmt = conn
-        .prepare(spans_sql)
-        .map_err(|e| format!("prepare spans: {}", e))?;
-    let mut cross_stmt = conn
-        .prepare(cross_trace_sql)
-        .map_err(|e| format!("prepare cross: {}", e))?;
+        // prepare 在循环外（避免每层递归重新编译 SQL）
+        let mut spans_stmt = match conn.prepare(spans_sql) {
+            Ok(s) => s,
+            Err(e) => return Err(format!("prepare spans: {}", e)),
+        };
+        let mut cross_stmt = match conn.prepare(cross_trace_sql) {
+            Ok(s) => s,
+            Err(e) => return Err(format!("prepare cross: {}", e)),
+        };
 
-    let mut depth = 0;
-    while let Some(current) = queue.pop_front() {
-        if visited.contains(&current) {
-            continue;
-        }
-        visited.insert(current.clone());
-        depth += 1;
-        if depth > 20 {
-            break;
-        }
+        let mut depth = 0;
+        while let Some(current) = queue.pop_front() {
+            if visited.contains(&current) {
+                continue;
+            }
+            visited.insert(current.clone());
+            depth += 1;
+            if depth > 20 {
+                break;
+            }
 
-        // 收集本 trace 的全部 span（必须消费完迭代器再用 cross_stmt）
-        let span_rows: Vec<_> = spans_stmt
-            .query_map(params![&current], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    ri(row, 5)?,
-                    ri(row, 6)?,
-                    ri(row, 7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                ))
-            })
-            .map_err(|e| format!("query spans: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("collect spans: {}", e))?;
-
-        for (trace_id, span_id, parent_span_id, name, kind, start_ms, end_ms,
-            duration_ms, attrs_str, resource_str, status_code, status_message) in span_rows {
-
-            let attributes = parse_json(&attrs_str.unwrap_or_default());
-            let resource = parse_json(&resource_str.unwrap_or_default());
-
-            out.push(json!({
-                "trace_id": trace_id,
-                "span_id": span_id,
-                "parent_span_id": parent_span_id,
-                "name": name,
-                "kind": kind,
-                "start_ms": start_ms,
-                "end_ms": end_ms,
-                "duration_ms": duration_ms,
-                "attributes": attributes,
-                "resource": resource,
-                "status": {
-                    "code": status_code,
-                    "message": status_message,
+            // 收集本 trace 的全部 span（必须消费完迭代器再用 cross_stmt）
+            let span_rows: Vec<_> = match spans_stmt
+                .query_map(params![&current], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        ri(row, 5)?,
+                        ri(row, 6)?,
+                        ri(row, 7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                    ))
+                }) {
+                Ok(rows) => match rows.collect::<Result<Vec<_>, _>>() {
+                    Ok(v) => v,
+                    Err(e) => return Err(format!("collect spans: {}", e)),
                 },
-            }));
+                Err(e) => return Err(format!("query spans: {}", e)),
+            };
+
+            for (trace_id, span_id, parent_span_id, name, kind, start_ms, end_ms,
+                duration_ms, attrs_str, resource_str, status_code, status_message) in span_rows {
+
+                let attributes = parse_json(&attrs_str.unwrap_or_default());
+                let resource = parse_json(&resource_str.unwrap_or_default());
+
+                out.push(json!({
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "parent_span_id": parent_span_id,
+                    "name": name,
+                    "kind": kind,
+                    "start_ms": start_ms,
+                    "end_ms": end_ms,
+                    "duration_ms": duration_ms,
+                    "attributes": attributes,
+                    "resource": resource,
+                    "status": {
+                        "code": status_code,
+                        "message": status_message,
+                    },
+                }));
+            }
+
+            // 跨 trace 子节点（spans 迭代器已消费完，可安全用 cross_stmt）
+            let cross_children: Vec<String> = cross_stmt
+                .query_map(params![&current], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("query cross: {}", e))?
+                .filter_map(|r| r.ok())
+                .filter(|tid| !visited.contains(tid))
+                .collect();
+
+            for child in cross_children {
+                queue.push_back(child);
+            }
         }
 
-        // 跨 trace 子节点（spans 迭代器已消费完，可安全用 cross_stmt）
-        let cross_children: Vec<String> = cross_stmt
-            .query_map(params![&current], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("query cross: {}", e))?
-            .filter_map(|r| r.ok())
-            .filter(|tid| !visited.contains(tid))
-            .collect();
-
-        for child in cross_children {
-            queue.push_back(child);
+        if !out.is_empty() {
+            // Sort by start_ms (cross-trace merge)
+            out.sort_by_key(|v| v.get("start_ms").and_then(|s| s.as_i64()).unwrap_or(0));
+            return Ok(out);
         }
     }
 
-    // Sort by start_ms (cross-trace merge)
-    out.sort_by_key(|v| v.get("start_ms").and_then(|s| s.as_i64()).unwrap_or(0));
-    Ok(out)
+    Ok(vec![])
 }
