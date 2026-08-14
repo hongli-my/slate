@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slate</title>
+    <style>
+        :root {
+            --bg: #f5f6f8;
+            --surface: #ffffff;
+            --surface-2: #eef0f3;
+            --surface-3: #e4e7ec;
+            --text-1: #1d2129;
+            --text-2: #4e5969;
+            --text-3: #86909c;
+            --border: #e5e6eb;
+            --accent: #3b5998;        /* 低饱和蓝灰，不刺眼 */
+            --accent-bg: #eef1f6;
+            --radius-sm: 6px;
+            --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; overflow: hidden; font-family: var(--font); background: var(--bg); color: var(--text-1); }
+
+        /* 顶部红绿灯让位区 */
+        #drag-region {
+            position: fixed; top: 0; left: 0; right: 0;
+            height: 32px; z-index: 9999; background: transparent;
+        }
+
+        /* ===== App 壳 ===== */
+        .app-shell {
+            position: fixed; top: 32px; left: 0; right: 0; bottom: 0;
+            display: flex; overflow: hidden;
+        }
+
+        /* ===== 侧边栏 ===== */
+        .sidebar {
+            width: 44px; background: var(--surface); border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; align-items: center;
+            padding-top: 8px; gap: 2px; flex-shrink: 0;
+        }
+        .nav-btn {
+            width: 34px; height: 34px; border: 0; background: transparent;
+            border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center;
+            cursor: pointer; color: var(--text-3);
+            position: relative; transition: background .12s, color .12s;
+        }
+        .nav-btn svg { width: 18px; height: 18px; display: block; }
+        .nav-btn:hover { background: var(--surface-2); color: var(--text-2); }
+        .nav-btn.active { color: var(--accent); }
+        .nav-btn.active::before {
+            content: ''; position: absolute; left: -6px; top: 50%; transform: translateY(-50%);
+            width: 3px; height: 18px; background: var(--accent); border-radius: 0 2px 2px 0;
+        }
+        .nav-btn .tip {
+            position: absolute; left: 44px; background: var(--text-1); color: #fff;
+            font-size: 11px; padding: 3px 8px; border-radius: 4px; white-space: nowrap;
+            opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 200;
+        }
+        .nav-btn:hover .tip { opacity: 1; }
+        .sidebar .spacer { flex: 1; }
+
+        /* ===== 内容区 ===== */
+        .content { flex: 1; position: relative; overflow: hidden; }
+        .view {
+            position: absolute; inset: 0; display: none;
+        }
+        .view.active { display: block; }
+
+        /* 所有 iframe 视图统一撑满 */
+        .view iframe {
+            width: 100%; height: 100%; border: 0; display: block;
+        }
+
+        /* 占位视图 */
+        .placeholder {
+            height: 100%; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 12px;
+            color: var(--text-3); background: var(--bg);
+        }
+        .placeholder svg { width: 48px; height: 48px; opacity: 0.25; }
+        .placeholder .title { font-size: 16px; font-weight: 600; color: var(--text-2); }
+        .placeholder .desc { font-size: 12px; color: var(--text-3); max-width: 280px; text-align: center; line-height: 1.6; }
+        .placeholder .badge {
+            font-size: 10px; font-weight: 600; color: var(--accent); background: var(--accent-bg);
+            padding: 3px 10px; border-radius: 10px; letter-spacing: .5px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="drag-region"></div>
+
+<div class="app-shell">
+    <!-- 侧边栏 -->
+    <nav class="sidebar">
+        <button class="nav-btn active" data-view="editor" title="编辑器">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6M9 17h4"/></svg>
+            <span class="tip">编辑器 ⌘1</span>
+        </button>
+        <button class="nav-btn" data-view="onetab" title="OneTab">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h18M3 17h12"/></svg>
+            <span class="tip">OneTab ⌘2</span>
+        </button>
+        <button class="nav-btn" data-view="otel" title="OTel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <span class="tip">OTel ⌘3</span>
+        </button>
+        <button class="nav-btn" data-view="chat" title="对话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span class="tip">对话 ⌘4</span>
+        </button>
+        <div class="spacer"></div>
+        <button class="nav-btn" data-view="settings" title="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span class="tip">设置</span>
+        </button>
+    </nav>
+
+    <!-- 内容区 -->
+    <div class="content">
+        <div class="view active" id="view-editor">
+            <iframe src="editor.html"></iframe>
+        </div>
+        <div class="view" id="view-onetab">
+            <div class="placeholder">
+                <div class="badge">待实现</div>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h18M3 17h12"/></svg>
+                <div class="title">OneTab</div>
+                <div class="desc">浏览器标签页管理。保存的标签组列表，每组含多个链接，可一键恢复。</div>
+            </div>
+        </div>
+        <div class="view" id="view-otel">
+            <iframe src="otel/index.html" loading="lazy"></iframe>
+        </div>
+        <div class="view" id="view-chat">
+            <iframe src="chat/index.html" loading="lazy"></iframe>
+        </div>
+        <div class="view" id="view-settings">
+            <div class="placeholder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                <div class="title">设置</div>
+                <div class="desc">Slate 应用设置。</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ===== 顶部拖动窗口 =====
+    if (window.__TAURI__ && window.__TAURI__.window) {
+        const appWindow = window.__TAURI__.window.getCurrentWindow();
+        const drag = document.getElementById('drag-region');
+        drag.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            if (e.detail === 2) {
+                appWindow.toggleMaximize().catch(() => {});
+            } else {
+                appWindow.startDragging().catch(() => {});
+            }
+        });
+    }
+
+    // ===== 侧边栏视图切换 =====
+    const navBtns = document.querySelectorAll('.nav-btn[data-view]');
+    const views = document.querySelectorAll('.view');
+    let currentView = 'editor';
+
+    function switchView(name) {
+        if (name === currentView) return;
+        currentView = name;
+        navBtns.forEach(b => b.classList.toggle('active', b.dataset.view === name));
+        views.forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+    }
+
+    navBtns.forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
+
+    // 快捷键 Cmd+1~4 切换
+    document.addEventListener('keydown', (e) => {
+        if (!(e.metaKey || e.ctrlKey)) return;
+        const map = { '1': 'editor', '2': 'onetab', '3': 'otel', '4': 'chat' };
+        const v = map[e.key];
+        if (v) { e.preventDefault(); switchView(v); }
+    });
+
+    // ===== 菜单事件桥接 =====
+    // 文件操作类菜单 → 先切到编辑器视图，再让 editor iframe 处理
+    const fileActions = new Set(['open-folder', 'open-file', 'new-file', 'save', 'delete', 'preview']);
+    if (window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event.listen('menu-action', (e) => {
+            const action = e.payload;
+            if (fileActions.has(action)) {
+                switchView('editor');
+            }
+        });
+    }
+</script>
+</body>
+</html>

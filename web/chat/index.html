@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PI</title>
+
+<!-- Piweb 模块化样式（先加载历史样式）-->
+<link rel="stylesheet" href="./css/base.css?v=9">
+<link rel="stylesheet" href="./css/sidebar.css?v=11">
+<link rel="stylesheet" href="./css/main.css?v=6">
+<link rel="stylesheet" href="./css/chat.css?v=19">
+<link rel="stylesheet" href="./css/markdown.css?v=6">
+<link rel="stylesheet" href="./css/shortcuts.css?v=5">
+<link rel="stylesheet" href="./css/admin.css?v=3">
+
+<!-- 共享设计系统（覆盖 base.css，确保 dashboard 配色生效）-->
+<link rel="stylesheet" href="./dashboard.css?v=1">
+
+<!-- External libs -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.11/purify.min.js"></script>
+
+<style>
+/* ============================================================
+   Piweb 视觉调优 — 与 dashboard.css 共存
+   保留原 JS 所需 ID，结构微调 + 视觉升级
+   ============================================================ */
+
+/* —— 整体背景与字体 —— */
+body {
+  background: var(--bg-app);
+  color: var(--text-1);
+}
+
+/* —— 侧栏：套入新设计语言 —— */
+#sidebar {
+  width: 244px;
+  min-width: 244px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+/* 项目选择器：转化为新视觉 */
+.project-selector {
+  padding: 14px 12px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.project-trigger {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 9px 10px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.project-trigger:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.project-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.project-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.project-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-path {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-arrow { color: var(--text-3); flex-shrink: 0; }
+
+/* —— 品牌区 + 新建按钮一行 —— */
+.sidebar-header {
+  padding: 12px 12px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.sidebar-header .logo {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sidebar-header .logo::before {
+  content: "💬";
+  width: 22px;
+  height: 22px;
+  background: var(--c-pink-soft);
+  color: var(--c-pink);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+/* —— 搜索框 —— */
+.search-box { padding: 4px 12px 8px; }
+.search-box input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-1);
+  font-size: 12.5px;
+  outline: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  font-family: var(--font);
+}
+.search-box input:focus {
+  border-color: var(--accent);
+  background: var(--bg-surface);
+}
+
+/* —— 会话列表 —— */
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+.session-item {
+  position: relative;
+  padding: 5px 9px 6px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  margin-bottom: 2px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xs);
+  transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.session-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+.session-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.session-item-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--bg-active);
+  color: var(--text-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.session-item.active .session-item-icon {
+  background: var(--accent);
+  color: var(--text-invert);
+}
+.session-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 20px;
+  cursor: pointer;
+  line-height: 1.35;
+  transition: color 0.1s ease;
+}
+.session-item.active .session-item-title { color: var(--accent); }
+.session-item-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-3);
+  line-height: 1.3;
+}
+.session-item-meta span { white-space: nowrap; }
+.session-item-meta span + span::before {
+  content: "·";
+  margin: 0 4px;
+  color: var(--text-4);
+}
+.session-delete {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  transform: none;
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.1s, background 0.1s;
+}
+.session-item:hover .session-delete { opacity: 0.5; }
+.session-delete:hover {
+  opacity: 1 !important;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* —— 侧栏底栏 —— */
+.sidebar-footer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-surface);
+}
+
+/* 上下文条 */
+.context-bar {
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  background: var(--bg-soft);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+}
+.context-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.context-model {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+}
+.context-tokens {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.context-progress-wrap {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.context-progress {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease, background 0.3s ease;
+  background: var(--success);
+}
+.context-progress.low      { background: var(--success); }
+.context-progress.mid      { background: var(--info); }
+.context-progress.high     { background: var(--warning); }
+.context-progress.critical { background: var(--danger); }
+.context-bar-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+.context-percent {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.context-duration {
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* 导航按钮组（5 个）*/
+.sidebar-nav {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-soft);
+  border-radius: var(--radius-md);
+}
+.nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+  text-decoration: none;
+}
+.nav-btn:hover { color: var(--text-1); background: var(--bg-surface); }
+.nav-btn.active {
+  background: var(--bg-surface);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+
+/* 状态指示器 */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-4);
+}
+.dot.online  { background: var(--success); box-shadow: 0 0 0 2px var(--success-soft); }
+.dot.offline { background: var(--danger);  box-shadow: 0 0 0 2px var(--danger-soft); }
+#btn-theme {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  line-height: 1;
+  font-family: var(--font);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+#btn-theme:hover { background: var(--bg-hover); color: var(--text-1); }
+
+/* ============================================================
+   主区域：欢迎页新设计 + 会话/聊天区贴合调色板
+   ============================================================ */
+#main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+
+/* —— 欢迎页：转化为 dashboard 风格 —— */
+.welcome {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 22px 28px;
+  background: var(--bg-app);
+}
+.welcome-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  text-align: left;
+}
+.welcome-hero {
+  border-radius: var(--radius-xl);
+  background: var(--hero-grad);
+  color: var(--text-invert);
+  padding: 24px 28px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.18);
+}
+.welcome-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 85% 20%, rgba(255,255,255,0.18), transparent 50%),
+    radial-gradient(circle at 15% 90%, rgba(255,255,255,0.12), transparent 60%);
+  pointer-events: none;
+}
+.welcome-hero-inner { position: relative; z-index: 1; }
+.welcome-hero-eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  background: rgba(255,255,255,0.18);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  margin-bottom: 10px;
+}
+.welcome-hero-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -0.3px;
+}
+.welcome-hero-subtitle {
+  font-size: 13px;
+  color: rgba(255,255,255,0.85);
+  line-height: 1.6;
+  margin: 0 0 14px;
+  max-width: 560px;
+}
+.welcome-hero-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* —— 欢迎页统计卡 —— */
+.welcome-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+@media (max-width: 900px) {
+  .welcome-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* —— 欢迎页下方 —— */
+.welcome-section {
+  margin-top: 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+}
+.welcome-section h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.welcome-section h4::before {
+  content: "";
+  width: 4px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.welcome-section .desc {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 12px;
+}
+.welcome-tip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .welcome-tip-grid { grid-template-columns: 1fr; }
+}
+.welcome-tip {
+  padding: 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.welcome-tip strong { color: var(--text-1); font-weight: 600; }
+.welcome-tip code {
+  background: var(--bg-active);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+/* —— 旧 welcome-inner p/h2 占位 —— */
+.welcome-inner > h2 { display: none; }   /* 新设计自己出标题 */
+.welcome-inner > p  { display: none; }
+
+/* —— 活跃流提示（默认隐藏） —— */
+.welcome-stream-hint {
+  margin-top: 14px;
+  padding: 14px 18px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* —— 会话视图与聊天视图浅背景 —— */
+.session-view, .chat-mode {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+.session-header, .chat-header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-surface);
+}
+
+/* —— 聊天消息区白底面板感 —— */
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 0;
+  scroll-behavior: smooth;
+}
+
+/* —— 聊天输入区 —— */
+.chat-input-area {
+  padding: 12px 20px 16px;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+}
+.chat-input-container {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: visible;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  max-width: 920px;
+  margin: 0 auto;
+}
+.chat-input-container:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+#chat-input {
+  width: 100%;
+  padding: 12px 16px 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-1);
+  font-size: 13.5px;
+  font-family: var(--font);
+  resize: none;
+  outline: none;
+  line-height: 1.55;
+  min-height: 50px;
+  max-height: 220px;
+}
+
+/* —— chat-mode 整段背景 —— */
+#welcome-screen, .session-view, .chat-mode {
+  background: transparent;
+}
+
+/* —— 聊天气泡细节 —— */
+.turn-user-content {
+  background: var(--accent);
+  color: var(--text-invert);
+  padding: 9px 16px;
+  border-radius: 12px 12px 3px 12px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 76%;
+}
+.turn-agent-body {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px 12px 12px 3px;
+  padding: 12px 16px;
+  flex: 1;
+  min-width: 0;
+  max-width: 760px;
+  box-shadow: var(--shadow-xs);
+}
+
+/* —— 关闭那些和我们的设计冲突的样式（base.css 里） —— */
+body {
+  background: var(--bg-app);
+}
+#app { background: var(--bg-app); }
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 侧边栏 -->
+  <aside id="sidebar">
+    <!-- 项目选择器 -->
+    <div class="project-selector" id="project-selector">
+      <button class="project-trigger" id="project-trigger" title="切换项目">
+        <div class="project-icon">H</div>
+        <div class="project-info">
+          <span class="project-name" id="current-project-name">默认项目</span>
+          <span class="project-path" id="current-project-path"></span>
+        </div>
+        <svg class="project-arrow" viewBox="0 0 12 12" width="10" height="10"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <div class="project-dropdown" id="project-dropdown" style="display:none">
+        <div class="project-dropdown-header">
+          <span>选择项目</span>
+        </div>
+        <div class="project-list" id="project-list">
+          <!-- 动态填充 -->
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-header">
+      <h1 class="logo">PI</h1>
+      <button id="btn-new-chat" class="btn-primary" title="新对话">＋ 新建会话</button>
+    </div>
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="搜索会话..." />
+    </div>
+    <div id="session-list" class="session-list">
+      <!-- 动态填充 -->
+    </div>
+    <div class="sidebar-footer">
+      <div id="context-bar" class="context-bar">
+        <div class="context-bar-header">
+          <span class="context-model" id="ctx-model">-</span>
+          <span class="context-tokens" id="ctx-tokens">-/-</span>
+        </div>
+        <div class="context-progress-wrap">
+          <div class="context-progress" id="ctx-progress" style="width:0%"></div>
+        </div>
+        <div class="context-bar-footer">
+          <span class="context-percent" id="ctx-percent">0%</span>
+          <span class="context-duration" id="ctx-duration">-</span>
+        </div>
+      </div>
+      <div class="sidebar-nav">
+        <button class="nav-btn" data-admin="agents" title="Subagent 管理">🤖 Sub</button>
+        <button class="nav-btn" data-admin="extensions" title="扩展管理">🧩 扩展</button>
+        <button class="nav-btn" data-admin="skills" title="Skills 管理">🎯 Skill</button>
+        <button class="nav-btn" data-admin="schedules" title="定时任务">⏰ 任务</button>
+        <button class="nav-btn" data-admin="settings" title="设置">⚙️ 设置</button>
+      </div>
+      <div id="gateway-status" class="status-indicator">
+        <span class="dot"></span> <span class="status-text">检测中...</span>
+        <span id="global-stream-indicator" class="global-stream-inline" style="display:none" title="有正在运行的会话">
+          <span class="streaming-spinner"></span>
+          <span class="status-text" id="global-stream-text">1 个会话运行中</span>
+        </span>
+        <button id="btn-theme" class="icon-only" title="切换深色模式">🌙</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主区域 -->
+  <main id="main-area">
+    <!-- 欢迎页（无选中会话时显示） -->
+    <div id="welcome-screen" class="welcome">
+      <div class="welcome-inner">
+        <!-- Hero -->
+        <section class="welcome-hero">
+          <div class="welcome-hero-inner">
+            <h2 class="welcome-hero-title">Pi Agent WebUI · 让协作更聪明</h2>
+            <p class="welcome-hero-subtitle">
+              选择左侧会话查看历史，或点击「＋ 新建会话」开始（由 pi-coding-agent 驱动）。支持 Agent 工作流、工具调用、子任务编排。
+            </p>
+            <div class="welcome-hero-actions">
+              <button class="pm-btn-hero" onclick="document.getElementById('btn-new-chat').click()">＋ 新建会话</button>
+              <button class="pm-btn-hero pm-btn-hero-ghost" onclick="document.querySelector('.nav-btn[data-admin=agents]').click()">🤖 浏览 Agent</button>
+              <a class="pm-btn-hero pm-btn-hero-ghost" href="/" style="text-decoration:none">⌂ 返回工作台</a>
+            </div>
+          </div>
+        </section>
+
+        <!-- 活跃流提示（默认隐藏；JS 设置 display 切显隐） -->
+        <div id="new-chat-streaming-hint" class="welcome-stream-hint" style="display:none">
+          <div class="streaming-spinner" style="display:inline-block;vertical-align:middle"></div>
+          <span style="flex:1">有对话正在生成中</span>
+          <button id="btn-resume-new-stream" class="pm-btn pm-btn-primary">查看</button>
+        </div>
+
+        <!-- 统计卡占位（渲染由 JS 接管） -->
+        <div class="welcome-stats" id="quick-stats"></div>
+
+        <!-- 引导区 -->
+        <section class="welcome-section">
+          <h4>快速上手</h4>
+          <p class="desc">常用入口与基本操作，三步即用。</p>
+          <div class="welcome-tip-grid">
+            <div class="welcome-tip">
+              <strong>① 选择 / 创建项目</strong><br>
+              顶部项目选择器切换；点击 <code>H</code> 图标。
+            </div>
+            <div class="welcome-tip">
+              <strong>② 新建会话</strong><br>
+              点 <code>＋ 新建会话</code>，或在 <code>Slash 菜单</code> 输命令。
+            </div>
+            <div class="welcome-tip">
+              <strong>③ 配置管理</strong><br>
+              底部 5 个按钮覆盖 Subagent / 扩展 / Skills / 任务 / 设置。
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 会话详情 -->
+    <div id="session-view" class="session-view" style="display:none">
+      <div id="streaming-banner" class="streaming-banner" style="display:none">
+        <div class="streaming-spinner"></div>
+        <span>Pi 正在生成中...</span>
+        <button id="btn-view-stream" class="btn-sm">查看实时内容</button>
+      </div>
+      <div class="session-header">
+        <div class="session-meta">
+          <span id="session-title" class="session-title">Session</span>
+          <span id="session-info" class="session-info"></span>
+        </div>
+        <div class="session-actions">
+          <button id="btn-resume" class="btn-sm" title="在此会话基础上继续对话">💬 继续对话</button>
+          <button id="btn-toggle-tools" class="btn-sm" title="显示/隐藏工具调用">🔧 工具</button>
+          <button id="btn-export-session" class="btn-sm" title="导出会话为 Markdown">📥 导出</button>
+          <button id="btn-fork-session" class="btn-sm" title="基于当前会话历史开新会话">🔀 开新会话</button>
+          <button id="btn-delete-session" class="btn-sm btn-danger" title="删除此会话">🗑 删除</button>
+        </div>
+      </div>
+      <div id="message-list" class="message-list">
+        <!-- 消息气泡 -->
+      </div>
+    </div>
+
+    <!-- 对话模式 -->
+    <div id="chat-mode" class="chat-mode" style="display:none">
+      <div class="chat-header">
+        <span id="chat-session-label">新对话</span>
+        <button id="btn-exit-chat" class="btn-sm">✕ 退出对话</button>
+      </div>
+      <div id="chat-messages" class="message-list chat-messages">
+        <!-- 对话消息 -->
+      </div>
+      <div class="chat-input-area">
+        <div class="chat-input-container">
+          <div class="chat-input-wrap">
+            <textarea id="chat-input" placeholder="输入消息... (Enter 发送, Shift+Enter 换行)" rows="1"></textarea>
+            <div id="slash-menu" class="slash-menu" style="display:none"></div>
+          </div>
+          <div class="chat-input-toolbar">
+            <div class="provider-selector" id="provider-selector">
+              <button class="provider-trigger" id="provider-trigger" title="切换 Provider">
+                <span class="provider-dot"></span>
+                <span class="provider-label" id="provider-label">-</span>
+                <svg class="provider-arrow" viewBox="0 0 12 12" width="10" height="10"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+            <div class="chat-input-actions">
+              <button id="btn-send" class="btn-send-circle" title="发送">
+                <svg viewBox="0 0 20 20" width="18" height="18"><path d="M3 10l14-7-7 14v-7H3z" fill="currentColor"/></svg>
+              </button>
+              <button id="btn-stop" class="btn-stop-circle" style="display:none" title="停止生成">
+                <svg viewBox="0 0 20 20" width="16" height="16"><rect x="4" y="4" width="12" height="12" rx="2" fill="currentColor"/></svg>
+              </button>
+            </div>
+          </div>
+          <select id="provider-select" class="provider-select" style="display:none" aria-hidden="true">
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- 配置中心 -->
+    <div id="admin-view" class="admin-view" style="display:none"></div>
+
+  </main>
+</div>
+
+<!-- JS (modular, load order matters) -->
+    <script src="./vendor/cronstrue.min.js?v=1"></script>
+    <script src="./js/state.js?v=25"></script>
+<script src="./js/api.js?v=22"></script>
+<script src="./js/project-manager.js?v=2"></script>
+<script src="./js/session-manager.js?v=26"></script>
+<script src="./js/router.js?v=21"></script>
+<script src="./js/markdown.js?v=14"></script>
+<script src="./js/eventsource-parser.js?v=10"></script>
+<script src="./js/session.js?v=35"></script>
+<script src="./js/chat.js?v=38"></script>
+<script src="./js/gateway.js?v=17"></script>
+<script src="./js/shortcuts.js?v=10"></script>
+    <script src="./js/admin.js?v=3"></script>
+<script src="./js/app.js?v=21"></script>
+</body>
+</html>

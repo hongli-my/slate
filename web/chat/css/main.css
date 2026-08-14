@@ -1,0 +1,83 @@
+#main-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.welcome {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.welcome-inner {
+  text-align: center;
+  max-width: 460px;
+}
+.welcome-inner h2 {
+  font-size: 20px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+.welcome-inner p {
+  color: var(--text-weak);
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+.quick-stats {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.stat-card {
+  background: var(--bg-weak);
+  border: 1px solid var(--border-weak);
+  border-radius: var(--radius-lg);
+  padding: 12px 18px;
+  text-align: center;
+}
+.stat-value {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+.stat-label {
+  font-size: 10px;
+  color: var(--text-weaker);
+  margin-top: 2px;
+}
+
+.session-view, .chat-mode {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.session-header, .chat-header {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-weak);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg);
+}
+.session-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text);
+}
+.session-info {
+  font-size: 11px;
+  color: var(--text-weaker);
+  margin-left: 10px;
+}
+.session-actions { display: flex; gap: 6px; }
+.btn-danger { color: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger); color: var(--text-invert); }
+#chat-session-label { font-weight: 500; font-size: 13px; color: var(--accent); }

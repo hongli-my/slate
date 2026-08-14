@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build output
+src-tauri/target/
+dist/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp

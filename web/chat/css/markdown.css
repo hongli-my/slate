@@ -1,0 +1,189 @@
+.msg-content, .step-answer, .turn-user-content {
+  line-height: 1.65;
+  font-size: 14px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.msg-content h2, .msg-content h3, .msg-content h4,
+.step-answer h2, .step-answer h3, .step-answer h4,
+.turn-user-content h2, .turn-user-content h3, .turn-user-content h4 {
+  margin-top: 14px;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-weight: 500;
+  line-height: 1.3;
+}
+.msg-content h2, .step-answer h2, .turn-user-content h2 { font-size: 16px; }
+.msg-content h3, .step-answer h3, .turn-user-content h3 { font-size: 14px; }
+.msg-content h4, .step-answer h4, .turn-user-content h4 { font-size: 13px; }
+
+.msg-content p, .step-answer p, .turn-user-content p { margin-bottom: 8px; }
+.msg-content p:last-child, .step-answer p:last-child, .turn-user-content p:last-child { margin-bottom: 0; }
+
+.msg-content strong, .step-answer strong, .turn-user-content strong { font-weight: 500; color: var(--text); }
+
+.msg-content a, .step-answer a, .turn-user-content a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.12s ease;
+}
+.msg-content a:hover, .step-answer a:hover, .turn-user-content a:hover { border-bottom-color: var(--accent); }
+
+.msg-content ul, .msg-content ol, .step-answer ul, .step-answer ol,
+.turn-user-content ul, .turn-user-content ol {
+  margin: 6px 0 8px 1.5em;
+}
+.msg-content li, .step-answer li, .turn-user-content li { margin-bottom: 2px; }
+
+.msg-content code:not(pre code), .step-answer code:not(pre code), .turn-user-content code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-weak);
+  color: var(--accent);
+  padding: 0.15em 0.35em;
+  border-radius: 3px;
+  border: 1px solid var(--border-weak);
+}
+
+.code-block {
+  margin: 8px 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-weak);
+  background: var(--code-bg);
+}
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 5px 10px;
+  background: var(--code-header);
+  border-bottom: 1px solid var(--border);
+}
+.code-lang {
+  color: #9898b8;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+}
+.code-copy-btn {
+  background: transparent;
+  border: none;
+  color: #7a7a9e;
+  cursor: pointer;
+  font-size: 10px;
+  font-family: var(--font-sans);
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.1s ease;
+}
+.code-copy-btn:hover { color: #e4e4f0; background: rgba(255,255,255,0.08); }
+.code-copy-btn.copied { color: var(--accent2); }
+.code-block pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: transparent;
+  overflow-x: auto;
+}
+.code-block pre code {
+  background: none !important;
+  padding: 0 !important;
+  font-size: 12px;
+  color: #e4e4f0;
+  font-family: var(--font-mono);
+  line-height: 1.55;
+}
+
+.msg-content > pre, .step-answer > pre, .turn-user-content > pre {
+  background: var(--code-bg);
+  border-radius: var(--radius-lg);
+  padding: 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-weak);
+}
+.msg-content > pre > code, .step-answer > pre > code, .turn-user-content > pre > code {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: #e4e4f0;
+  font-family: var(--font-mono);
+}
+
+.msg-content table, .step-answer table, .turn-user-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.msg-content th, .msg-content td, .step-answer th, .step-answer td,
+.turn-user-content th, .turn-user-content td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+.msg-content th, .step-answer th, .turn-user-content th {
+  background: var(--bg-weak);
+  font-weight: 500;
+  color: var(--text);
+}
+.msg-content tr:nth-child(even), .step-answer tr:nth-child(even),
+.turn-user-content tr:nth-child(even) { background: var(--bg-weak); }
+
+.msg-content blockquote, .step-answer blockquote, .turn-user-content blockquote {
+  border-left: 2px solid var(--accent);
+  padding: 5px 12px;
+  margin: 8px 0;
+  background: var(--accent-dim);
+  color: var(--text-weak);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.msg-content hr, .step-answer hr, .turn-user-content hr {
+  border: none;
+  border-top: 1px solid var(--border-weak);
+  margin: 12px 0;
+}
+
+.msg-content img, .step-answer img, .turn-user-content img {
+  max-width: 100%;
+  border-radius: var(--radius-lg);
+  margin: 6px 0;
+}
+
+/* ============================================================
+   用户气泡内 override：用户气泡是 accent 蓝底 + 白字，
+   通用 markdown 规则里 a/code 用 var(--accent) 会与背景同色不可见。
+   这里把气泡内所有元素 override 为白/浅色，保证可读性。
+   ============================================================ */
+.turn-user-content a {
+  color: #fff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.6);
+}
+.turn-user-content a:hover {
+  border-bottom-color: #fff;
+}
+.turn-user-content code:not(pre code) {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+.turn-user-content strong,
+.turn-user-content h2,
+.turn-user-content h3,
+.turn-user-content h4 {
+  color: #fff;
+}
+.turn-user-content blockquote {
+  border-left-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+}
+/* 表格在气泡内：浅底仍可保留（有边框分隔），但 th 文字改白以确保对比 */
+.turn-user-content th {
+  color: var(--text);
+}

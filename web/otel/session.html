@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session · OpenCode Traces</title>
+<link rel="stylesheet" href="assets/style.css?v=3">
+</head>
+<body>
+<div class="app">
+  <!-- 初始 loading，由 session.js 替换内容 -->
+  <div class="loading" style="margin-top:48px">
+    <div class="spinner"></div><span>Loading session…</span>
+  </div>
+</div>
+
+<!-- span attributes 浮层（放在 .app 外，避免被 innerHTML 清掉） -->
+<div class="tooltip" id="tooltip" role="tooltip"></div>
+
+<script src="assets/utils.js?v=3"></script>
+<script src="assets/session.js?v=3"></script>
+</body>
+</html>
