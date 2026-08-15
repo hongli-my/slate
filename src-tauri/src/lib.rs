@@ -1,4 +1,5 @@
 mod otel;
+mod recents;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -23,6 +24,18 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
         &MenuItem::with_id(app, "delete", "删除当前文件", true, None::<&str>)?,
     ])?;
 
+    // 编辑菜单：macOS WKWebView 必须有标准 Edit 菜单项，
+    // 否则 Cmd+C / Cmd+V / Cmd+X / Cmd+A 不会路由到 webview
+    let edit_submenu = Submenu::with_items(app, "编辑", true, &[
+        &PredefinedMenuItem::undo(app, None)?,
+        &PredefinedMenuItem::redo(app, None)?,
+        &PredefinedMenuItem::separator(app)?,
+        &PredefinedMenuItem::cut(app, None)?,
+        &PredefinedMenuItem::copy(app, None)?,
+        &PredefinedMenuItem::paste(app, None)?,
+        &PredefinedMenuItem::select_all(app, None)?,
+    ])?;
+
     let view_submenu = Submenu::with_items(app, "视图", true, &[
         &MenuItem::with_id(app, "preview", "预览", true, Some("CmdOrCtrl+P"))?,
         &PredefinedMenuItem::separator(app)?,
@@ -30,7 +43,7 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
         &PredefinedMenuItem::fullscreen(app, None)?,
     ])?;
 
-    Menu::with_items(app, &[&app_submenu, &file_submenu, &view_submenu])
+    Menu::with_items(app, &[&app_submenu, &file_submenu, &edit_submenu, &view_submenu])
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -43,6 +56,9 @@ pub fn run() {
             otel::otel_sessions,
             otel::otel_session,
             otel::otel_spans,
+            recents::recents_list,
+            recents::recents_add,
+            recents::recents_clear,
         ])
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

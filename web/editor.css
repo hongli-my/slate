@@ -1,0 +1,424 @@
+        #view-editor {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #4b4b4b; color: #e0e0e0;
+            height: 100%; overflow: hidden;
+        }
+        #view-editor .container { display: flex; height: 100%; }
+
+        /* ===== 顶部工具栏 ===== */
+        .toolbar {
+            display: flex; align-items: center; gap: 2px;
+            background: #535353; border-bottom: 1px solid #6b6b6b;
+            padding: 4px 8px; flex-shrink: 0;
+        }
+        .toolbar-btn {
+            background: transparent; border: none; color: #d0d0d0;
+            cursor: pointer; padding: 5px 10px; border-radius: 3px;
+            font-size: 13px; white-space: nowrap; display: flex; align-items: center; gap: 4px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        .toolbar-btn:hover { background: #6b6b6b; }
+        .toolbar-btn.active { background: #7a7a50; color: #fff; }
+        .toolbar-sep { width: 1px; height: 18px; background: #6b6b6b; margin: 0 4px; }
+
+        /* ===== 侧边栏 ===== */
+        #view-editor .sidebar {
+            width: 260px; min-width: 140px; max-width: 500px;
+            background: #e8eaed; border-right: 1px solid #d0d4d9;
+            display: flex; flex-direction: column; flex-shrink: 0; position: relative;
+            align-items: stretch; padding-top: 0; gap: 0;
+        }
+        .resizer {
+            width: 4px; cursor: col-resize; position: absolute; right: -2px;
+            top: 0; bottom: 0; z-index: 10; background: transparent;
+        }
+        .resizer:hover, .resizer.dragging { background: #8a8a8a; }
+        .sidebar-header {
+            padding: 12px 14px; background: transparent; border-bottom: 0;
+            display: flex; align-items: center; justify-content: space-between;
+        }
+        .sidebar-title {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            color: #8b919a; letter-spacing: 0.8px;
+        }
+        .sidebar-buttons { display: flex; gap: 2px; }
+        .file-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+        .file-tree::-webkit-scrollbar { width: 6px; }
+        .file-tree::-webkit-scrollbar-track { background: #e8eaed; }
+        .file-tree::-webkit-scrollbar-thumb { background: #c4c8cd; border-radius: 3px; }
+        .tree-item {
+            display: flex; align-items: center; padding: 3px 10px;
+            cursor: pointer; font-size: 13px; color: #2d3138; user-select: none;
+            white-space: nowrap;
+        }
+        .tree-item:hover { background: #dadee3; }
+        .tree-item.selected {
+            background: #d4d9df; color: #1a73e8;
+            box-shadow: inset 3px 0 0 0 #1a73e8;
+        }
+        .tree-item .icon { margin-right: 6px; font-size: 14px; flex-shrink: 0; }
+        .tree-arrow {
+            width: 16px; display: inline-flex; align-items: center; justify-content: center;
+            font-size: 10px; color: #8b919a; flex-shrink: 0;
+        }
+        .tree-arrow.collapsed::before { content: '\25B6'; }
+        .tree-arrow.expanded::before { content: '\25BC'; }
+
+        /* ===== 主区域 ===== */
+        .main { flex: 1; display: flex; flex-direction: column; background: #4b4b4b; min-width: 0; }
+        .tabs-bar {
+            display: flex; background: #535353; border-bottom: 1px solid #6b6b6b;
+            overflow-x: auto; flex-shrink: 0; min-height: 35px;
+        }
+        .tabs-bar::-webkit-scrollbar { height: 0; }
+        .tab {
+            display: flex; align-items: center; padding: 0 12px; height: 35px;
+            background: #4f4f4f; border-right: 1px solid #5a5a5a;
+            cursor: pointer; font-size: 13px; color: #999;
+            white-space: nowrap; flex-shrink: 0;
+        }
+        .tab:hover { background: #5a5a5a; }
+        .tab.active { background: #4b4b4b; color: #e0e0e0; border-bottom: 1px solid #4b4b4b; margin-bottom: -1px; }
+        .tab .tab-name { margin-right: 8px; }
+        .tab .tab-close {
+            font-size: 14px; padding: 0 4px; border-radius: 3px;
+            opacity: 0; transition: opacity 0.1s;
+        }
+        .tab:hover .tab-close { opacity: 0.7; }
+        .tab .tab-close:hover { opacity: 1; background: #6b6b6b; }
+
+        /* ===== 编辑器+预览 双面板 ===== */
+        .editor-area {
+            flex: 1; display: flex; overflow: hidden; position: relative;
+        }
+        .editor-pane {
+            flex: 1; overflow: hidden; position: relative; min-width: 0;
+        }
+        .editor-pane .CodeMirror {
+            height: 100%; font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+            font-size: 14px; line-height: 1.6;
+        }
+        /* 覆盖 Monokai 主题背景色，匹配 Sublime 风格 */
+        .editor-pane .CodeMirror.cm-s-monokai { background: #474747; }
+        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-gutters { background: #414141; border-right: 1px solid #555; }
+        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-activeline-background { background: rgba(255,255,255,0.15); }
+        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-selected { background: rgba(255,255,255,0.25) !important; }
+        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-focused .CodeMirror-selected { background: rgba(100,180,255,0.35) !important; }
+        /* 搜索对话框暗色适配 */
+        /* 搜索替换对话框 */
+        .CodeMirror-dialog { background: #2d2d2d !important; color: #f8f8f2 !important; border-bottom: 1px solid #444 !important; padding: 8px 12px !important; font-size: 13px; }
+        .CodeMirror-dialog input { background: #1e1e1e !important; color: #f8f8f2 !important; border: 1px solid #555 !important; border-radius: 4px; padding: 4px 8px; outline: none; font-size: 13px; min-width: 150px; }
+        .CodeMirror-dialog input:focus { border-color: #667eea !important; }
+        .CodeMirror-dialog button { background: #444 !important; color: #f8f8f2 !important; border: 1px solid #666 !important; border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; margin-left: 6px; }
+        .CodeMirror-dialog button:hover { background: #555 !important; border-color: #888 !important; }
+        .CodeMirror-dialog span { margin-right: 8px; }
+
+        /* 自定义查找替换面板 */
+        #searchReplacePanel {
+            position: fixed;
+            top: 50px;
+            right: 20px;
+            background: #2d2d2d;
+            border: 1px solid #555;
+            border-radius: 8px;
+            padding: 12px;
+            z-index: 1000;
+            min-width: 320px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        #searchReplacePanel .row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        #searchReplacePanel .row:last-child { margin-bottom: 0; }
+        #searchReplacePanel label {
+            width: 60px;
+            color: #aaa;
+            font-size: 13px;
+        }
+        #searchReplacePanel input[type="text"] {
+            flex: 1;
+            background: #1e1e1e;
+            color: #f8f8f2;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 13px;
+            outline: none;
+        }
+        #searchReplacePanel input[type="text"]:focus {
+            border-color: #667eea;
+        }
+        #searchReplacePanel .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-left: 60px;
+        }
+        #searchReplacePanel button {
+            background: #444;
+            color: #f8f8f2;
+            border: 1px solid #666;
+            border-radius: 4px;
+            padding: 5px 14px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        #searchReplacePanel button:hover {
+            background: #555;
+            border-color: #888;
+        }
+        #searchReplacePanel button.primary {
+            background: #667eea;
+            border-color: #667eea;
+        }
+        #searchReplacePanel button.primary:hover {
+            background: #5a6fd6;
+        }
+        #searchReplacePanel .close-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 0;
+            line-height: 1;
+        }
+        #searchReplacePanel .close-btn:hover { color: #fff; }
+        #searchReplacePanel .counter {
+            margin-left: 8px;
+            color: #888;
+            font-size: 12px;
+        }
+
+        /* 搜索高亮 */
+        .cm-search-highlight { background: rgba(255, 200, 0, 0.4); }
+        /* 选中变量全文标识 */
+        .cm-occurrence-highlight { background: rgba(255, 255, 255, 0.12); border-bottom: 1px solid rgba(255,255,255,0.3); }
+        #view-editor.light-theme .cm-occurrence-highlight { background: rgba(0, 0, 0, 0.08); border-bottom: 1px solid rgba(0,0,0,0.2); }
+        .CodeMirror-selectedtext { background: rgba(100, 180, 255, 0.35); }
+        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-linenumber { color: #888; }
+        /* SQL 格式化按钮 */
+        .editor-format-btn {
+            display: none;
+            position: absolute; top: 6px; right: 104px; z-index: 20;
+            background: #555; border: 1px solid #777; color: #ccc;
+            padding: 3px 12px; border-radius: 4px; cursor: pointer;
+            font-size: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            transition: background 0.12s;
+        }
+        .editor-format-btn:hover { background: #666; color: #fff; }
+        .editor-format-btn.done { background: #5a8a5a; border-color: #7ab87a; color: #fff; }
+        /* 编辑区右上角预览切换按钮 */
+        .editor-preview-btn {
+            display: none;
+            position: absolute; top: 6px; right: 14px; z-index: 25;
+            background: #555; border: 1px solid #777; color: #ccc;
+            padding: 3px 12px; border-radius: 4px; cursor: pointer;
+            font-size: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            transition: background 0.12s;
+        }
+        .editor-preview-btn:hover { background: #666; color: #fff; }
+        .editor-preview-btn.active { background: #4a6a9a; border-color: #6a8aca; color: #fff; }
+        /* 预览面板（覆盖编辑区，不分栏） */
+        .preview-pane {
+            display: none;
+            position: absolute; inset: 0; overflow-y: auto;
+            background: #4b4b4b; z-index: 15;
+            padding: 12px 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            font-size: 13.5px; line-height: 1.55; color: #ccc;
+        }
+        .preview-pane::-webkit-scrollbar { width: 8px; }
+        .preview-pane::-webkit-scrollbar-track { background: #4b4b4b; }
+        .preview-pane::-webkit-scrollbar-thumb { background: #777; border-radius: 4px; }
+
+        /* ===== Markdown 预览样式 ===== */
+        .preview-pane h1 { font-size: 1.45em; font-weight: 600; color: #e0e0e0; border-bottom: 1px solid #5a5a5a; padding-bottom: 4px; margin: 16px 0 6px; }
+        .preview-pane h1:first-child { margin-top: 0; }
+        .preview-pane h2 { font-size: 1.25em; font-weight: 600; color: #e0e0e0; border-bottom: 1px solid #555; padding-bottom: 3px; margin: 14px 0 5px; }
+        .preview-pane h3 { font-size: 1.1em; font-weight: 600; color: #ddd; margin: 10px 0 4px; }
+        .preview-pane h4 { font-size: 1em; font-weight: 600; color: #ccc; margin: 8px 0 3px; }
+        .preview-pane h5, .preview-pane h6 { font-size: 0.95em; font-weight: 600; color: #bbb; margin: 6px 0 3px; }
+        .preview-pane p { margin: 4px 0; }
+        .preview-pane code {
+            background: #3a3a3a; padding: 1px 5px; border-radius: 3px;
+            font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 0.88em; color: #ce9178;
+        }
+        .preview-pane pre {
+            background: #3a3a3a; padding: 10px 14px; border-radius: 4px; margin: 6px 0;
+            overflow-x: auto; border: 1px solid #555; position: relative;
+        }
+        .preview-pane pre code { background: none; padding: 0; color: #d4d4d4; font-size: 12.5px; line-height: 1.45; }
+        /* 代码块复制按钮 */
+        .code-copy-btn {
+            position: absolute; top: 4px; right: 4px;
+            background: #555; border: 1px solid #777; color: #ccc;
+            padding: 1px 8px; border-radius: 3px; cursor: pointer;
+            font-size: 11px; opacity: 0; transition: opacity 0.15s;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        .preview-pane pre:hover .code-copy-btn { opacity: 1; }
+        .code-copy-btn:hover { background: #666; color: #fff; }
+        .code-copy-btn.copied { background: #5a8a5a; border-color: #7ab87a; color: #fff; }
+        .preview-pane strong { font-weight: 600; color: #e0e0e0; }
+        .preview-pane em { font-style: italic; color: #d0c890; }
+        .preview-pane del { text-decoration: line-through; color: #888; }
+        .preview-pane a { color: #6cb6ff; text-decoration: none; }
+        .preview-pane a:hover { text-decoration: underline; }
+        .preview-pane ul, .preview-pane ol { margin: 3px 0; padding-left: 22px; }
+        .preview-pane li { margin: 2px 0; }
+        .preview-pane li::marker { color: #888; }
+        .preview-pane blockquote {
+            margin: 6px 0; padding: 4px 12px; border-left: 3px solid #777; color: #aaa;
+            background: rgba(255,255,255,0.03); border-radius: 0 3px 3px 0;
+        }
+        .preview-pane blockquote p { margin: 2px 0; }
+        .preview-pane hr { border: none; border-top: 1px solid #666; margin: 12px 0; }
+        .preview-pane img { max-width: 100%; border-radius: 4px; margin: 4px 0; }
+        .preview-pane table { border-collapse: collapse; margin: 6px 0; width: 100%; font-size: 13px; }
+        .preview-pane th, .preview-pane td { border: 1px solid #666; padding: 4px 8px; text-align: left; }
+        .preview-pane th { background: #3a3a3a; font-weight: 600; color: #ddd; }
+        .preview-pane tr:nth-child(even) { background: rgba(255,255,255,0.03); }
+        .preview-pane input[type="checkbox"] { margin-right: 4px; }
+        /* 标题折叠功能 — Sublime 风格 */
+        .preview-pane .md-heading {
+            display: block; cursor: pointer; user-select: none;
+            position: relative;
+        }
+        .preview-pane .md-heading:hover .md-fold-arrow { opacity: 1; }
+        .preview-pane .md-fold-arrow {
+            position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+            display: inline-block; width: 12px; height: 12px;
+            font-size: 8px; color: #aaa; opacity: 0;
+            transition: opacity 0.12s, transform 0.12s;
+            text-align: center; line-height: 12px;
+        }
+        .preview-pane .md-fold-arrow.collapsed {
+            transform: translateY(-50%) rotate(-90deg); opacity: 0.7;
+        }
+        .preview-pane .md-section.collapsed { display: none; }
+        .preview-pane .md-section { }
+
+        /* ===== 空状态 ===== */
+        .empty-state {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; color: #999; background: #4b4b4b;
+        }
+        .empty-state .big-icon { font-size: 64px; margin-bottom: 16px; }
+        .empty-state h2 { font-size: 22px; margin-bottom: 8px; color: #ccc; font-weight: 400; }
+        .empty-state p { font-size: 13px; color: #999; margin-bottom: 4px; }
+
+        /* 状态栏 */
+        .status-bar {
+            height: 22px; background: #6d6d6d; color: #e0e0e0;
+            display: flex; align-items: center; padding: 0 10px;
+            font-size: 12px; flex-shrink: 0;
+        }
+        .status-bar span { margin-right: 16px; }
+
+        /* 通知 */
+        .toast {
+            position: fixed; bottom: 30px; right: 30px; background: #555;
+            border: 1px solid #777; color: #e0e0e0; padding: 10px 18px;
+            border-radius: 6px; font-size: 13px; z-index: 10000;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            animation: fadeIn 0.2s ease;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        /* ===== 代码折叠 gutter ===== */
+        #view-editor .CodeMirror-foldgutter { width: 1.2em; }
+        #view-editor .CodeMirror-foldgutter-open, #view-editor .CodeMirror-foldgutter-folded {
+            cursor: pointer; color: #999; font-size: 11px;
+        }
+        #view-editor .CodeMirror-foldgutter-open:hover, #view-editor .CodeMirror-foldgutter-folded:hover { color: #ddd; }
+        #view-editor .CodeMirror-foldmarker {
+            background: #5a5a5a; color: #ccc; border: 1px solid #777; border-radius: 3px;
+            padding: 0 4px; margin: 0 2px; cursor: pointer; font-size: 11px;
+        }
+
+        /* ===== 分栏视图 ===== */
+        .editor-area.split-active .editor-pane { flex: 1; min-width: 0; border-right: 1px solid #555; }
+        .editor-area.split-active .editor-pane.split-right { border-right: 0; border-left: 1px solid #555; }
+        #view-editor .editor-area .CodeMirror { height: 100%; }
+
+        /* ===== Minimap ===== */
+        .minimap {
+            position: absolute; top: 0; right: 0; bottom: 0; width: 62px;
+            background: #3d3d3d; border-left: 1px solid #555; z-index: 12;
+            overflow: hidden; display: none;
+        }
+        .minimap canvas { width: 100%; height: 100%; display: block; }
+        .minimap.visible { display: block; }
+        .minimap-viewport {
+            position: absolute; left: 0; right: 0; background: rgba(255,255,255,0.12);
+            border: 1px solid rgba(255,255,255,0.25); pointer-events: none;
+        }
+        .editor-pane { padding-right: 0; }
+        .editor-pane.minimap-on { padding-right: 62px; }
+
+        /* ===== 亮色主题 ===== */
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai { background: #fafafa; color: #333; }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-gutters { background: #f0f0f0; border-right: 1px solid #e0e0e0; }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-linenumber { color: #999; }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-activeline-background { background: rgba(0,0,0,0.05); }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-selected { background: rgba(0,0,0,0.12) !important; }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-focused .CodeMirror-selected { background: rgba(26,115,232,0.2) !important; }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-foldgutter-open, #view-editor.light-theme .CodeMirror-foldgutter-folded { color: #aaa; }
+        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-foldmarker { background: #e8e8e8; color: #666; border-color: #ccc; }
+        #view-editor.light-theme .minimap { background: #f0f0f0; border-left-color: #e0e0e0; }
+
+        /* ===== 查找/跳转浮层面板（Goto Anything / 全局搜索共用） ===== */
+        .float-panel {
+            position: fixed; top: 56px; left: 50%; transform: translateX(-50%);
+            width: 520px; max-width: 90vw; background: #2d2d2d;
+            border: 1px solid #555; border-radius: 8px; z-index: 2000;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.45); overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+        .float-panel input[type="text"] {
+            width: 100%; background: #1e1e1e; color: #f8f8f2; border: 0; outline: none;
+            padding: 10px 14px; font-size: 14px; box-sizing: border-box;
+            border-bottom: 1px solid #444;
+        }
+        .float-panel .fp-list { max-height: 320px; overflow-y: auto; }
+        .float-panel .fp-list::-webkit-scrollbar { width: 6px; }
+        .float-panel .fp-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+        .fp-item {
+            display: flex; align-items: center; padding: 6px 12px; cursor: pointer;
+            font-size: 13px; color: #ccc; white-space: nowrap; overflow: hidden;
+        }
+        .fp-item .fp-icon { margin-right: 8px; font-size: 13px; flex-shrink: 0; }
+        .fp-item .fp-path { margin-left: auto; color: #777; font-size: 11px; padding-left: 12px; overflow: hidden; text-overflow: ellipsis; }
+        .fp-item:hover, .fp-item.active { background: #444; color: #fff; }
+        .fp-item .fp-line { color: #8ab4f8; font-size: 11px; margin-left: 8px; flex-shrink: 0; }
+        .fp-empty { padding: 14px; text-align: center; color: #777; font-size: 13px; }
+        .fp-hint { padding: 6px 12px; color: #777; font-size: 11px; border-top: 1px solid #333; }
+
+        /* ===== Goto Anything ===== */
+        #gotoPanel .fp-item.active { background: #3a4a6a; }
+
+        /* ===== 全局搜索结果行 ===== */
+        #searchAllPanel .fp-item { white-space: normal; align-items: flex-start; }
+        #searchAllPanel .fp-item .fp-snippet {
+            font-family: 'Menlo', 'Monaco', monospace; font-size: 12px; color: #bbb;
+            overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0;
+        }
+        #searchAllPanel .fp-item .fp-snippet mark { background: #7a7a50; color: #fff; border-radius: 2px; }
+
+        /* ===== 会话恢复 toast ===== */
+        #sessionToast {
+            position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%);
+            background: #555; color: #e0e0e0; padding: 8px 18px; border-radius: 6px;
+            font-size: 12px; z-index: 10000; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            display: flex; align-items: center; gap: 10px;
+        }
+        #sessionToast button {
+            background: #667eea; color: #fff; border: 0; border-radius: 4px;
+            padding: 3px 12px; cursor: pointer; font-size: 12px;
+        }
+        #sessionToast button:hover { background: #5a6fd6; }
