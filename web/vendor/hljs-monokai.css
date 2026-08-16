@@ -1,0 +1,17 @@
+/* Monokai Sublime theme for highlight.js (local, replaces CDN) */
+.preview-pane .hljs, .preview-pane pre code.hljs { color: #f8f8f2; background: transparent; }
+.preview-pane .hljs-comment, .preview-pane .hljs-quote { color: #75715e; font-style: italic; }
+.preview-pane .hljs-keyword, .preview-pane .hljs-selector-tag, .preview-pane .hljs-type { color: #f92672; }
+.preview-pane .hljs-string, .preview-pane .hljs-meta .hljs-string, .preview-pane .hljs-doctag { color: #e6db74; }
+.preview-pane .hljs-number, .preview-pane .hljs-literal, .preview-pane .hljs-symbol, .preview-pane .hljs-bullet, .preview-pane .hljs-link { color: #ae81ff; }
+.preview-pane .hljs-title, .preview-pane .hljs-name, .preview-pane .hljs-section, .preview-pane .hljs-selector-id { color: #66d9ef; }
+.preview-pane .hljs-title.function_, .preview-pane .hljs-function .hljs-title { color: #a6e22e; }
+.preview-pane .hljs-attr, .preview-pane .hljs-attribute, .preview-pane .hljs-variable, .preview-pane .hljs-template-variable { color: #a6e22e; }
+.preview-pane .hljs-built_in, .preview-pane .hljs-builtin-name { color: #66d9ef; }
+.preview-pane .hljs-params { color: #f8f8f2; }
+.preview-pane .hljs-meta { color: #75715e; }
+.preview-pane .hljs-tag { color: #f92672; }
+.preview-pane .hljs-deletion { color: #f92672; }
+.preview-pane .hljs-addition { color: #a6e22e; }
+.preview-pane .hljs-emphasis { font-style: italic; }
+.preview-pane .hljs-strong { font-weight: 700; }

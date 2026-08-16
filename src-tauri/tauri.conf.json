@@ -5,8 +5,8 @@
   "identifier": "com.slate.app",
   "build": {
     "frontendDist": "../web",
-    "beforeDevCommand": null,
-    "beforeBuildCommand": null
+    "beforeDevCommand": "bun run build:watch",
+    "beforeBuildCommand": "bun run build"
   },
   "app": {
     "withGlobalTauri": true,

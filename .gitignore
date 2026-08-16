@@ -4,6 +4,7 @@ node_modules/
 # Build output
 src-tauri/target/
 dist/
+web/vendor/*.bundle.js.map
 
 # macOS
 .DS_Store

@@ -27,3 +27,6 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
+encoding_rs = "0.8"
+walkdir = "2"
+regex = "1"

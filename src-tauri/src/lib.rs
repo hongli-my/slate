@@ -1,3 +1,4 @@
+mod fs_ops;
 mod otel;
 mod recents;
 
@@ -59,6 +60,10 @@ pub fn run() {
             recents::recents_list,
             recents::recents_add,
             recents::recents_clear,
+            fs_ops::save_file_atomic,
+            fs_ops::file_stat,
+            fs_ops::read_text_file_detect,
+            fs_ops::search_in_files,
         ])
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

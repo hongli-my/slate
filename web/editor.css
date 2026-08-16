@@ -94,24 +94,9 @@
         .editor-pane {
             flex: 1; overflow: hidden; position: relative; min-width: 0;
         }
-        .editor-pane .CodeMirror {
-            height: 100%; font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
-            font-size: 14px; line-height: 1.6;
-        }
-        /* 覆盖 Monokai 主题背景色，匹配 Sublime 风格 */
-        .editor-pane .CodeMirror.cm-s-monokai { background: #474747; }
-        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-gutters { background: #414141; border-right: 1px solid #555; }
-        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-activeline-background { background: rgba(255,255,255,0.15); }
-        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-selected { background: rgba(255,255,255,0.25) !important; }
-        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-focused .CodeMirror-selected { background: rgba(100,180,255,0.35) !important; }
-        /* 搜索对话框暗色适配 */
-        /* 搜索替换对话框 */
-        .CodeMirror-dialog { background: #2d2d2d !important; color: #f8f8f2 !important; border-bottom: 1px solid #444 !important; padding: 8px 12px !important; font-size: 13px; }
-        .CodeMirror-dialog input { background: #1e1e1e !important; color: #f8f8f2 !important; border: 1px solid #555 !important; border-radius: 4px; padding: 4px 8px; outline: none; font-size: 13px; min-width: 150px; }
-        .CodeMirror-dialog input:focus { border-color: #667eea !important; }
-        .CodeMirror-dialog button { background: #444 !important; color: #f8f8f2 !important; border: 1px solid #666 !important; border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; margin-left: 6px; }
-        .CodeMirror-dialog button:hover { background: #555 !important; border-color: #888 !important; }
-        .CodeMirror-dialog span { margin-right: 8px; }
+        /* CM6 editor fills the pane; chrome colors come from theme.ts (EditorView.theme) */
+        .editor-pane .cm-editor { height: 100%; }
+        .editor-pane .cm-scroller { font-family: 'Menlo', 'Monaco', 'Courier New', monospace; font-size: 14px; line-height: 1.6; }
 
         /* 自定义查找替换面板 */
         #searchReplacePanel {
@@ -194,13 +179,7 @@
             font-size: 12px;
         }
 
-        /* 搜索高亮 */
-        .cm-search-highlight { background: rgba(255, 200, 0, 0.4); }
-        /* 选中变量全文标识 */
-        .cm-occurrence-highlight { background: rgba(255, 255, 255, 0.12); border-bottom: 1px solid rgba(255,255,255,0.3); }
-        #view-editor.light-theme .cm-occurrence-highlight { background: rgba(0, 0, 0, 0.08); border-bottom: 1px solid rgba(0,0,0,0.2); }
-        .CodeMirror-selectedtext { background: rgba(100, 180, 255, 0.35); }
-        .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-linenumber { color: #888; }
+        /* 搜索/出现高亮颜色由 theme.ts 提供（.cm-searchMatch / .cm-occurrence） */
         /* SQL 格式化按钮 */
         .editor-format-btn {
             display: none;
@@ -330,21 +309,7 @@
         }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
-        /* ===== 代码折叠 gutter ===== */
-        #view-editor .CodeMirror-foldgutter { width: 1.2em; }
-        #view-editor .CodeMirror-foldgutter-open, #view-editor .CodeMirror-foldgutter-folded {
-            cursor: pointer; color: #999; font-size: 11px;
-        }
-        #view-editor .CodeMirror-foldgutter-open:hover, #view-editor .CodeMirror-foldgutter-folded:hover { color: #ddd; }
-        #view-editor .CodeMirror-foldmarker {
-            background: #5a5a5a; color: #ccc; border: 1px solid #777; border-radius: 3px;
-            padding: 0 4px; margin: 0 2px; cursor: pointer; font-size: 11px;
-        }
-
-        /* ===== 分栏视图 ===== */
-        .editor-area.split-active .editor-pane { flex: 1; min-width: 0; border-right: 1px solid #555; }
-        .editor-area.split-active .editor-pane.split-right { border-right: 0; border-left: 1px solid #555; }
-        #view-editor .editor-area .CodeMirror { height: 100%; }
+        /* 折叠 gutter 样式由 theme.ts 提供（.cm-foldGutter / .cm-foldPlaceholder） */
 
         /* ===== Minimap ===== */
         .minimap {
@@ -361,15 +326,13 @@
         .editor-pane { padding-right: 0; }
         .editor-pane.minimap-on { padding-right: 62px; }
 
-        /* ===== 亮色主题 ===== */
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai { background: #fafafa; color: #333; }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-gutters { background: #f0f0f0; border-right: 1px solid #e0e0e0; }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-linenumber { color: #999; }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-activeline-background { background: rgba(0,0,0,0.05); }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-selected { background: rgba(0,0,0,0.12) !important; }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-focused .CodeMirror-selected { background: rgba(26,115,232,0.2) !important; }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-foldgutter-open, #view-editor.light-theme .CodeMirror-foldgutter-folded { color: #aaa; }
-        #view-editor.light-theme .editor-pane .CodeMirror.cm-s-monokai .CodeMirror-foldmarker { background: #e8e8e8; color: #666; border-color: #ccc; }
+        /* ===== 分栏视图 ===== */
+        .editor-area.split-active .editor-pane { flex: 1; min-width: 0; border-right: 1px solid #555; }
+        .editor-area.split-active .editor-pane.split-right { border-right: 0; border-left: 1px solid #555; }
+
+        /* ===== 亮色主题（编辑器配色由 theme.ts lightThemeExt 提供） ===== */
+        #view-editor.light-theme { background: #fafafa; color: #333; }
+        #view-editor.light-theme .main { background: #fafafa; }
         #view-editor.light-theme .minimap { background: #f0f0f0; border-left-color: #e0e0e0; }
 
         /* ===== 查找/跳转浮层面板（Goto Anything / 全局搜索共用） ===== */
