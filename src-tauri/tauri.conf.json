@@ -41,6 +41,12 @@
     ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    },
+    "externalBin": ["binaries/pi-bridge"],
+    "macOS": {
+      "entitlements": "./Entitlements.plist",
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "10.13"
     }
   }
 }

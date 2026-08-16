@@ -33,7 +33,8 @@ openresty 项目下原有两个编辑器实现和一组本地工具服务：
 | P0 | 编辑器（原生文件 API） | ✅ |
 | P0 | OTel 观测（Rust 直读 SQLite） | ✅ |
 | P1 | OneTab（浏览器标签管理） | 占位 |
-| P1 | AI 对话 | 占位 |
+| P1 | AI 对话（内嵌 pi-bridge sidecar） | ✅ |
+| P1 | 设置页（对话引擎管理） | ✅ |
 | P2 | CDN 资源本地化（离线） | 待做 |
 | P2 | 性能优化（OTel 加载慢） | 进行中 |
 
@@ -42,31 +43,43 @@ openresty 项目下原有两个编辑器实现和一组本地工具服务：
 ### 技术栈
 
 - **Tauri v2.11**（Rust 壳 + WKWebView）
-- **前端**：纯 HTML/CSS/JS，零框架；CodeMirror 5（CDN）
+- **前端**：纯 HTML/CSS/JS，零框架；编辑器 CodeMirror 6（esbuild 打包）
 - **后端**：Rust + rusqlite（bundled SQLite），Tauri command IPC
-- **插件**：tauri-plugin-global-shortcut / tauri-plugin-dialog / tauri-plugin-fs / tauri-plugin-log
+- **插件**：tauri-plugin-global-shortcut / tauri-plugin-dialog / tauri-plugin-fs / tauri-plugin-log / tauri-plugin-shell（sidecar 进程管理）
+- **对话引擎**：[piweb-bridge](../piweb-bridge) 编译为单二进制，作为 Tauri sidecar 随 app 打包；app 启动自动拉起，设置页可管理
 
 ### 目录结构
 
 ```
 slate/
 ├─ web/                       # 前端静态资源（frontendDist）
-│  ├─ index.html             # 侧边栏壳：44px 窄边栏 + iframe 视图切换
-│  ├─ editor.html            # 代码编辑器（docs 风格，Tauri fs API）
+│  ├─ index.html             # 侧边栏壳：44px 窄边栏 + iframe 视图切换 + 设置页
+│  ├─ settings.js            # 设置页逻辑（对话引擎管理：start/stop/restart + 日志）
 │  ├─ dashboard.css
-│  └─ otel/                  # OTel 前端（从 openresty 移植）
-│     ├─ index.html          # session 列表页
-│     ├─ session.html        # session 详情页（timeline 甘特图）
-│     └─ assets/{app,session,utils}.js + style.css
+│  ├─ src/                   # 编辑器源码（CodeMirror 6 + esbuild 打包）
+│  ├─ vendor/                # editor.bundle.js（构建产物）
+│  ├─ otel/                  # OTel 前端（从 openresty 移植）
+│  │  ├─ index.html          # session 列表页
+│  │  ├─ session.html        # session 详情页（timeline 甘特图）
+│  │  └─ assets/{app,session,utils}.js + style.css
+│  └─ chat/                  # 对话前端（Hermes/Pi WebUI，纯前端薄客户端）
+│     ├─ index.html          # 装载 13 个 JS 模块
+│     └─ js/                 # state/api/session/chat/gateway/router/admin ...
 └─ src-tauri/
-   ├─ Cargo.toml             # tauri 2 + rusqlite(bundled) + 4 个 plugin
-   ├─ tauri.conf.json        # 窗口/CSP/图标配置
-   ├─ capabilities/default.json
+   ├─ Cargo.toml             # tauri 2 + rusqlite(bundled) + 5 个 plugin + reqwest + tokio
+   ├─ tauri.conf.json        # 窗口/CSP/图标/externalBin/macOS entitlements
+   ├─ Entitlements.plist     # macOS JIT 权限（bun JSC 在 hardened runtime 下需要）
+   ├─ capabilities/default.json  # core/dialog/fs + shell sidecar 权限
+   ├─ binaries/              # sidecar 二进制（构建产物，gitignore）
+   │  └─ pi-bridge-<triple>  #   由 piweb-bridge 编译拷入
    ├─ icons/                 # 1024 源图生成的全套图标
    └─ src/
       ├─ main.rs
-      ├─ lib.rs              # 菜单 + 全局热键 + invoke_handler 注册
-      └─ otel.rs             # OTel 数据层（4 个 Tauri command）
+      ├─ lib.rs              # 菜单 + 全局热键 + invoke_handler + setup 拉起 sidecar
+      ├─ pi_bridge.rs        # pi-bridge sidecar 生命周期管理（spawn/健康检查/重启/4 command）
+      ├─ otel.rs             # OTel 数据层（4 个 Tauri command）
+      ├─ fs_ops.rs           # 文件操作（4 个 command）
+      └─ recents.rs          # 最近文件（3 个 command）
 ```
 
 ### 架构
@@ -77,31 +90,36 @@ slate/
 │  ┌─────────┬─────────────────────┐  │
 │  │ 侧边栏  │    iframe 视图区     │  │
 │  │ 44px    │                     │  │
-│  │ 📄编辑器 │  editor.html        │  │
+│  │ 📄编辑器 │  editor (CM6)      │  │
 │  │ 📑OneTab │  (Tauri fs API)    │  │
 │  │ 🔍OTel  │  otel/index.html   │  │
-│  │ 💬对话  │  (invoke → Rust)   │  │
-│  │ ⚙️设置  │                     │  │
+│  │ 💬对话  │  chat/index.html   │  │
+│  │ ⚙️设置  │  settings.js       │  │
 │  └─────────┴─────────────────────┘  │
 │  顶部 32px drag-region（红绿灯让位） │
-└─────────────────────────────────────┘
-         │ Tauri IPC (invoke)
-         ▼
-┌─────────────────────────────────────┐
-│            Rust 后端                │
-│  lib.rs: 菜单 / 全局热键 / 路由     │
-│  otel.rs: 4 个 command              │
-│    ├─ otel_stats()    全局统计      │
-│    ├─ otel_sessions()  session 列表 │
-│    ├─ otel_session()   单 session   │
-│    └─ otel_spans()    BFS 跨 trace  │
-│         │ rusqlite (只读)           │
-│         ▼                           │
-│    ~/openresty/.../otel.db (917MB)  │
-│    ~/.local/share/opencode/*.db     │
-│      (跨库查 session title)         │
-└─────────────────────────────────────┘
+└──────────────┬──────────────────────┘
+       Tauri IPC │        HTTP+SSE (8643)
+  invoke ────────┼──────────────────────────┐
+                 ▼                          ▼
+┌────────────────────────────┐  ┌─────────────────────────┐
+│        Rust 后端           │  │  pi-bridge sidecar      │
+│  lib.rs 菜单/热键/路由     │  │  (bun-compile 单二进制) │
+│  pi_bridge.rs sidecar 管理  │──│  import pi SDK 进程内   │
+│   ├─ start_bridge  spawn  │  │  驱动 AgentSession      │
+│   ├─ stop_bridge   kill   │  │  Bun.serve :8643        │
+│   ├─ restart_bridge        │  │  ~40 REST 端点 + SSE    │
+│   └─ bridge_status         │  └─────────────────────────┘
+│  otel.rs 4 command         │        │ 进程内调用
+│  fs_ops/recents 7 command  │        ▼
+│         │ rusqlite (只读)  │  ┌─────────────────────────┐
+│         ▼                  │  │  @earendil-works/       │
+│    otel.db / opencode.db   │  │  pi-coding-agent        │
+└────────────────────────────┘  └─────────────────────────┘
 ```
+
+**对话引擎 sidecar 集成**：piweb-bridge 用 `bun build --compile` 编译为单二进制（~71MB，含 Bun runtime + pi SDK），作为 Tauri externalBin sidecar 随 app 打包。app `setup` 钩子异步 spawn、`RunEvent::Exit` 时 kill；`pi_bridge.rs` 负责健康检查（轮询 /health）、崩溃自动重启（3s 退避）、端口/env 注入。设置页通过 invoke 调 start/stop/restart/status 四个 command，并订阅 `pi-bridge://log|ready|error|terminated` 事件实时显示状态与日志。对话前端（chat/）零改动，仍走 HTTP+SSE 到 127.0.0.1:8643。
+
+**macOS 签名**：bun 用 JavaScriptCore 需 JIT，hardened runtime 下须配 `Entitlements.plist`（allow-jit / allow-unsigned-executable-memory / disable-library-validation / allow-dyld-environment-variables），否则进程被内核直接 kill。
 
 ### 关键实现点
 
@@ -120,10 +138,32 @@ slate/
 
 ## 构建
 
+### 前置：编译 pi-bridge sidecar
+
+piweb-bridge 需先编译为单二进制并拷入 sidecar 目录（文件名按 target triple 命名）：
+
 ```bash
-cd ~/ai-home/slate
-bunx tauri dev      # 开发
-bunx tauri build    # 产物在 src-tauri/target/release/bundle/macos/Slate.app
+cd ~/ai-home/piweb-bridge
+bun install
+bun build --compile --minify --sourcemap --target=bun-darwin-arm64 ./pi-bridge.ts --outfile pi-bridge
+mkdir -p ~/ai-home/slate/src-tauri/binaries
+cp pi-bridge ~/ai-home/slate/src-tauri/binaries/pi-bridge-aarch64-apple-darwin
 ```
 
-环境：Rust stable / Tauri CLI 2.11 / Node 22 / Xcode CLT。
+> ⚠️ `--bytecode` 与 top-level await 不兼容（pi-bridge.ts:38），不要加。其他平台替换 `--target` 与文件名后缀（如 `bun-darwin-x64` → `pi-bridge-x86_64-apple-darwin`）。
+
+### 构建 app
+
+```bash
+cd ~/ai-home/slate
+cargo tauri dev      # 开发（热重载）
+cargo tauri build    # 产物在 src-tauri/target/release/bundle/macos/Slate.app
+```
+
+环境：Rust stable / Tauri CLI 2.11 / Bun 1.4 / Xcode CLT。
+
+### macOS 签名与分发
+
+- **本地开发**：ad-hoc 签名（`signingIdentity: "-"`）+ `Entitlements.plist`（JIT 权限），本机可直接跑。
+- **分发**：需 Apple Developer ID 签名 + 公证 + staple。CI 走 [tauri-action](https://github.com/tauri-apps/tauri-action)，设 `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` 环境变量自动完成。
+- **已知坑**：[tauri#11992](https://github.com/tauri-apps/tauri/issues/11992) sidecar 签名顺序偶致公证失败，解法是 `beforeBuildCommand` 阶段预先 `codesign` 手动签名 sidecar。

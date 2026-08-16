@@ -21,6 +21,16 @@
     {
       "identifier": "fs:scope",
       "allow": [{ "path": "**" }]
-    }
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [{ "name": "binaries/pi-bridge", "sidecar": true, "args": true }]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/pi-bridge", "sidecar": true, "args": true }]
+    },
+    "shell:allow-kill",
+    "shell:allow-stdin-write"
   ]
 }

@@ -1,5 +1,6 @@
 mod fs_ops;
 mod otel;
+mod pi_bridge;
 mod recents;
 
 use tauri::{
@@ -52,6 +53,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .manage(pi_bridge::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
             otel::otel_stats,
             otel::otel_sessions,
@@ -64,6 +67,10 @@ pub fn run() {
             fs_ops::file_stat,
             fs_ops::read_text_file_detect,
             fs_ops::search_in_files,
+            pi_bridge::start_bridge,
+            pi_bridge::stop_bridge,
+            pi_bridge::restart_bridge,
+            pi_bridge::bridge_status,
         ])
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -108,8 +115,22 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // app 启动自动拉起 pi-bridge sidecar（异步，不阻塞 setup）
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = pi_bridge::spawn_sidecar(&handle) {
+                    log::error!("failed to start pi-bridge on startup: {e}");
+                }
+            });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 进程退出时清理 sidecar（注意是 Exit，不是 ExitRequested）
+            if let tauri::RunEvent::Exit = event {
+                let state = app_handle.state::<pi_bridge::SidecarState>();
+                let _ = pi_bridge::stop_internal(&state);
+            }
+        });
 }

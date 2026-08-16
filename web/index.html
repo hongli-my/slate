@@ -90,6 +90,86 @@
             font-size: 10px; font-weight: 600; color: var(--accent); background: var(--accent-bg);
             padding: 3px 10px; border-radius: 10px; letter-spacing: .5px;
         }
+
+        /* ===== 设置页 ===== */
+        .settings-page {
+            height: 100%; overflow-y: auto; background: var(--bg);
+            padding: 32px 40px;
+        }
+        .settings-header { margin-bottom: 24px; }
+        .settings-header h1 { font-size: 20px; font-weight: 700; color: var(--text-1); }
+        .settings-sub { font-size: 13px; color: var(--text-3); margin-top: 4px; }
+        .settings-list { max-width: 720px; display: flex; flex-direction: column; gap: 16px; }
+
+        .settings-card {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; padding: 18px 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .settings-card-coming { opacity: 0.55; }
+        .settings-card-head {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; margin-bottom: 14px;
+        }
+        .settings-card-title { display: flex; align-items: center; gap: 12px; }
+        .settings-card-icon {
+            width: 36px; height: 36px; border-radius: 8px; background: var(--accent-bg);
+            color: var(--accent); font-size: 17px;
+            display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+        }
+        .settings-card-name { font-size: 15px; font-weight: 600; color: var(--text-1); }
+        .settings-card-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+        .settings-card-actions { display: flex; gap: 8px; flex-shrink: 0; }
+        .settings-hint { font-size: 11px; color: var(--text-3); margin-top: 10px; line-height: 1.5; }
+
+        /* 引擎状态行 */
+        .engine-status-bar {
+            display: flex; align-items: center; gap: 8px;
+            padding: 12px 14px; background: var(--surface-2);
+            border-radius: 8px;
+        }
+        .engine-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--text-3); flex-shrink: 0;
+        }
+        .engine-dot.online { background: #22c55e; }
+        .engine-dot.stopped { background: var(--text-3); }
+        .engine-dot.error { background: #ef4444; }
+        .engine-dot.starting {
+            background: #f59e0b; animation: engine-pulse 1.2s ease-in-out infinite;
+        }
+        @keyframes engine-pulse {
+            0%, 100% { opacity: 0.4; transform: scale(0.8); }
+            50% { opacity: 1; transform: scale(1.25); }
+        }
+        .engine-status-label { font-size: 13px; font-weight: 600; color: var(--text-1); }
+        .engine-meta { font-size: 12px; color: var(--text-2); margin-left: auto; }
+
+        /* 引擎日志面板 */
+        .engine-log {
+            font-family: ui-monospace, "SF Mono", Menlo, monospace;
+            font-size: 12px; line-height: 1.65;
+            padding: 14px 16px; background: #1e1e2e; color: #cdd6f4;
+            min-height: 280px; max-height: 440px; overflow-y: auto;
+            white-space: pre-wrap; word-break: break-word;
+            border-radius: 8px; margin: 0;
+        }
+        .engine-log::-webkit-scrollbar { width: 6px; }
+        .engine-log::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+
+        /* 设置页按钮 */
+        .s-btn {
+            padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
+            border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+            cursor: pointer; transition: all .12s; white-space: nowrap;
+            min-width: 64px; height: 30px;
+        }
+        .s-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text-1); border-color: var(--text-3); }
+        .s-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .s-btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+        .s-btn-primary:hover:not(:disabled) { opacity: 0.88; background: var(--accent); color: #fff; }
+        .s-btn-ghost { border-color: transparent; color: var(--text-3); }
+        .s-btn-ghost:hover:not(:disabled) { background: var(--surface-2); }
     </style>
     <!-- ===== Editor 依赖（本地 vendored bundle，离线可用） ===== -->
     <link rel="stylesheet" href="vendor/hljs-monokai.css">
@@ -195,11 +275,7 @@
             <iframe src="chat/index.html" loading="lazy"></iframe>
         </div>
         <div class="view" id="view-settings">
-            <div class="placeholder">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                <div class="title">设置</div>
-                <div class="desc">Slate 应用设置。</div>
-            </div>
+            <!-- settings.js 动态填充 -->
         </div>
     </div>
 </div>
@@ -227,9 +303,17 @@
 
     function switchView(name) {
         if (name === currentView) return;
+        // 离开设置页：清理 listener & 轮询
+        if (currentView === 'settings' && window.SlateSettings) {
+            window.SlateSettings.deactivate();
+        }
         currentView = name;
         navBtns.forEach(b => b.classList.toggle('active', b.dataset.view === name));
         views.forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+        // 进入设置页：激活
+        if (name === 'settings' && window.SlateSettings) {
+            window.SlateSettings.activate();
+        }
     }
 
     navBtns.forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
@@ -276,6 +360,8 @@
         });
     }
 </script>
+    <!-- ===== 设置页脚本（非 module，用 window.__TAURI__ 全局） ===== -->
+    <script src="settings.js"></script>
     <!-- ===== Editor 脚本（CM6 本地 bundle，ESM） ===== -->
     <script type="module" src="vendor/editor.bundle.js"></script>
 </body>
