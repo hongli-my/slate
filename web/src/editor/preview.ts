@@ -129,10 +129,10 @@ function renderMarkdownPreview(): void {
       const lang = langClass ? langClass.slice("language-".length) : "";
       try {
         if (lang && hljs.getLanguage(lang)) {
-          codeEl.textContent = hljs.highlight(codeEl.textContent || "", { language: lang }).value;
+          codeEl.innerHTML = hljs.highlight(codeEl.textContent || "", { language: lang }).value;
         } else {
           const res = hljs.highlightAuto(codeEl.textContent || "");
-          codeEl.textContent = res.value;
+          codeEl.innerHTML = res.value;
         }
         codeEl.classList.add("hljs");
       } catch {

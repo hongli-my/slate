@@ -643,7 +643,9 @@ window.Hermes = window.Hermes || {};
         if (stFlags.aborted) stepClass += ' _aborted';
         html += '<div class="' + stepClass + '">';
         html += '<div class="step-header"><span class="step-num step-num-final">✦</span><span class="step-label">回复中</span></div>';
-        html += '<div class="step-answer-wrap"><div class="step-answer collapsible">' + window.Hermes.renderStreamingMarkdown(assistantContent, 'sf') + '</div></div>';
+        // P#4: 拆分 md-stable/md-active 容器，让流式更新只 patch 活跃块 DOM
+        var _sfSplit = window.Hermes.renderStreamingMarkdownSplit(assistantContent, 'sf');
+        html += '<div class="step-answer-wrap"><div class="step-answer collapsible"><div class="md-stable">' + _sfSplit.stableHtml + '</div><div class="md-active">' + _sfSplit.activeHtml + '</div></div></div>';
         if (stFlags.usage && (stFlags.usage.total_tokens || stFlags.usage.prompt_tokens)) {
           var u = stFlags.usage;
           var tokInfo = '';

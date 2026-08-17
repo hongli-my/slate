@@ -556,7 +556,7 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 16px 0;
-  scroll-behavior: smooth;
+  /* 流式钉底每帧设 scrollTop，smooth 动画会冲突卡顿 —— 改由 JS 单次触发平滑回底 */
 }
 
 /* —— 聊天输入区 —— */

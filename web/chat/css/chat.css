@@ -2,13 +2,26 @@
   flex: 1;
   overflow-y: auto;
   padding: 16px 0;
-  scroll-behavior: smooth;
+  /* 不设 scroll-behavior:smooth —— 流式钉底每帧设 scrollTop 会与 smooth 动画
+     冲突导致卡顿/抖动。需要平滑回底时由 JS 用 scrollTo({behavior:'smooth'}) 单次触发。 */
 }
 
 .turn {
   margin: 0 0 24px 0;
   padding: 0 20px;
+  /* 离屏 turn 跳过布局/绘制，长对话滚动 paint 成本恒定。
+     流式中的 turn 用 [data-streaming] 排除，避免内容不渲染。
+     contain:layout style 隔离内部布局，进入视口时 layout 计算更局部化。
+     contain-intrinsic-size 500px 更接近 assistant turn 均值，减小首次进入视口的 scrollHeight 跳变。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 500px;
+  contain: layout style;
 }
+.turn[data-streaming="true"] {
+  content-visibility: visible;
+}
+/* P#4: 稳定段容器隔离布局，流式只 patch .md-active 时不影响 stable 子树 */
+.turn .md-stable { contain: layout style; }
 
 .turn-user {
   display: flex;
@@ -888,7 +901,6 @@
   border-top: 1px solid var(--border-weak);
   max-height: 180px;
   overflow-y: auto;
-  scroll-behavior: smooth;
   -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 24px), transparent 100%);
           mask-image: linear-gradient(180deg, #000 calc(100% - 24px), transparent 100%);
 }
@@ -1307,7 +1319,6 @@
   border: 1px solid var(--thinking-border);
   max-height: 200px;
   overflow-y: auto;
-  scroll-behavior: smooth;
   -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 20px), transparent 100%);
           mask-image: linear-gradient(180deg, #000 calc(100% - 20px), transparent 100%);
 }

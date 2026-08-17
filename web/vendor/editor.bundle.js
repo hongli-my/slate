@@ -23086,9 +23086,9 @@ var init_theme = __esm({
         ".cm-activeLineGutter": { backgroundColor: "rgba(255,255,255,0.07)" },
         "&.cm-focused": { outline: "none" },
         ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-          backgroundColor: "rgba(100,180,255,0.35)"
+          backgroundColor: "rgba(255,200,120,0.25)"
         },
-        "& ::selection": { backgroundColor: "rgba(100,180,255,0.35)" },
+        "& ::selection": { backgroundColor: "rgba(255,200,120,0.25)" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#f8f8f0" },
         ".cm-foldGutter .cm-gutterElement": {
           cursor: "pointer",
@@ -23176,9 +23176,9 @@ var init_theme = __esm({
         ".cm-activeLineGutter": { backgroundColor: "rgba(0,0,0,0.05)" },
         "&.cm-focused": { outline: "none" },
         ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-          backgroundColor: "rgba(26,115,232,0.2)"
+          backgroundColor: "rgba(217,160,50,0.28)"
         },
-        "& ::selection": { backgroundColor: "rgba(26,115,232,0.2)" },
+        "& ::selection": { backgroundColor: "rgba(217,160,50,0.28)" },
         ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#1a1a1a" },
         ".cm-foldGutter .cm-gutterElement": { cursor: "pointer", color: "#aaa" },
         ".cm-foldPlaceholder": {
@@ -48914,10 +48914,10 @@ function renderMarkdownPreview() {
       const lang = langClass ? langClass.slice("language-".length) : "";
       try {
         if (lang && core_default.getLanguage(lang)) {
-          codeEl.textContent = core_default.highlight(codeEl.textContent || "", { language: lang }).value;
+          codeEl.innerHTML = core_default.highlight(codeEl.textContent || "", { language: lang }).value;
         } else {
           const res = core_default.highlightAuto(codeEl.textContent || "");
-          codeEl.textContent = res.value;
+          codeEl.innerHTML = res.value;
         }
         codeEl.classList.add("hljs");
       } catch {

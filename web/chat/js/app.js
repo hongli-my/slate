@@ -85,7 +85,7 @@ window.Hermes = window.Hermes || {};
     if (dom.chatMessages) {
       dom.chatMessages.addEventListener('scroll', function() {
         if (H._updateScrollBtn) H._updateScrollBtn();
-      });
+      }, { passive: true });
     }
 
     // E#15: 编辑重发 — 点击用户消息的编辑按钮

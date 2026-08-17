@@ -229,20 +229,25 @@ window.Hermes = window.Hermes || {};
   // 与最终 renderMarkdown 格式一致（标题/列表/表格/链接/代码块结构等）
   // 仅代码块无语法高亮颜色，finalizeStreamingTurn 时由 renderMarkdown 补上
   // cacheKey 可选：传入则启用稳定段缓存（'sf'/'tm'），不传则每次全量解析（兼容）
-  function renderStreamingMarkdown(text, cacheKey) {
-    if (!text) return '';
+  //
+  // P#4: 核心 split 实现 —— 返回 { stableHtml, activeHtml, stableChanged, fullHtml }，
+  // 让调用方可以只 patch 末尾活跃块 DOM（而非整段 innerHTML 重建）。
+  // stableChanged=true 表示稳定前缀增长，需重建 stable 容器；false 则只需更新 active。
+  function renderStreamingMarkdownSplit(text, cacheKey) {
+    if (!text) return { stableHtml: '', activeHtml: '', stableChanged: false, fullHtml: '' };
 
-    // 无 cacheKey → 退化为每次全量解析（兼容旧调用）
+    // 无 cacheKey → 退化为每次全量解析（兼容旧调用），全部内容作为 active
     if (!cacheKey) {
       _streamingMode = true;
       try {
         var html0 = marked.parse(text);
         if (typeof DOMPurify !== 'undefined') {
-          return DOMPurify.sanitize(html0, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
+          html0 = DOMPurify.sanitize(html0, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
         }
-        return html0;
+        return { stableHtml: '', activeHtml: html0, stableChanged: true, fullHtml: html0 };
       } catch(e) {
-        return '<p>' + esc(text) + '</p>';
+        var f = '<p>' + esc(text) + '</p>';
+        return { stableHtml: '', activeHtml: f, stableChanged: true, fullHtml: f };
       } finally {
         _streamingMode = false;
       }
@@ -250,10 +255,13 @@ window.Hermes = window.Hermes || {};
 
     // 带 cacheKey → 稳定段缓存
     var c = _mdStreamCache[cacheKey];
-    if (c && c.text === text) return c.fullHtml;  // 完全命中
+    if (c && c.text === text) {
+      // 完全命中：stable 和 active 都没变（text 完全相同）
+      return { stableHtml: c.stableHtml || '', activeHtml: c.activeHtml || '', stableChanged: false, fullHtml: c.fullHtml || '' };
+    }
 
     var blocks = splitMdBlocks(text);
-    if (blocks.length === 0) return '';
+    if (blocks.length === 0) return { stableHtml: '', activeHtml: '', stableChanged: false, fullHtml: '' };
 
     var stableBlocks, activeBlock;
     if (blocks.length === 1) {
@@ -265,6 +273,7 @@ window.Hermes = window.Hermes || {};
     }
     var stableText = stableBlocks.join('\n\n');
 
+    var stableChanged = false;
     // 稳定前缀变化（增长一个块）时重新解析并缓存（含 sanitize）
     if (!c || c.stableText !== stableText) {
       _streamingMode = true;
@@ -277,6 +286,7 @@ window.Hermes = window.Hermes || {};
       }
       c = { stableText: stableText, stableHtml: sh };
       _mdStreamCache[cacheKey] = c;
+      stableChanged = true;
     }
 
     // 活跃块每次重新解析（体积小，开销低）
@@ -292,7 +302,13 @@ window.Hermes = window.Hermes || {};
     var full = (c.stableHtml || '') + activeHtml;
     c.text = text;
     c.fullHtml = full;
-    return full;
+    c.activeHtml = activeHtml;  // 缓存活跃块 HTML，供完全命中时复用
+    return { stableHtml: c.stableHtml || '', activeHtml: activeHtml, stableChanged: stableChanged, fullHtml: full };
+  }
+
+  // 兼容旧调用：返回完整 HTML 字符串（= split 的 fullHtml）
+  function renderStreamingMarkdown(text, cacheKey) {
+    return renderStreamingMarkdownSplit(text, cacheKey).fullHtml;
   }
 
   // 清除流式缓存（新对话时调用，防止跨 turn 串内容）
@@ -354,6 +370,7 @@ window.Hermes = window.Hermes || {};
   window.Hermes.renderMarkdown = renderMarkdown;
   window.Hermes.renderStreamingText = renderStreamingText;
   window.Hermes.renderStreamingMarkdown = renderStreamingMarkdown;
+  window.Hermes.renderStreamingMarkdownSplit = renderStreamingMarkdownSplit;
   window.Hermes.clearStreamingMdCache = clearStreamingMdCache;
   window.Hermes.renderAnswerBlock = renderAnswerBlock;
   window.Hermes.scheduleIdleHighlight = scheduleIdleHighlight;

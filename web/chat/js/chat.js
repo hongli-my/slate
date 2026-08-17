@@ -81,7 +81,7 @@ window.Hermes = window.Hermes || {};
   // ---- 统一渲染 ----
   // 每个会话独立的 render debounce timer，避免跨会话切换时误触发渲染
   let _renderTimers = {};
-  const RENDER_DEBOUNCE_MS = 80;
+  const RENDER_DEBOUNCE_MS = 50;
 
   // ---- 流式实时计时器 ----
   // 流式中有 running 的工具步骤时，每秒触发一次渲染让秒数跳动。
@@ -196,7 +196,8 @@ window.Hermes = window.Hermes || {};
     _scrollBtn.style.display = 'none';
     _scrollBtn.addEventListener('click', function() {
       var el = window.Hermes.dom.chatMessages;
-      if (el) el.scrollTop = el.scrollHeight;
+      // 回底按钮：单次触发平滑滚动（css 已移除全局 smooth，这里显式指定）
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       _scrollBtn.style.display = 'none';
     });
     var chatView = document.getElementById('chat-view') || document.querySelector('.chat-main');
@@ -209,15 +210,33 @@ window.Hermes = window.Hermes || {};
     return _scrollBtn;
   }
 
+  // rAF 去重：scroll 事件高频触发 + 流式每帧调用，合并到一帧执行避免 forced reflow 风暴
+  var _scrollBtnRaf = 0;
   function _updateScrollBtn() {
-    var el = window.Hermes.dom.chatMessages;
-    if (!el) return;
-    var btn = _getScrollBtn();
-    if (isNearBottom(el)) {
-      btn.style.display = 'none';
-    } else {
-      btn.style.display = 'flex';
-    }
+    if (_scrollBtnRaf) return;
+    _scrollBtnRaf = requestAnimationFrame(function() {
+      _scrollBtnRaf = 0;
+      var el = window.Hermes.dom.chatMessages;
+      if (!el) return;
+      var btn = _getScrollBtn();
+      if (isNearBottom(el)) {
+        btn.style.display = 'none';
+      } else {
+        btn.style.display = 'flex';
+      }
+    });
+  }
+
+  // P#4: 钉底去 FSL —— innerHTML 写入后立即读 scrollHeight 会触发 forced synchronous layout。
+  // 用 rAF 把 scrollTop 赋值延迟到下一帧，让浏览器批量处理布局，消除每帧一次的强制回流。
+  var _pinRaf = 0;
+  function _pinToBottom() {
+    if (_pinRaf) return;
+    _pinRaf = requestAnimationFrame(function() {
+      _pinRaf = 0;
+      var el = window.Hermes.dom.chatMessages;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
   }
 
   /**
@@ -383,7 +402,17 @@ window.Hermes = window.Hermes || {};
             // ---- 轻量路径：结构未变，只更新正文 body + 思考 body ----
             var _finalBody = stepsEl.querySelector('.step-final .step-answer');
             if (_finalBody && streamingMsg.content != null) {
-              _finalBody.innerHTML = window.Hermes.renderStreamingMarkdown(streamingMsg.content, 'sf');
+              // P#4: 只 patch 活跃块 DOM，稳定段保留不重建（长回复从 O(n) 降到 O(活跃块)）
+              var _sfSplit = window.Hermes.renderStreamingMarkdownSplit(streamingMsg.content, 'sf');
+              var _stableEl = _finalBody.querySelector('.md-stable');
+              var _activeEl = _finalBody.querySelector('.md-active');
+              if (_activeEl) {
+                if (_sfSplit.stableChanged && _stableEl) _stableEl.innerHTML = _sfSplit.stableHtml;
+                _activeEl.innerHTML = _sfSplit.activeHtml;
+              } else {
+                // 兼容旧 DOM（未拆分容器，如 finalize 后残留）
+                _finalBody.innerHTML = _sfSplit.fullHtml;
+              }
             }
             var _tmBody = streamingTurnEl.querySelector('.tm-active .tm-body');
             if (_tmBody && streamingMsg.reasoning) {
@@ -392,7 +421,7 @@ window.Hermes = window.Hermes || {};
               _tmBody.innerHTML = window.Hermes.renderStreamingMarkdown(streamingMsg.reasoning.trim(), 'tm');
               _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
             }
-            if (atBottom) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+            if (atBottom) _pinToBottom();
             _updateScrollBtn();
             return;
           }
@@ -464,7 +493,7 @@ window.Hermes = window.Hermes || {};
             tmNewBody.scrollTop = tmStick ? tmNewBody.scrollHeight : Math.max(0, tmNewBody.scrollHeight - tmNewBody.clientHeight - tmOff);
           }
 
-          if (atBottom) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+          if (atBottom) _pinToBottom();
           _updateScrollBtn();
           return;
         }
@@ -472,7 +501,7 @@ window.Hermes = window.Hermes || {};
       // 无已有 streaming DOM（首次），做全量渲染
       const atBottom = isNearBottom(dom.chatMessages);
       window.Hermes.renderMessages(msgs, dom.chatMessages);
-      if (atBottom) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+      if (atBottom) _pinToBottom();
       _updateScrollBtn();
       return;
     }
@@ -480,7 +509,7 @@ window.Hermes = window.Hermes || {};
     // ---- 非流式：全量渲染 ----
     const atBottom = isNearBottom(dom.chatMessages);
     window.Hermes.renderMessages(msgs, dom.chatMessages);
-    if (atBottom) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+    if (atBottom) _pinToBottom();
     _updateScrollBtn();
   }
 
@@ -498,7 +527,8 @@ window.Hermes = window.Hermes || {};
       if (_renderTimers[sid]) return;
       _renderTimers[sid] = setTimeout(function() {
         delete _renderTimers[sid];
-        renderCurrentChat();
+        // P#4: rAF 对齐帧边界，让重活在帧起点开始，最大化可用预算
+        requestAnimationFrame(renderCurrentChat);
       }, RENDER_DEBOUNCE_MS);
     }
   }

@@ -436,7 +436,11 @@ window.Hermes = window.Hermes || {};
       // 当前项目的 workdir 传给 gateway
       var body = {};
       var proj = (H.projects || []).find(function(p) { return p.id === H.currentProjectId; });
-      if (proj && proj.path) body.working_dir = proj.path;
+      // 项目 id = cwd 路径。GET /projects 只从已有 session 聚合 cwd，新建的“空项目”
+      // （该目录下尚无 session）不会出现在列表里，导致 find 失败。此时 currentProjectId
+      // 本身就是目标 working_dir，直接兜底使用，避免后端 fallback 到全局 CWD。
+      var workingDir = (proj && proj.path) || H.currentProjectId;
+      if (workingDir) body.working_dir = workingDir;
 
       var result = await H.api('/sessions', { method: 'POST', body: body });
       var sid = (result.session && result.session.id) || result.session_id;

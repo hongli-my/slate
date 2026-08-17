@@ -27,9 +27,9 @@ export const darkTheme = EditorView.theme(
     ".cm-activeLineGutter": { backgroundColor: "rgba(255,255,255,0.07)" },
     "&.cm-focused": { outline: "none" },
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-      backgroundColor: "rgba(100,180,255,0.35)",
+      backgroundColor: "rgba(255,200,120,0.25)",
     },
-    "& ::selection": { backgroundColor: "rgba(100,180,255,0.35)" },
+    "& ::selection": { backgroundColor: "rgba(255,200,120,0.25)" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#f8f8f0" },
     ".cm-foldGutter .cm-gutterElement": {
       cursor: "pointer",
@@ -121,9 +121,9 @@ export const lightTheme = EditorView.theme(
     ".cm-activeLineGutter": { backgroundColor: "rgba(0,0,0,0.05)" },
     "&.cm-focused": { outline: "none" },
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-      backgroundColor: "rgba(26,115,232,0.2)",
+      backgroundColor: "rgba(217,160,50,0.28)",
     },
-    "& ::selection": { backgroundColor: "rgba(26,115,232,0.2)" },
+    "& ::selection": { backgroundColor: "rgba(217,160,50,0.28)" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#1a1a1a" },
     ".cm-foldGutter .cm-gutterElement": { cursor: "pointer", color: "#aaa" },
     ".cm-foldPlaceholder": {

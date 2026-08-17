@@ -138,9 +138,29 @@ slate/
 
 ## 构建
 
-### 前置：编译 pi-bridge sidecar
+### 前置环境
 
-piweb-bridge 需先编译为单二进制并拷入 sidecar 目录（文件名按 target triple 命名）：
+- Rust stable（≥ 1.77.2，实测 1.97.1）
+- Tauri CLI 2.11（实测 2.11.4）
+- Bun 1.4（实测 1.4.0）
+- Xcode Command Line Tools（`codesign` / `xcrun`）
+
+> tauri CLI 若以 node shebang 脚本安装（`#!/usr/bin/env node`）而系统无 node，用 `bunx tauri ...` 调用；bun 自带 node 兼容 shim，`bun run build`（esbuild）亦可直接执行，无需单独装 node。
+
+### 一、安装前端依赖
+
+slate 前端依赖（CodeMirror 6 等）未提交，首次构建须安装：
+
+```bash
+cd ~/ai-home/slate
+bun install          # 67 packages → node_modules/，esbuild 才能解析 @codemirror/*
+```
+
+> `editor.bundle.js` 虽已提交到 `web/vendor/`，但 `tauri build` 的 `beforeBuildCommand` 会重新跑 `bun run build`（esbuild），缺 node_modules 会报 `Could not resolve "@codemirror/view"`。
+
+### 二、编译 pi-bridge sidecar
+
+piweb-bridge 编译为单二进制并拷入 sidecar 目录（文件名按 target triple 命名）：
 
 ```bash
 cd ~/ai-home/piweb-bridge
@@ -152,15 +172,49 @@ cp pi-bridge ~/ai-home/slate/src-tauri/binaries/pi-bridge-aarch64-apple-darwin
 
 > ⚠️ `--bytecode` 与 top-level await 不兼容（pi-bridge.ts:38），不要加。其他平台替换 `--target` 与文件名后缀（如 `bun-darwin-x64` → `pi-bridge-x86_64-apple-darwin`）。
 
-### 构建 app
+产物 ~74MB（含 Bun runtime + pi SDK）。
+
+### 三、签名 sidecar（hardened runtime 必须）
+
+app 开启 `hardenedRuntime: true`，而 bun 用 JavaScriptCore 需 JIT，sidecar 必须在打包前以 ad-hoc 签名 + JIT entitlements，否则运行时被内核直接 kill：
 
 ```bash
 cd ~/ai-home/slate
-cargo tauri dev      # 开发（热重载）
-cargo tauri build    # 产物在 src-tauri/target/release/bundle/macos/Slate.app
+codesign --force --sign - \
+  --entitlements src-tauri/Entitlements.plist \
+  src-tauri/binaries/pi-bridge-aarch64-apple-darwin
+codesign -dv src-tauri/binaries/pi-bridge-aarch64-apple-darwin   # 验证 Signature=adhoc
 ```
 
-环境：Rust stable / Tauri CLI 2.11 / Bun 1.4 / Xcode CLT。
+> 这一步同时规避 [tauri#11992](https://github.com/tauri-apps/tauri/issues/11992)（sidecar 签名顺序偶致公证失败）——在 `beforeBuildCommand` 阶段预先签好，bundler 直接复用。
+
+### 四、构建 app
+
+```bash
+cd ~/ai-home/slate
+bunx tauri dev       # 开发（热重载，先跑 bun run build:watch）
+bunx tauri build     # 生产打包
+```
+
+`tauri build` 依次执行：`bun run build`（esbuild → `web/vendor/editor.bundle.js`）→ `cargo build --release` → bundle。实测 cargo 编译 ~40s（命中缓存），全流程约 1 分钟。
+
+### 产物
+
+```
+src-tauri/target/release/bundle/
+├─ macos/Slate.app                          ~89MB  ← 可直接双击运行
+└─ dmg/Slate_0.1.0_aarch64.dmg              ~37MB  ← 分发安装包
+```
+
+app bundle 内嵌：`Contents/MacOS/app`（Rust 主进程）+ `Contents/MacOS/pi-bridge`（sidecar）。
+
+拷到桌面运行：
+
+```bash
+cp -R src-tauri/target/release/bundle/macos/Slate.app ~/Desktop/
+cp    src-tauri/target/release/bundle/dmg/Slate_0.1.0_aarch64.dmg ~/Desktop/
+open ~/Desktop/Slate.app
+```
 
 ### macOS 签名与分发
 
