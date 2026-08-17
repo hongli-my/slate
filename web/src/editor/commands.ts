@@ -3,8 +3,7 @@
 
 import { format as sqlFormat } from "sql-formatter";
 import { state, getActiveTab } from "./state";
-import { applyTheme, themeComp } from "./cm";
-import { darkThemeExt, lightThemeExt } from "./theme";
+import { applyTheme } from "./cm";
 import { renderTabsBar } from "./tabs";
 import { updateStatusBar, updateEolLabel } from "./statusbar";
 import { toast } from "./ui";
@@ -117,14 +116,11 @@ export function toggleEol(): void {
 
 export function toggleTheme(): void {
   state.lightTheme = !state.lightTheme;
-  const view = state.view;
   const root = document.getElementById("view-editor");
   if (root) root.classList.toggle("light-theme", state.lightTheme);
-  if (view) applyTheme(view, state.lightTheme);
-  if (state.rightView) {
-    state.rightView.dispatch({
-      effects: themeComp.reconfigure(state.lightTheme ? lightThemeExt : darkThemeExt),
-    });
+  // Apply to every mounted group view (applyTheme dispatches themeComp.reconfigure).
+  for (const g of state.groups) {
+    if (g.view) applyTheme(g.view, state.lightTheme);
   }
   toast(state.lightTheme ? "已切换亮色主题" : "已切换暗色主题");
   saveSession();

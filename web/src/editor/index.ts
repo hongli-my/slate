@@ -4,18 +4,18 @@
 // FIX #22: global error handlers.
 
 import { EditorView, ViewUpdate } from "@codemirror/view";
-import { state } from "./state";
+import { state, viewGroup, setActiveGroup } from "./state";
 import { createEditorView, buildExtensions, scheduleOccurrenceHighlight, clearOccurrences } from "./cm";
 import { setupShortcuts } from "./keymap";
 import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile } from "./files";
 import { renderTabsBar, switchToTab, addTab } from "./tabs";
 import { renderTree } from "./filetree";
-import { togglePreview, scheduleMdRender, updateFormatButtons, isMarkdownFile } from "./preview";
+import { togglePreview, scheduleMdRender, updateFormatButtons, isMarkdownFile, syncPreviewPane } from "./preview";
 import { formatSQL, formatJSON, toggleEol, toggleTheme } from "./commands";
 import { toggleSplitView } from "./split";
 import { toggleMinimap } from "./minimap";
+import { setupEditorContextMenu } from "./contextmenu";
 import { restoreSession } from "./session";
-import { forwardChangesToSplit } from "./split";
 import { recordMacroUpdate } from "./macros";
 import { updateStatusBar, updateStatusCursor, updateEolLabel } from "./statusbar";
 import { setupPasteImage } from "./paste-image";
@@ -25,26 +25,32 @@ import { toast, $ } from "./ui";
 function onDocUpdate(u: ViewUpdate): void {
   // Macro recording (FIX #13) — consume first so it sees the originating tx.
   recordMacroUpdate(u);
+  const g = viewGroup(u);
 
   if (u.docChanged) {
-    const tab = state.openTabs.find((t) => t.id === state.activeTabId);
+    const tab = g.tabs.find((t) => t.id === g.activeTabId);
     if (tab) {
       if (!tab.modified) {
         tab.modified = true;
-        renderTabsBar();
+        renderTabsBar(g.id);
         updateStatusBar();
       }
     }
     // Live markdown preview (debounced 300ms — FIX #5).
     if (state.previewVisible && isMarkdownFile()) scheduleMdRender();
-    // Split view incremental forwarding (FIX #1).
-    forwardChangesToSplit(u);
     // Session save (debounced 500ms — FIX #12).
     _session.saveSession();
   }
   if (u.selectionSet || u.focusChanged) {
     updateStatusCursor();
-    if (u.view.hasFocus) scheduleOccurrenceHighlight(u.view);
+    if (u.view.hasFocus) {
+      scheduleOccurrenceHighlight(u.view);
+      // Focus routing: make this view's group the active one.
+      if (g.id !== state.activeGroup) {
+        setActiveGroup(g.id);
+        syncPreviewPane(); // move preview pane to the newly active group
+      }
+    }
   }
   // On transactions that change the doc, occurrence highlights may be stale.
   if (u.docChanged) {
@@ -67,12 +73,13 @@ export async function initEditor(): Promise<void> {
     state.onUpdate = onDocUpdate;
     state.buildExtensions = buildExtensions;
 
-    const view = createEditorView(pane, onDocUpdate);
+    const view = createEditorView(pane, 0, onDocUpdate);
     view.dom.style.display = "none";
 
     setupResizer();
     setupShortcuts();
-    setupPasteImage();
+    setupPasteImage(view);
+    setupEditorContextMenu();
     updateFormatButtons();
 
     await loadRecents();

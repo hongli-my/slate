@@ -5,7 +5,7 @@
 
 import { marked } from "marked";
 import hljs from "highlight.js/lib/core";
-import { state, getActiveTab } from "./state";
+import { state, getActiveTab, getActiveView, groupElId } from "./state";
 import { $ } from "./ui";
 
 // Register ~20 common languages (FIX: bundle shrink from 2.9MB -> ~700KB).
@@ -103,17 +103,29 @@ export function scheduleMdRender(): void {
 
 export function refreshPreviewIfVisible(): void {
   if (!state.previewVisible) return;
-  if (isMarkdownFile()) renderMarkdownPreview();
-  else {
-    const pane = $("previewPane");
-    if (pane) pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">预览仅支持 Markdown 文件</div>';
+  syncPreviewPane();
+}
+
+/** Ensure only the active group's preview pane is visible (when previewVisible),
+ *  and render its content. Hides the other group's pane. Called on tab/group
+ *  switches and focus changes so the preview always follows the active editor. */
+export function syncPreviewPane(): void {
+  for (const gi of [0, 1] as const) {
+    const p = $(groupElId("previewPane", gi));
+    if (p) p.style.display = "none";
   }
+  if (!state.previewVisible) return;
+  const pane = $(groupElId("previewPane", state.activeGroup));
+  if (!pane) return;
+  if (isMarkdownFile()) renderMarkdownPreview();
+  else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">预览仅支持 Markdown 文件</div>';
+  pane.style.display = "block";
 }
 
 function renderMarkdownPreview(): void {
-  const pane = $("previewPane");
+  const pane = $(groupElId("previewPane", state.activeGroup));
   if (!pane || !state.previewVisible) return;
-  const view = state.view;
+  const view = getActiveView();
   if (!view) return;
   const content = view.state.doc.toString();
   ensureMarked();
@@ -235,12 +247,9 @@ function addHeadingFold(container: HTMLElement): void {
 
 export function togglePreview(): void {
   state.previewVisible = !state.previewVisible;
-  const pane = $("previewPane");
   const btn = document.getElementById("btnPreviewFloat");
   if (state.previewVisible) {
-    if (isMarkdownFile()) renderMarkdownPreview();
-    else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">预览仅支持 Markdown 文件</div>';
-    pane.style.display = "block";
+    syncPreviewPane();
     if (btn) {
       btn.classList.add("active");
       btn.innerHTML = "&#9998; 编辑";
@@ -248,7 +257,11 @@ export function togglePreview(): void {
     const mm = document.getElementById("minimap");
     if (mm) mm.classList.remove("visible");
   } else {
-    pane.style.display = "none";
+    // Hide all preview panes.
+    for (const gi of [0, 1] as const) {
+      const p = $(groupElId("previewPane", gi));
+      if (p) p.style.display = "none";
+    }
     if (btn) {
       btn.classList.remove("active");
       btn.innerHTML = "&#128065; 预览";

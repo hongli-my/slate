@@ -15,6 +15,10 @@ import { showSearchAllPanel, closeSearchAllPanel, showSearchReplacePanel, closeS
 
 export function setupShortcuts(): void {
   document.addEventListener("keydown", (e) => {
+    // M10: 模态对话框（customConfirm 等）打开期间屏蔽全局快捷键——
+    // 否则 Cmd+W 会在 await customConfirm 期间为同一 tab 叠加第二个
+    // 对话框，其他快捷键也可能干扰模态交互。
+    if (document.querySelector('[data-slate-modal="1"]')) return;
     // Only hijack shortcuts when the editor view is active (avoid clashing
     // with the shell's Cmd+1~4 view switching).
     const view = document.getElementById("view-editor");

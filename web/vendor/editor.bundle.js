@@ -14069,9 +14069,38 @@ var init_dist2 = __esm({
 });
 
 // web/src/editor/state.ts
+function getActiveGroup() {
+  return state.groups[state.activeGroup];
+}
+function getActiveView() {
+  return getActiveGroup().view;
+}
 function getActiveTab() {
-  if (state.activeTabId == null) return null;
-  return state.openTabs.find((t2) => t2.id === state.activeTabId) ?? null;
+  const g = getActiveGroup();
+  if (g.activeTabId == null) return null;
+  return g.tabs.find((t2) => t2.id === g.activeTabId) ?? null;
+}
+function getTabByPath(absPath, groupId) {
+  if (!absPath) return null;
+  if (groupId != null) {
+    return state.groups[groupId].tabs.find((t2) => t2.absPath === absPath) ?? null;
+  }
+  for (const g of state.groups) {
+    const t2 = g.tabs.find((x2) => x2.absPath === absPath);
+    if (t2) return t2;
+  }
+  return null;
+}
+function viewGroup(u2) {
+  return state.groups.find((g) => g.view === u2.view) ?? state.groups[0];
+}
+function setActiveGroup(g) {
+  state.activeGroup = g;
+  document.getElementById("group0")?.classList.toggle("focused", g === 0);
+  document.getElementById("group1")?.classList.toggle("focused", g === 1);
+}
+function groupElId(baseId, groupId) {
+  return groupId === 0 ? baseId : baseId + "1";
 }
 function basename(p) {
   const i2 = String(p).lastIndexOf("/");
@@ -14081,10 +14110,40 @@ var state;
 var init_state = __esm({
   "web/src/editor/state.ts"() {
     state = {
-      view: null,
-      rightView: null,
-      openTabs: [],
-      activeTabId: null,
+      // ---- Dual editor groups ----
+      groups: [
+        { id: 0, view: null, tabs: [], activeTabId: null },
+        { id: 1, view: null, tabs: [], activeTabId: null }
+      ],
+      /** Index of the currently focused group. */
+      activeGroup: 0,
+      // ---- Legacy proxy accessors (Phase 2+ will remove these) ----
+      /** @deprecated use getActiveView() — proxies to groups[activeGroup].view */
+      get view() {
+        return this.groups[this.activeGroup].view;
+      },
+      set view(v2) {
+        this.groups[this.activeGroup].view = v2;
+      },
+      /** @deprecated use getActiveGroup().tabs — proxies to groups[activeGroup].tabs */
+      get openTabs() {
+        return this.groups[this.activeGroup].tabs;
+      },
+      /** @deprecated use getActiveGroup().activeTabId */
+      get activeTabId() {
+        return this.groups[this.activeGroup].activeTabId;
+      },
+      set activeTabId(v2) {
+        this.groups[this.activeGroup].activeTabId = v2;
+      },
+      /** @deprecated use groups[1].view — proxies to the second group's view */
+      get rightView() {
+        return this.groups[1].view;
+      },
+      set rightView(v2) {
+        this.groups[1].view = v2;
+      },
+      // ---- Shared/global state ----
       tabIdCounter: 0,
       scannedFiles: [],
       folderTree: null,
@@ -14092,6 +14151,8 @@ var init_state = __esm({
       recents: [],
       previewVisible: false,
       splitActive: false,
+      /** Current split direction when splitActive is true. */
+      splitMode: null,
       minimapOn: false,
       lightTheme: false,
       macroRecording: false,
@@ -37782,7 +37843,9 @@ function buildExtensions(onUpdate) {
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
-      ...searchKeymap,
+      // Drop CM6's built-in Ctrl+F (openSearchPanel) — it dynamically loads
+      // searchExtensions and spawns the native panel alongside our custom one.
+      ...searchKeymap.filter((k2) => k2.key !== "Mod-f"),
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
@@ -37796,7 +37859,7 @@ function buildExtensions(onUpdate) {
     makeUpdateListener(onUpdate)
   ];
 }
-function createEditorView(parent, onUpdate) {
+function createEditorView(parent, groupId, onUpdate) {
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -37805,11 +37868,12 @@ function createEditorView(parent, onUpdate) {
     })
   });
   view.dom.style.display = "none";
-  state.view = view;
+  state.groups[groupId].view = view;
   state.themeComp = themeComp;
   state.langComp = langComp;
   state.readOnlyComp = readOnlyComp;
   state.wrapComp = wrapComp;
+  view.dom.addEventListener("mousedown", () => setActiveGroup(groupId), true);
   return view;
 }
 function setLanguage(view, name2) {
@@ -38236,7 +38300,16 @@ function customConfirm(opts) {
     dlg.innerHTML = title + `<p style="margin:0 0 16px;font-size:13px;line-height:1.5;color:#ccc;">${escapeHtml(opts.message)}</p><div style="display:flex;justify-content:flex-end;gap:8px;"><button data-act="cancel" style="${btnStyle(false)}">${escapeHtml(opts.cancelLabel ?? "\u53D6\u6D88")}</button><button data-act="no" style="${btnStyle(false)}">${escapeHtml(opts.noLabel ?? "\u4E0D\u4FDD\u5B58")}</button><button data-act="yes" style="${btnStyle(!!opts.yesPrimary)}">${escapeHtml(opts.yesLabel ?? "\u4FDD\u5B58")}</button></div>`;
     overlay.appendChild(dlg);
     document.body.appendChild(overlay);
+    function onKey2(e) {
+      if (e.key === "Escape") {
+        done("cancel");
+      } else if (e.key === "Enter") {
+        done("yes");
+      }
+    }
+    document.addEventListener("keydown", onKey2);
     const done = (c3) => {
+      document.removeEventListener("keydown", onKey2);
       overlay.remove();
       resolve(c3);
     };
@@ -38249,18 +38322,7 @@ function customConfirm(opts) {
     overlay.addEventListener("mousedown", (e) => {
       if (e.target === overlay) done("cancel");
     });
-    document.addEventListener(
-      "keydown",
-      function onKey(e) {
-        if (e.key === "Escape") {
-          document.removeEventListener("keydown", onKey);
-          done("cancel");
-        } else if (e.key === "Enter") {
-          document.removeEventListener("keydown", onKey);
-          done("yes");
-        }
-      }
-    );
+    overlay.dataset.slateModal = "1";
     const yesBtn = dlg.querySelector('[data-act="yes"]');
     yesBtn?.focus();
   });
@@ -48892,16 +48954,24 @@ function scheduleMdRender() {
 }
 function refreshPreviewIfVisible() {
   if (!state.previewVisible) return;
-  if (isMarkdownFile()) renderMarkdownPreview();
-  else {
-    const pane = $("previewPane");
-    if (pane) pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">\u9884\u89C8\u4EC5\u652F\u6301 Markdown \u6587\u4EF6</div>';
+  syncPreviewPane();
+}
+function syncPreviewPane() {
+  for (const gi of [0, 1]) {
+    const p = $(groupElId("previewPane", gi));
+    if (p) p.style.display = "none";
   }
+  if (!state.previewVisible) return;
+  const pane = $(groupElId("previewPane", state.activeGroup));
+  if (!pane) return;
+  if (isMarkdownFile()) renderMarkdownPreview();
+  else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">\u9884\u89C8\u4EC5\u652F\u6301 Markdown \u6587\u4EF6</div>';
+  pane.style.display = "block";
 }
 function renderMarkdownPreview() {
-  const pane = $("previewPane");
+  const pane = $(groupElId("previewPane", state.activeGroup));
   if (!pane || !state.previewVisible) return;
-  const view = state.view;
+  const view = getActiveView();
   if (!view) return;
   const content2 = view.state.doc.toString();
   ensureMarked();
@@ -49013,12 +49083,9 @@ function addHeadingFold(container) {
 }
 function togglePreview() {
   state.previewVisible = !state.previewVisible;
-  const pane = $("previewPane");
   const btn = document.getElementById("btnPreviewFloat");
   if (state.previewVisible) {
-    if (isMarkdownFile()) renderMarkdownPreview();
-    else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">\u9884\u89C8\u4EC5\u652F\u6301 Markdown \u6587\u4EF6</div>';
-    pane.style.display = "block";
+    syncPreviewPane();
     if (btn) {
       btn.classList.add("active");
       btn.innerHTML = "&#9998; \u7F16\u8F91";
@@ -49026,7 +49093,10 @@ function togglePreview() {
     const mm = document.getElementById("minimap");
     if (mm) mm.classList.remove("visible");
   } else {
-    pane.style.display = "none";
+    for (const gi of [0, 1]) {
+      const p = $(groupElId("previewPane", gi));
+      if (p) p.style.display = "none";
+    }
     if (btn) {
       btn.classList.remove("active");
       btn.innerHTML = "&#128065; \u9884\u89C8";
@@ -49090,6 +49160,265 @@ var init_preview = __esm({
   }
 });
 
+// web/src/editor/paste-image.ts
+function setupPasteImage(view) {
+  view.dom.addEventListener("paste", async (e) => {
+    if (!isMarkdownFile()) return;
+    const cd = e.clipboardData;
+    if (!cd) return;
+    let imageItem = null;
+    for (let i2 = 0; i2 < cd.items.length; i2++) {
+      if (cd.items[i2].type.indexOf("image") !== -1) {
+        imageItem = cd.items[i2];
+        break;
+      }
+    }
+    if (!imageItem) return;
+    e.preventDefault();
+    const blob = imageItem.getAsFile();
+    if (!blob) return;
+    const timestamp = Date.now();
+    const ext = blob.type.replace("image/", "").replace("jpeg", "jpg");
+    const defaultName = `image-${timestamp}.${ext}`;
+    const choice = await showImagePasteDialog(defaultName);
+    if (!choice) return;
+    if (choice.action === "base64") {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const base64 = ev.target?.result;
+        insertImageMarkdown(choice.name, base64);
+      };
+      reader.readAsDataURL(blob);
+    } else if (choice.action === "save") {
+      if (!state.currentDirPath) {
+        toast("\u8BF7\u5148\u6253\u5F00\u4E00\u4E2A\u6587\u4EF6\u5939\u624D\u80FD\u4FDD\u5B58\u56FE\u7247");
+        return;
+      }
+      try {
+        const arr = new Uint8Array(await blob.arrayBuffer());
+        const saved = await saveImageToFolder(choice.name, arr);
+        if (saved) {
+          insertImageMarkdown(choice.name, choice.name);
+          await doRefreshFolder();
+          toast("\u56FE\u7247\u5DF2\u4FDD\u5B58: " + choice.name);
+        }
+      } catch (err) {
+        toast("\u4FDD\u5B58\u56FE\u7247\u5931\u8D25: " + err.message);
+      }
+    }
+  });
+}
+function insertImageMarkdown(alt, src) {
+  const view = state.view;
+  if (!view) return;
+  const md = `![${alt}](${src})`;
+  view.dispatch(view.state.replaceSelection(md));
+  view.focus();
+}
+function showImagePasteDialog(defaultName) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10001;";
+    const dlg = document.createElement("div");
+    dlg.style.cssText = "background:#4b4b4b;border:1px solid #666;border-radius:8px;padding:20px;min-width:320px;box-shadow:0 4px 20px rgba(0,0,0,0.4);color:#e0e0e0;";
+    const saveDisabled = !state.currentDirPath;
+    dlg.innerHTML = `
+      <h3 style="margin:0 0 15px;font-size:16px;color:#e0e0e0;font-weight:500;">\u7C98\u8D34\u56FE\u7247</h3>
+      <p style="margin:0 0 15px;font-size:13px;color:#aaa;">\u68C0\u6D4B\u5230\u526A\u8D34\u677F\u4E2D\u7684\u56FE\u7247\uFF0C\u8BF7\u9009\u62E9\u5904\u7406\u65B9\u5F0F\uFF1A</p>
+      <div style="margin-bottom:15px;">
+        <label style="display:block;font-size:12px;color:#999;margin-bottom:5px;">\u56FE\u7247\u540D\u79F0</label>
+        <input type="text" id="imgNameInput" value="${defaultName}"
+          style="width:100%;padding:8px 10px;background:#3a3a3a;border:1px solid #555;
+                 border-radius:4px;color:#e0e0e0;font-size:13px;box-sizing:border-box;">
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button id="btnBase64" style="flex:1;padding:8px;background:#5a5a5a;border:1px solid #777;
+          border-radius:4px;color:#e0e0e0;cursor:pointer;font-size:13px;">Base64 \u5D4C\u5165</button>
+        <button id="btnSave" style="flex:1;padding:8px;background:#5a8a5a;border:1px solid #7ab87a;
+          border-radius:4px;color:#fff;cursor:pointer;font-size:13px;${saveDisabled ? "opacity:0.5;cursor:not-allowed;" : ""}">\u4FDD\u5B58\u5230\u6587\u4EF6\u5939</button>
+        <button id="btnCancel" style="padding:8px 15px;background:transparent;border:1px solid #666;
+          border-radius:4px;color:#999;cursor:pointer;font-size:13px;">\u53D6\u6D88</button>
+      </div>`;
+    overlay.appendChild(dlg);
+    document.body.appendChild(overlay);
+    const input = dlg.querySelector("#imgNameInput");
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 10);
+    const finish = (c3) => {
+      overlay.remove();
+      resolve(c3);
+    };
+    dlg.querySelector("#btnBase64").addEventListener("click", () => {
+      finish({ action: "base64", name: input.value.trim() || defaultName });
+    });
+    dlg.querySelector("#btnSave").addEventListener("click", () => {
+      if (saveDisabled) return;
+      finish({ action: "save", name: input.value.trim() || defaultName });
+    });
+    dlg.querySelector("#btnCancel").addEventListener("click", () => finish(null));
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) finish(null);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish({ action: "base64", name: input.value.trim() || defaultName });
+    });
+  });
+}
+var init_paste_image = __esm({
+  "web/src/editor/paste-image.ts"() {
+    init_state();
+    init_preview();
+    init_files();
+    init_ui();
+    init_state();
+  }
+});
+
+// web/src/editor/split.ts
+var split_exports = {};
+__export(split_exports, {
+  closeSplit: () => closeSplit,
+  mountGroup1: () => mountGroup1,
+  toggleSplitView: () => toggleSplitView
+});
+function toggleSplitView(direction = "horizontal") {
+  const view = state.view;
+  if (!view) return;
+  const area = document.getElementById("editorArea");
+  if (!area) return;
+  if (state.splitActive) {
+    if (state.splitMode === direction) {
+      void closeSplit();
+      return;
+    }
+    state.splitMode = direction;
+    applySplitDirection(area);
+    return;
+  }
+  const g1View = mountGroup1(direction);
+  if (!g1View) return;
+  const activeTab = getActiveTab();
+  if (activeTab) {
+    const id3 = ++state.tabIdCounter;
+    const docStr = activeTab.cmState instanceof EditorState ? activeTab.cmState.doc.toString() : "";
+    const newTab = {
+      id: id3,
+      name: activeTab.name,
+      path: activeTab.path,
+      absPath: activeTab.absPath,
+      cmState: EditorState.create({ doc: docStr, extensions: state.buildExtensions(state.onUpdate) }),
+      modified: activeTab.modified,
+      encoding: activeTab.encoding,
+      eol: activeTab.eol,
+      mtimeMs: activeTab.mtimeMs,
+      lang: activeTab.lang
+    };
+    state.groups[1].tabs.push(newTab);
+    state.groups[1].activeTabId = id3;
+    g1View.dom.style.display = "";
+    g1View.setState(newTab.cmState);
+    applyTheme(g1View, state.lightTheme);
+    setLanguage(g1View, newTab.name);
+    setReadOnly(g1View, false);
+    $(groupElId("emptyState", 1)).style.display = "none";
+  }
+  setActiveGroup(1);
+  renderTabsBar(1);
+  g1View.focus();
+  saveSession();
+}
+function mountGroup1(direction) {
+  const area = document.getElementById("editorArea");
+  if (!area) return null;
+  const pane = $("editorPane1");
+  if (!pane) return null;
+  const onUpdate = state.onUpdate;
+  if (!onUpdate || !state.buildExtensions) return null;
+  const g1View = createEditorView(pane, 1, onUpdate);
+  setupPasteImage(g1View);
+  const group1 = document.getElementById("group1");
+  if (group1) group1.removeAttribute("hidden");
+  state.splitMode = direction;
+  state.splitActive = true;
+  area.classList.add("split-active");
+  applySplitDirection(area);
+  return g1View;
+}
+async function closeSplit() {
+  if (!state.splitActive) return;
+  const g1 = state.groups[1];
+  for (const tab3 of g1.tabs) {
+    if (tab3.modified) {
+      const choice = await customConfirm({
+        message: `"${tab3.name}" (\u5206\u680F) \u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\u3002\u662F\u5426\u4FDD\u5B58\uFF1F`,
+        title: "\u5173\u95ED\u5206\u680F",
+        yesLabel: "\u4FDD\u5B58",
+        noLabel: "\u4E0D\u4FDD\u5B58",
+        cancelLabel: "\u53D6\u6D88",
+        yesPrimary: true
+      });
+      if (choice === "cancel") return;
+      if (choice === "yes") {
+        const prev = state.activeGroup;
+        state.groups[1].activeTabId = tab3.id;
+        setActiveGroup(1);
+        await saveCurrentFile();
+        setActiveGroup(prev);
+      }
+    }
+  }
+  for (const tab3 of g1.tabs) {
+    if (tab3.absPath && getTabByPath(tab3.absPath, 0)) continue;
+    state.groups[0].tabs.push(tab3);
+  }
+  g1.view?.destroy();
+  g1.view = null;
+  g1.tabs = [];
+  g1.activeTabId = null;
+  const group1 = document.getElementById("group1");
+  if (group1) group1.setAttribute("hidden", "");
+  const area = document.getElementById("editorArea");
+  if (area) area.classList.remove("split-active", "split-vertical");
+  state.splitActive = false;
+  state.splitMode = null;
+  setActiveGroup(0);
+  const g0 = state.groups[0];
+  if (g0.tabs.length > 0) {
+    const targetId = g0.activeTabId ?? g0.tabs[g0.tabs.length - 1].id;
+    switchToTab(targetId, 0);
+  } else {
+    renderTabsBar(0);
+  }
+  saveSession();
+}
+function applySplitDirection(area) {
+  const group1 = document.getElementById("group1");
+  if (!group1) return;
+  if (state.splitMode === "vertical") {
+    area.classList.add("split-vertical");
+    group1.classList.add("split-bottom");
+    group1.classList.remove("split-right");
+  } else {
+    area.classList.remove("split-vertical");
+    group1.classList.add("split-right");
+    group1.classList.remove("split-bottom");
+  }
+}
+var init_split = __esm({
+  "web/src/editor/split.ts"() {
+    init_dist();
+    init_state();
+    init_cm();
+    init_paste_image();
+    init_ui();
+    init_tabs();
+    init_files();
+    init_session();
+  }
+});
+
 // web/src/editor/session.ts
 function saveSession() {
   if (sessionTimer) return;
@@ -49099,74 +49428,139 @@ function saveSession() {
   }, 500);
 }
 function saveSessionNow() {
-  if (state.activeTabId == null) return;
   try {
-    const view = state.view;
-    const tab3 = getActiveTab();
+    const total = state.groups[0].tabs.length + state.groups[1].tabs.length;
+    if (total === 0) return;
+    const view = getActiveView();
     const cursor = view ? view.state.selection.main.head : 0;
     const data2 = {
-      tabs: state.openTabs.map((t2) => ({
-        name: t2.name,
-        path: t2.path,
-        absPath: t2.absPath,
-        eol: t2.eol,
-        encoding: t2.encoding
+      version: 2,
+      groups: state.groups.map((g) => ({
+        tabs: g.tabs.map((t2) => ({
+          name: t2.name,
+          path: t2.path,
+          absPath: t2.absPath,
+          eol: t2.eol,
+          encoding: t2.encoding
+        })),
+        activePath: g.tabs.find((t2) => t2.id === g.activeTabId)?.path ?? null
       })),
-      activePath: tab3 ? tab3.path : null,
+      activeGroup: state.activeGroup,
+      splitActive: state.splitActive,
+      splitMode: state.splitMode,
       cursor,
-      theme: state.lightTheme,
-      split: state.splitActive
+      theme: state.lightTheme
     };
     localStorage.setItem(SESSION_KEY, JSON.stringify(data2));
   } catch {
   }
+}
+async function loadTabContent(t2) {
+  let content2 = "";
+  let encoding = t2.encoding || "utf-8";
+  let mtimeMs = null;
+  if (t2.absPath) {
+    try {
+      const r2 = await readTextFile(t2.absPath);
+      content2 = r2.text;
+      encoding = r2.encoding;
+    } catch {
+      content2 = "";
+    }
+  }
+  return { content: content2, encoding, mtimeMs };
 }
 async function restoreSession() {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return;
     const data2 = JSON.parse(raw);
-    if (!data2 || !Array.isArray(data2.tabs) || data2.tabs.length === 0) return;
+    let groupTabsList = [[], []];
+    let activePaths = [null, null];
+    let activeGroup = 0;
+    let splitActive = false;
+    let splitMode = null;
+    let cursor = 0;
+    let theme2 = false;
+    if (data2 && data2.version === 2 && Array.isArray(data2.groups)) {
+      const gs = data2.groups;
+      groupTabsList[0] = Array.isArray(gs[0]?.tabs) ? gs[0].tabs : [];
+      groupTabsList[1] = Array.isArray(gs[1]?.tabs) ? gs[1].tabs : [];
+      const ap0 = data2.groups[0]?.activePath;
+      const ap1 = data2.groups[1]?.activePath;
+      activePaths[0] = typeof ap0 === "string" ? ap0 : null;
+      activePaths[1] = typeof ap1 === "string" ? ap1 : null;
+      activeGroup = data2.activeGroup === 1 ? 1 : 0;
+      splitActive = !!data2.splitActive && groupTabsList[1].length > 0;
+      splitMode = data2.splitMode === "vertical" ? "vertical" : data2.splitMode === "horizontal" ? "horizontal" : null;
+      cursor = typeof data2.cursor === "number" ? data2.cursor : 0;
+      theme2 = !!data2.theme;
+    } else if (data2 && Array.isArray(data2.tabs) && data2.tabs.length > 0) {
+      groupTabsList[0] = data2.tabs;
+      activePaths[0] = typeof data2.activePath === "string" ? data2.activePath : null;
+      cursor = typeof data2.cursor === "number" ? data2.cursor : 0;
+      theme2 = !!data2.theme;
+    } else {
+      return;
+    }
+    const totalTabs = groupTabsList[0].length + groupTabsList[1].length;
+    if (totalTabs === 0) return;
     const { addTab: addTab2 } = await Promise.resolve().then(() => (init_tabs(), tabs_exports));
-    const pathToId = {};
-    for (const t2 of data2.tabs) {
-      let content2 = "";
-      let encoding = t2.encoding || "utf-8";
-      let mtimeMs = null;
-      if (t2.absPath) {
-        try {
-          const r2 = await readTextFile(t2.absPath);
-          content2 = r2.text;
-          encoding = r2.encoding;
-        } catch {
-          content2 = "";
+    const pathToIdPerGroup = { 0: {}, 1: {} };
+    for (const t2 of groupTabsList[0]) {
+      if (!t2 || typeof t2.name !== "string" || typeof t2.path !== "string") {
+        console.warn("\u6062\u590D\u4F1A\u8BDD: \u8DF3\u8FC7\u975E\u6CD5 tab \u6761\u76EE", t2);
+        continue;
+      }
+      const { content: content2, encoding, mtimeMs } = await loadTabContent(t2);
+      const eol2 = t2.eol === "CRLF" ? "CRLF" : "LF";
+      const tab3 = addTab2(t2.name, t2.path, content2, t2.absPath || null, encoding, eol2, mtimeMs, 0);
+      pathToIdPerGroup[0][t2.path] = tab3.id;
+    }
+    if (state.groups[0].tabs.length > 0) {
+      const ap = activePaths[0];
+      const aid = ap && pathToIdPerGroup[0][ap] ? pathToIdPerGroup[0][ap] : state.groups[0].tabs[0].id;
+      switchToTab(aid, 0);
+    }
+    if (splitActive && groupTabsList[1].length > 0) {
+      const { mountGroup1: mountGroup12 } = await Promise.resolve().then(() => (init_split(), split_exports));
+      const dir = splitMode ?? "horizontal";
+      const g1View = mountGroup12(dir);
+      if (g1View) {
+        for (const t2 of groupTabsList[1]) {
+          if (!t2 || typeof t2.name !== "string" || typeof t2.path !== "string") {
+            console.warn("\u6062\u590D\u4F1A\u8BDD: \u8DF3\u8FC7\u975E\u6CD5 tab \u6761\u76EE", t2);
+            continue;
+          }
+          const { content: content2, encoding, mtimeMs } = await loadTabContent(t2);
+          const eol2 = t2.eol === "CRLF" ? "CRLF" : "LF";
+          const tab3 = addTab2(t2.name, t2.path, content2, t2.absPath || null, encoding, eol2, mtimeMs, 1);
+          pathToIdPerGroup[1][t2.path] = tab3.id;
+        }
+        if (state.groups[1].tabs.length > 0) {
+          const ap = activePaths[1];
+          const aid = ap && pathToIdPerGroup[1][ap] ? pathToIdPerGroup[1][ap] : state.groups[1].tabs[0].id;
+          switchToTab(aid, 1);
         }
       }
-      const eol2 = t2.eol || "LF";
-      const tab3 = addTab2(t2.name, t2.path, content2, t2.absPath || null, encoding, eol2, mtimeMs);
-      pathToId[t2.path] = tab3.id;
     }
-    const activeId = data2.activePath && pathToId[data2.activePath] ? pathToId[data2.activePath] : state.openTabs[0]?.id;
-    if (activeId != null) {
-      switchToTab(activeId);
-      const view = state.view;
-      if (view && typeof data2.cursor === "number") {
-        const pos = Math.min(Math.max(0, data2.cursor), view.state.doc.length);
-        view.dispatch({
-          selection: { anchor: pos },
-          effects: []
-        });
-        view.dispatch({});
-      }
+    setActiveGroup(activeGroup === 1 && state.splitActive ? 1 : 0);
+    const view = getActiveView();
+    if (view && cursor > 0) {
+      const pos = Math.min(Math.max(0, cursor), view.state.doc.length);
+      view.dispatch({ selection: { anchor: pos }, effects: [] });
+      view.dispatch({});
     }
-    if (data2.theme) {
+    if (theme2) {
       state.lightTheme = true;
-      const view = state.view;
       const root = document.getElementById("view-editor");
       if (root) root.classList.add("light-theme");
-      if (view) applyTheme(view, true);
+      for (const g of state.groups) {
+        if (g.view) applyTheme(g.view, true);
+      }
     }
-    showSessionToast(data2.tabs.length);
+    syncPreviewPane();
+    showSessionToast(totalTabs);
   } catch (e) {
     console.error("\u6062\u590D\u4F1A\u8BDD\u5931\u8D25:", e);
   }
@@ -49189,93 +49583,10 @@ var init_session = __esm({
     init_tabs();
     init_cm();
     init_io();
+    init_preview();
     init_ui();
     SESSION_KEY = "slate.session.v1";
     sessionTimer = null;
-  }
-});
-
-// web/src/editor/split.ts
-function toggleSplitView() {
-  const view = state.view;
-  if (!view) return;
-  if (state.rightView) {
-    const pane2 = document.getElementById("editorPaneRight");
-    if (pane2) pane2.remove();
-    state.rightView.destroy();
-    state.rightView = null;
-    document.getElementById("editorArea")?.classList.remove("split-active");
-    state.splitActive = false;
-    return;
-  }
-  const tab3 = state.openTabs.find((t2) => t2.id === state.activeTabId);
-  if (!tab3) return;
-  const area = document.getElementById("editorArea");
-  if (!area) return;
-  const pane = document.createElement("div");
-  pane.className = "editor-pane split-right";
-  pane.id = "editorPaneRight";
-  area.appendChild(pane);
-  state.rightView = new EditorView({
-    parent: pane,
-    state: EditorState.create({
-      doc: view.state.doc.toString(),
-      extensions: buildExtensions((u2) => {
-        void u2;
-      })
-    })
-  });
-  state.rightView.dispatch({
-    effects: [
-      readOnlyComp.reconfigure(EditorState.readOnly.of(true)),
-      themeComp.reconfigure(state.lightTheme ? lightThemeExt : darkThemeExt),
-      langComp.reconfigure(languageForFile(tab3.name))
-    ]
-  });
-  area.classList.add("split-active");
-  state.splitActive = true;
-  syncSplitToTab();
-}
-function syncSplitToTab() {
-  const rv = state.rightView;
-  const view = state.view;
-  if (!rv || !view) return;
-  const doc2 = view.state.doc.toString();
-  rv.dispatch({
-    changes: { from: 0, to: rv.state.doc.length, insert: doc2 },
-    annotations: Transaction.addToHistory.of(false)
-  });
-  const tab3 = state.openTabs.find((t2) => t2.id === state.activeTabId);
-  if (tab3) {
-    rv.dispatch({
-      effects: langComp.reconfigure(languageForFile(tab3.name))
-    });
-  }
-}
-function forwardChangesToSplit(u2) {
-  const rv = state.rightView;
-  if (!rv || !u2.docChanged) return;
-  const changes = [];
-  u2.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-    changes.push({ from: fromA, to: toA, insert: inserted.toString() });
-  });
-  if (changes.length === 0) return;
-  rv.dispatch({
-    changes,
-    annotations: Transaction.addToHistory.of(false)
-  });
-}
-var init_split = __esm({
-  "web/src/editor/split.ts"() {
-    init_dist2();
-    init_dist();
-    init_dist();
-    init_state();
-    init_cm();
-    init_theme();
-    init_cm();
-    init_languages();
-    init_ui();
   }
 });
 
@@ -50750,16 +51061,18 @@ var init_dist36 = __esm({
 // web/src/editor/minimap.ts
 function toggleMinimap() {
   state.minimapOn = !state.minimapOn;
-  const view = state.view;
-  const pane = $("editorPane");
-  const mm = document.getElementById("minimap");
-  if (pane) pane.classList.toggle("minimap-on", state.minimapOn);
-  if (mm) mm.classList.toggle("visible", state.minimapOn && false);
-  if (view) {
-    view.dispatch({
-      effects: minimapComp.reconfigure(state.minimapOn ? [minimapExtension] : [])
-    });
+  for (const gi of [0, 1]) {
+    const pane = $(groupElId("editorPane", gi));
+    if (pane) pane.classList.toggle("minimap-on", state.minimapOn);
+    const v2 = state.groups[gi].view;
+    if (v2) {
+      v2.dispatch({
+        effects: minimapComp.reconfigure(state.minimapOn ? [minimapExtension] : [])
+      });
+    }
   }
+  const mm = document.getElementById("minimap");
+  if (mm) mm.classList.toggle("visible", state.minimapOn && false);
   if (state.minimapOn) toast2("\u5DF2\u5F00\u542F Minimap");
 }
 function refreshMinimap() {
@@ -50799,12 +51112,14 @@ __export(tabs_exports, {
   renderTabsBar: () => renderTabsBar,
   switchToTab: () => switchToTab
 });
-function renderTabsBar() {
-  const bar = $("tabsBar");
+function renderTabsBar(groupId = state.activeGroup) {
+  const bar = $(groupElId("tabsBar", groupId));
+  if (!bar) return;
   bar.innerHTML = "";
-  for (const tab3 of state.openTabs) {
+  const g = state.groups[groupId];
+  for (const tab3 of g.tabs) {
     const el = document.createElement("div");
-    el.className = "tab" + (tab3.id === state.activeTabId ? " active" : "");
+    el.className = "tab" + (tab3.id === g.activeTabId ? " active" : "");
     const name2 = document.createElement("span");
     name2.className = "tab-name";
     name2.textContent = tab3.name + (tab3.modified ? " \u2022" : "");
@@ -50817,7 +51132,7 @@ function renderTabsBar() {
       void closeTab(tab3.id);
     };
     el.appendChild(close);
-    el.onclick = () => switchToTab(tab3.id);
+    el.onclick = () => switchToTab(tab3.id, groupId);
     bar.appendChild(el);
   }
 }
@@ -50826,7 +51141,7 @@ function buildTabState(content2) {
   if (!build || !state.onUpdate) return EditorState.create({ doc: content2 });
   return EditorState.create({ doc: content2, extensions: build(state.onUpdate) });
 }
-function addTab(name2, path, content2, absPath, encoding = "utf-8", eol2 = "LF", mtimeMs = null) {
+function addTab(name2, path, content2, absPath, encoding = "utf-8", eol2 = "LF", mtimeMs = null, groupId = state.activeGroup) {
   const id3 = ++state.tabIdCounter;
   const tab3 = {
     id: id3,
@@ -50840,21 +51155,22 @@ function addTab(name2, path, content2, absPath, encoding = "utf-8", eol2 = "LF",
     mtimeMs,
     lang: languageLabel(name2)
   };
-  state.openTabs.push(tab3);
-  switchToTab(id3);
+  state.groups[groupId].tabs.push(tab3);
+  switchToTab(id3, groupId);
   return tab3;
 }
-function switchToTab(id3) {
-  const view = state.view;
+function switchToTab(id3, groupId = state.activeGroup) {
+  const g = state.groups[groupId];
+  const view = g.view;
   if (!view) return;
-  const tab3 = state.openTabs.find((t2) => t2.id === id3);
+  const tab3 = g.tabs.find((t2) => t2.id === id3);
   if (!tab3) return;
-  if (state.activeTabId != null && state.activeTabId !== id3) {
-    const old = state.openTabs.find((t2) => t2.id === state.activeTabId);
+  if (g.activeTabId != null && g.activeTabId !== id3) {
+    const old = g.tabs.find((t2) => t2.id === g.activeTabId);
     if (old) old.cmState = view.state;
   }
-  state.activeTabId = id3;
-  $("emptyState").style.display = "none";
+  g.activeTabId = id3;
+  $(groupElId("emptyState", groupId)).style.display = "none";
   view.dom.style.display = "";
   const saved = tab3.cmState;
   if (saved instanceof EditorState) {
@@ -50866,21 +51182,30 @@ function switchToTab(id3) {
   setLanguage(view, tab3.name);
   setReadOnly(view, false);
   clearOccurrences(view);
+  setActiveGroup(groupId);
   view.focus();
-  renderTabsBar();
+  renderTabsBar(groupId);
   renderTree();
   updateStatusBar();
   updateEolLabel();
   updateFormatButtons();
   refreshPreviewIfVisible();
-  syncSplitToTab();
   refreshMinimap();
   saveSession();
 }
 async function closeTab(id3) {
-  const idx = state.openTabs.findIndex((t2) => t2.id === id3);
-  if (idx === -1) return;
-  const tab3 = state.openTabs[idx];
+  let groupId = -1;
+  let idx = -1;
+  for (let i2 = 0; i2 < 2; i2 = i2 + 1) {
+    idx = state.groups[i2].tabs.findIndex((t2) => t2.id === id3);
+    if (idx !== -1) {
+      groupId = i2;
+      break;
+    }
+  }
+  if (groupId === -1) return;
+  const g = state.groups[groupId];
+  const tab3 = g.tabs[idx];
   if (tab3.modified) {
     const choice = await customConfirm({
       message: `"${tab3.name}" \u6709\u672A\u4FDD\u5B58\u7684\u4FEE\u6539\u3002\u662F\u5426\u4FDD\u5B58\uFF1F`,
@@ -50892,24 +51217,42 @@ async function closeTab(id3) {
     });
     if (choice === "cancel") return;
     if (choice === "yes") {
+      const prev = state.activeGroup;
+      setActiveGroup(groupId);
       const ok = await saveCurrentFile();
+      setActiveGroup(prev);
       if (!ok) return;
     }
   }
-  state.openTabs.splice(idx, 1);
-  const view = state.view;
-  if (state.openTabs.length === 0) {
-    state.activeTabId = null;
-    if (view) view.dom.style.display = "none";
-    $("emptyState").style.display = "flex";
-    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "" } });
-    updateFormatButtons();
-    localStorage.removeItem("slate.session.v1");
-  } else if (state.activeTabId === id3) {
-    const newIdx = Math.min(idx, state.openTabs.length - 1);
-    switchToTab(state.openTabs[newIdx].id);
+  g.tabs.splice(idx, 1);
+  const view = g.view;
+  if (state.previewVisible && state.activeGroup === groupId && g.activeTabId === id3) {
+    togglePreview();
   }
-  renderTabsBar();
+  if (g.tabs.length === 0) {
+    g.activeTabId = null;
+    if (view) {
+      view.dom.style.display = "none";
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "" } });
+    }
+    $(groupElId("emptyState", groupId)).style.display = "flex";
+    if (groupId === 0) {
+      if (state.splitActive) {
+        await closeSplit();
+        renderTree();
+        updateStatusBar();
+        updateEolLabel();
+        saveSession();
+        return;
+      }
+      updateFormatButtons();
+      localStorage.removeItem("slate.session.v1");
+    }
+  } else if (g.activeTabId === id3) {
+    const newIdx = Math.min(idx, g.tabs.length - 1);
+    switchToTab(g.tabs[newIdx].id, groupId);
+  }
+  renderTabsBar(groupId);
   renderTree();
   updateStatusBar();
   updateEolLabel();
@@ -50918,7 +51261,6 @@ async function closeTab(id3) {
 var init_tabs = __esm({
   "web/src/editor/tabs.ts"() {
     init_state();
-    init_ui();
     init_ui();
     init_dist();
     init_cm();
@@ -72268,7 +72610,6 @@ var formatDialect = (query, _a2) => {
 // web/src/editor/commands.ts
 init_state();
 init_cm();
-init_theme();
 init_tabs();
 init_statusbar();
 init_ui();
@@ -72372,14 +72713,10 @@ function toggleEol() {
 }
 function toggleTheme() {
   state.lightTheme = !state.lightTheme;
-  const view = state.view;
   const root = document.getElementById("view-editor");
   if (root) root.classList.toggle("light-theme", state.lightTheme);
-  if (view) applyTheme(view, state.lightTheme);
-  if (state.rightView) {
-    state.rightView.dispatch({
-      effects: themeComp.reconfigure(state.lightTheme ? lightThemeExt : darkThemeExt)
-    });
+  for (const g of state.groups) {
+    if (g.view) applyTheme(g.view, state.lightTheme);
   }
   toast(state.lightTheme ? "\u5DF2\u5207\u6362\u4EAE\u8272\u4E3B\u9898" : "\u5DF2\u5207\u6362\u6697\u8272\u4E3B\u9898");
   saveSession();
@@ -72425,8 +72762,14 @@ function playMacro() {
     toast("\u6CA1\u6709\u5F55\u5236\u7684\u5B8F");
     return;
   }
+  const docLen = view.state.doc.length;
+  const changes = steps.map((s) => ({
+    from: Math.min(s.from, docLen),
+    to: Math.min(s.to, docLen),
+    insert: s.insert
+  }));
   view.dispatch({
-    changes: steps.map((s) => ({ from: s.from, to: s.to, insert: s.insert })),
+    changes,
     userEvent: "macro.replay"
   });
   toast(`\u5DF2\u56DE\u653E ${steps.length} \u6B65`);
@@ -72753,7 +73096,7 @@ async function openSearchResult(r2) {
     await openScannedFile({ name: name2, path: name2, absPath });
   }
   if (view) {
-    const line = Math.max(1, r2.line);
+    const line = Math.min(Math.max(1, r2.line), view.state.doc.lines);
     const lineObj = view.state.doc.line(line);
     view.dispatch({
       selection: { anchor: lineObj.from },
@@ -72772,6 +73115,7 @@ function showSearchReplacePanel(showReplace = true) {
     openSearchPanel(view);
     return;
   }
+  closeSearchPanel(view);
   searchPanel = document.createElement("div");
   searchPanel.id = "searchReplacePanel";
   searchPanel.innerHTML = `
@@ -72891,6 +73235,7 @@ function doReplaceAll() {
 // web/src/editor/keymap.ts
 function setupShortcuts() {
   document.addEventListener("keydown", (e) => {
+    if (document.querySelector('[data-slate-modal="1"]')) return;
     const view = document.getElementById("view-editor");
     if (!view || !view.classList.contains("active")) return;
     const code2 = e.code;
@@ -72978,148 +73323,140 @@ init_filetree();
 init_preview();
 init_split();
 init_minimap();
-init_session();
-init_split();
-init_statusbar();
 
-// web/src/editor/paste-image.ts
+// web/src/editor/contextmenu.ts
 init_state();
-init_preview();
-init_files();
-init_ui();
-init_state();
-var attached = false;
-function setupPasteImage() {
-  if (attached) return;
-  const view = state.view;
-  if (!view) return;
-  attached = true;
-  view.dom.addEventListener("paste", async (e) => {
-    if (!isMarkdownFile()) return;
-    const cd = e.clipboardData;
-    if (!cd) return;
-    let imageItem = null;
-    for (let i2 = 0; i2 < cd.items.length; i2++) {
-      if (cd.items[i2].type.indexOf("image") !== -1) {
-        imageItem = cd.items[i2];
-        break;
-      }
+init_split();
+var menu = null;
+function buildItems() {
+  const noFile = !state.view || state.openTabs.length === 0;
+  return [
+    {
+      label: "\u5DE6\u53F3\u5206\u5C4F",
+      checked: state.splitActive && state.splitMode === "horizontal",
+      disabled: noFile,
+      run: () => toggleSplitView("horizontal")
+    },
+    {
+      label: "\u4E0A\u4E0B\u5206\u5C4F",
+      checked: state.splitActive && state.splitMode === "vertical",
+      disabled: noFile,
+      run: () => toggleSplitView("vertical")
+    },
+    {
+      label: "\u5173\u95ED\u5206\u5C4F",
+      disabled: !state.splitActive,
+      // Toggle the current direction — same-direction toggle closes the split.
+      run: () => toggleSplitView(state.splitMode ?? "horizontal")
     }
-    if (!imageItem) return;
+  ];
+}
+function closeMenu() {
+  if (menu) {
+    menu.remove();
+    menu = null;
+  }
+  document.removeEventListener("mousedown", onOutside, true);
+  document.removeEventListener("keydown", onKey, true);
+  window.removeEventListener("scroll", closeMenu, true);
+  window.removeEventListener("resize", closeMenu);
+}
+function onOutside(e) {
+  if (menu && !menu.contains(e.target)) closeMenu();
+}
+function onKey(e) {
+  if (e.key === "Escape") {
     e.preventDefault();
-    const blob = imageItem.getAsFile();
-    if (!blob) return;
-    const timestamp = Date.now();
-    const ext = blob.type.replace("image/", "").replace("jpeg", "jpg");
-    const defaultName = `image-${timestamp}.${ext}`;
-    const choice = await showImagePasteDialog(defaultName);
-    if (!choice) return;
-    if (choice.action === "base64") {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const base64 = ev.target?.result;
-        insertImageMarkdown(choice.name, base64);
-      };
-      reader.readAsDataURL(blob);
-    } else if (choice.action === "save") {
-      if (!state.currentDirPath) {
-        toast("\u8BF7\u5148\u6253\u5F00\u4E00\u4E2A\u6587\u4EF6\u5939\u624D\u80FD\u4FDD\u5B58\u56FE\u7247");
-        return;
-      }
-      try {
-        const arr = new Uint8Array(await blob.arrayBuffer());
-        const saved = await saveImageToFolder(choice.name, arr);
-        if (saved) {
-          insertImageMarkdown(choice.name, choice.name);
-          await doRefreshFolder();
-          toast("\u56FE\u7247\u5DF2\u4FDD\u5B58: " + choice.name);
-        }
-      } catch (err) {
-        toast("\u4FDD\u5B58\u56FE\u7247\u5931\u8D25: " + err.message);
-      }
+    closeMenu();
+  }
+}
+function showMenu(x2, y2) {
+  closeMenu();
+  menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  const items = buildItems();
+  items.forEach((it2, i2) => {
+    if (i2 > 0) {
+      const sep = document.createElement("div");
+      sep.className = "ctx-sep";
+      menu.appendChild(sep);
     }
+    const row = document.createElement("div");
+    row.className = "ctx-item" + (it2.disabled ? " disabled" : "") + (it2.checked ? " checked" : "");
+    const lab = document.createElement("span");
+    lab.className = "ctx-label";
+    lab.textContent = it2.label;
+    row.appendChild(lab);
+    const tick = document.createElement("span");
+    tick.className = "ctx-tick";
+    tick.textContent = it2.checked ? "\u2713" : "";
+    row.appendChild(tick);
+    if (!it2.disabled) {
+      row.addEventListener("click", () => {
+        const fn2 = it2.run;
+        closeMenu();
+        fn2();
+      });
+    }
+    menu.appendChild(row);
   });
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let left = x2;
+  let top2 = y2;
+  if (left + rect.width > vw - 8) left = vw - rect.width - 8;
+  if (top2 + rect.height > vh - 8) top2 = vh - rect.height - 8;
+  menu.style.left = Math.max(8, left) + "px";
+  menu.style.top = Math.max(8, top2) + "px";
+  document.addEventListener("mousedown", onOutside, true);
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("scroll", closeMenu, true);
+  window.addEventListener("resize", closeMenu);
 }
-function insertImageMarkdown(alt, src) {
-  const view = state.view;
-  if (!view) return;
-  const md = `![${alt}](${src})`;
-  view.dispatch(view.state.replaceSelection(md));
-  view.focus();
-}
-function showImagePasteDialog(defaultName) {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10001;";
-    const dlg = document.createElement("div");
-    dlg.style.cssText = "background:#4b4b4b;border:1px solid #666;border-radius:8px;padding:20px;min-width:320px;box-shadow:0 4px 20px rgba(0,0,0,0.4);color:#e0e0e0;";
-    const saveDisabled = !state.currentDirPath;
-    dlg.innerHTML = `
-      <h3 style="margin:0 0 15px;font-size:16px;color:#e0e0e0;font-weight:500;">\u7C98\u8D34\u56FE\u7247</h3>
-      <p style="margin:0 0 15px;font-size:13px;color:#aaa;">\u68C0\u6D4B\u5230\u526A\u8D34\u677F\u4E2D\u7684\u56FE\u7247\uFF0C\u8BF7\u9009\u62E9\u5904\u7406\u65B9\u5F0F\uFF1A</p>
-      <div style="margin-bottom:15px;">
-        <label style="display:block;font-size:12px;color:#999;margin-bottom:5px;">\u56FE\u7247\u540D\u79F0</label>
-        <input type="text" id="imgNameInput" value="${defaultName}"
-          style="width:100%;padding:8px 10px;background:#3a3a3a;border:1px solid #555;
-                 border-radius:4px;color:#e0e0e0;font-size:13px;box-sizing:border-box;">
-      </div>
-      <div style="display:flex;gap:10px;">
-        <button id="btnBase64" style="flex:1;padding:8px;background:#5a5a5a;border:1px solid #777;
-          border-radius:4px;color:#e0e0e0;cursor:pointer;font-size:13px;">Base64 \u5D4C\u5165</button>
-        <button id="btnSave" style="flex:1;padding:8px;background:#5a8a5a;border:1px solid #7ab87a;
-          border-radius:4px;color:#fff;cursor:pointer;font-size:13px;${saveDisabled ? "opacity:0.5;cursor:not-allowed;" : ""}">\u4FDD\u5B58\u5230\u6587\u4EF6\u5939</button>
-        <button id="btnCancel" style="padding:8px 15px;background:transparent;border:1px solid #666;
-          border-radius:4px;color:#999;cursor:pointer;font-size:13px;">\u53D6\u6D88</button>
-      </div>`;
-    overlay.appendChild(dlg);
-    document.body.appendChild(overlay);
-    const input = dlg.querySelector("#imgNameInput");
-    setTimeout(() => {
-      input.focus();
-      input.select();
-    }, 10);
-    const finish = (c3) => {
-      overlay.remove();
-      resolve(c3);
-    };
-    dlg.querySelector("#btnBase64").addEventListener("click", () => {
-      finish({ action: "base64", name: input.value.trim() || defaultName });
-    });
-    dlg.querySelector("#btnSave").addEventListener("click", () => {
-      if (saveDisabled) return;
-      finish({ action: "save", name: input.value.trim() || defaultName });
-    });
-    dlg.querySelector("#btnCancel").addEventListener("click", () => finish(null));
-    overlay.addEventListener("mousedown", (e) => {
-      if (e.target === overlay) finish(null);
-    });
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") finish({ action: "base64", name: input.value.trim() || defaultName });
-    });
+function setupEditorContextMenu() {
+  document.addEventListener("contextmenu", (e) => {
+    if (!state.view) return;
+    const target = e.target;
+    if (!target) return;
+    const area = document.getElementById("editorArea");
+    if (!area || !area.contains(target)) return;
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY);
   });
 }
 
 // web/src/editor/index.ts
+init_session();
+init_statusbar();
+init_paste_image();
 init_ui();
 init_session();
 function onDocUpdate(u2) {
   recordMacroUpdate(u2);
+  const g = viewGroup(u2);
   if (u2.docChanged) {
-    const tab3 = state.openTabs.find((t2) => t2.id === state.activeTabId);
+    const tab3 = g.tabs.find((t2) => t2.id === g.activeTabId);
     if (tab3) {
       if (!tab3.modified) {
         tab3.modified = true;
-        renderTabsBar();
+        renderTabsBar(g.id);
         updateStatusBar();
       }
     }
     if (state.previewVisible && isMarkdownFile()) scheduleMdRender();
-    forwardChangesToSplit(u2);
     saveSession();
   }
   if (u2.selectionSet || u2.focusChanged) {
     updateStatusCursor();
-    if (u2.view.hasFocus) scheduleOccurrenceHighlight(u2.view);
+    if (u2.view.hasFocus) {
+      scheduleOccurrenceHighlight(u2.view);
+      if (g.id !== state.activeGroup) {
+        setActiveGroup(g.id);
+        syncPreviewPane();
+      }
+    }
   }
   if (u2.docChanged) {
     scheduleOccurrenceHighlight(u2.view);
@@ -73131,11 +73468,12 @@ async function initEditor() {
     if (!pane) throw new Error("#editorPane not found");
     state.onUpdate = onDocUpdate;
     state.buildExtensions = buildExtensions;
-    const view = createEditorView(pane, onDocUpdate);
+    const view = createEditorView(pane, 0, onDocUpdate);
     view.dom.style.display = "none";
     setupResizer();
     setupShortcuts();
-    setupPasteImage();
+    setupPasteImage(view);
+    setupEditorContextMenu();
     updateFormatButtons();
     await loadRecents();
     await restoreSession();

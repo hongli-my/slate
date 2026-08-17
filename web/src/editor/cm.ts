@@ -50,7 +50,7 @@ import {
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { EditorView as EV } from "@codemirror/view";
 
-import { state } from "./state";
+import { state, setActiveGroup } from "./state";
 import { darkThemeExt, lightThemeExt } from "./theme";
 import { languageForFile } from "./languages";
 
@@ -229,7 +229,9 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
-      ...searchKeymap,
+      // Drop CM6's built-in Ctrl+F (openSearchPanel) — it dynamically loads
+      // searchExtensions and spawns the native panel alongside our custom one.
+      ...searchKeymap.filter((k) => k.key !== "Mod-f"),
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
@@ -244,9 +246,17 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
   ];
 }
 
-/** Create the main EditorView mounted into `parent`. */
+/**
+ * 精简扩展集已移除——双独立可编辑分栏模型下，两个 group 都使用
+ * buildExtensions()（完整可编辑扩展集）。Phase 2 删除 buildReadOnlyExtensions。
+ */
+
+/** Create an EditorView mounted into `parent`, belonging to editor group
+ *  `groupId`. The focus listener routes file-open / statusbar updates to
+ *  whichever pane the user clicks. */
 export function createEditorView(
   parent: HTMLElement,
+  groupId: 0 | 1,
   onUpdate: (u: ViewUpdate) => void
 ): EditorView {
   const view = new EditorView({
@@ -257,12 +267,14 @@ export function createEditorView(
     }),
   });
   view.dom.style.display = "none"; // hidden until a tab is opened
-  state.view = view;
-  // Wire compartments into state for cross-module reconfigure calls.
+  state.groups[groupId].view = view;
+  // Wire compartments into state (idempotent — only needs to happen once).
   state.themeComp = themeComp as never;
   state.langComp = langComp as never;
   state.readOnlyComp = readOnlyComp as never;
   state.wrapComp = wrapComp as never;
+  // Focus routing: clicking this pane makes it the active group.
+  view.dom.addEventListener("mousedown", () => setActiveGroup(groupId), true);
   return view;
 }
 

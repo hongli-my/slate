@@ -4,7 +4,7 @@
 
 import { showMinimap } from "@replit/codemirror-minimap";
 import { EditorView } from "@codemirror/view";
-import { state } from "./state";
+import { state, groupElId } from "./state";
 import { minimapComp } from "./cm";
 import { $ } from "./ui";
 
@@ -15,18 +15,20 @@ export const minimapExtension = showMinimap.of({
 
 export function toggleMinimap(): void {
   state.minimapOn = !state.minimapOn;
-  const view = state.view;
-  const pane = $("editorPane");
-  const mm = document.getElementById("minimap");
-  if (pane) pane.classList.toggle("minimap-on", state.minimapOn);
-  // The old canvas minimap element is hidden; the @replit minimap renders
-  // inside the editor scroller. Toggle the extension via the compartment.
-  if (mm) mm.classList.toggle("visible", state.minimapOn && false); // legacy canvas kept off
-  if (view) {
-    view.dispatch({
-      effects: minimapComp.reconfigure(state.minimapOn ? [minimapExtension] : []),
-    });
+  // Toggle the minimap extension on every mounted group view.
+  for (const gi of [0, 1] as const) {
+    const pane = $(groupElId("editorPane", gi));
+    if (pane) pane.classList.toggle("minimap-on", state.minimapOn);
+    const v = state.groups[gi].view;
+    if (v) {
+      v.dispatch({
+        effects: minimapComp.reconfigure(state.minimapOn ? [minimapExtension] : []),
+      });
+    }
   }
+  // Legacy canvas minimap (group0 only, kept off — @replit minimap renders in-view).
+  const mm = document.getElementById("minimap");
+  if (mm) mm.classList.toggle("visible", state.minimapOn && false);
   if (state.minimapOn) toast2("已开启 Minimap");
 }
 

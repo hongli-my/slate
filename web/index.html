@@ -230,23 +230,36 @@
                 </div>
             </div>
             <div class="main">
-                <div class="tabs-bar" id="tabsBar"></div>
                 <div class="editor-area" id="editorArea">
-                    <div class="editor-pane" id="editorPane">
-                        <button class="editor-format-btn" id="btnFormat" onclick="formatSQL()">&#9998; 格式化 SQL</button>
-                        <button class="editor-format-btn" id="btnFormatJson" onclick="formatJSON()">&#9998; 格式化 JSON</button>
-                        <button class="editor-preview-btn" id="btnPreviewFloat" onclick="togglePreview()">&#128065; 预览</button>
-                        <div class="empty-state" id="emptyState">
-                            <div class="big-icon">&#128221;</div>
-                            <h2>代码编辑器</h2>
-                            <p>从菜单「文件 ▸ 打开文件夹」开始</p>
-                            <p style="margin-top:12px;font-size:12px;color:#555;">支持 C/C++, Python, JavaScript, Go, Rust, Java 等语法高亮</p>
-                            <p style="margin-top:4px;font-size:12px;color:#555;">Markdown 文件支持实时预览</p>
+                    <div class="editor-group focused" id="group0" data-group="0">
+                        <div class="tabs-bar" id="tabsBar"></div>
+                        <div class="editor-pane" id="editorPane">
+                            <button class="editor-format-btn" id="btnFormat" onclick="formatSQL()">&#9998; 格式化 SQL</button>
+                            <button class="editor-format-btn" id="btnFormatJson" onclick="formatJSON()">&#9998; 格式化 JSON</button>
+                            <button class="editor-preview-btn" id="btnPreviewFloat" onclick="togglePreview()">&#128065; 预览</button>
+                            <div class="empty-state" id="emptyState">
+                                <div class="big-icon">&#128221;</div>
+                                <h2>代码编辑器</h2>
+                                <p>从菜单「文件 ▸ 打开文件夹」开始</p>
+                                <p style="margin-top:12px;font-size:12px;color:#555;">支持 C/C++, Python, JavaScript, Go, Rust, Java 等语法高亮</p>
+                                <p style="margin-top:4px;font-size:12px;color:#555;">Markdown 文件支持实时预览</p>
+                            </div>
+                            <div class="preview-pane" id="previewPane"></div>
+                            <div class="minimap" id="minimap">
+                                <canvas></canvas>
+                                <div class="minimap-viewport"></div>
+                            </div>
                         </div>
-                        <div class="preview-pane" id="previewPane"></div>
-                        <div class="minimap" id="minimap">
-                            <canvas></canvas>
-                            <div class="minimap-viewport"></div>
+                    </div>
+                    <div class="editor-group" id="group1" data-group="1" hidden>
+                        <div class="tabs-bar" id="tabsBar1"></div>
+                        <div class="editor-pane" id="editorPane1">
+                            <div class="empty-state" id="emptyState1">
+                                <div class="big-icon">&#128221;</div>
+                                <h2>分栏编辑区</h2>
+                                <p style="font-size:12px;color:#555;">从文件树打开文件到此栏</p>
+                            </div>
+                            <div class="preview-pane" id="previewPane1"></div>
                         </div>
                     </div>
                 </div>

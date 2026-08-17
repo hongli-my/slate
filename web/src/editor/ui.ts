@@ -67,7 +67,18 @@ export function customConfirm(opts: {
       `</div>`;
     overlay.appendChild(dlg);
     document.body.appendChild(overlay);
+    // M2: onKey 提到外层，done() 统一移除——否则通过按钮/遮罩关闭时
+    // keydown 监听器泄漏（每次操作 +1，N 次后每次按键触发 N 次 no-op）。
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        done("cancel");
+      } else if (e.key === "Enter") {
+        done("yes");
+      }
+    }
+    document.addEventListener("keydown", onKey);
     const done = (c: ConfirmChoice) => {
+      document.removeEventListener("keydown", onKey);
       overlay.remove();
       resolve(c);
     };
@@ -80,18 +91,8 @@ export function customConfirm(opts: {
     overlay.addEventListener("mousedown", (e) => {
       if (e.target === overlay) done("cancel");
     });
-    document.addEventListener(
-      "keydown",
-      function onKey(e: KeyboardEvent) {
-        if (e.key === "Escape") {
-          document.removeEventListener("keydown", onKey);
-          done("cancel");
-        } else if (e.key === "Enter") {
-          document.removeEventListener("keydown", onKey);
-          done("yes");
-        }
-      }
-    );
+    // M10: 模态期间屏蔽全局快捷键——keymap.ts 检查该属性后 return。
+    overlay.dataset.slateModal = "1";
     // focus primary
     const yesBtn = dlg.querySelector('[data-act="yes"]') as HTMLButtonElement | null;
     yesBtn?.focus();

@@ -52,10 +52,17 @@ export function playMacro(): void {
     toast("没有录制的宏");
     return;
   }
-  // FIX #13: single dispatch with all changes (positions relative to
-  // pre-dispatch doc -> no offset drift like the old loop version).
+  // 录制的 from/to 是录制时相对于 pre-change doc 的绝对偏移。若文档此后
+  // 被缩短，超界位置会让 CM6 dispatch 抛 "Position X is out of range"。
+  // 裁剪到当前 doc.length（语义上：超界时锚定到文末）。
+  const docLen = view.state.doc.length;
+  const changes = steps.map((s) => ({
+    from: Math.min(s.from, docLen),
+    to: Math.min(s.to, docLen),
+    insert: s.insert,
+  }));
   view.dispatch({
-    changes: steps.map((s) => ({ from: s.from, to: s.to, insert: s.insert })),
+    changes,
     userEvent: "macro.replay",
   });
   toast(`已回放 ${steps.length} 步`);

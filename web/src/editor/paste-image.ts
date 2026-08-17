@@ -2,20 +2,16 @@
 // Paste-image support for Markdown files (ported from editor.js).
 // Offers Base64 embed or save-to-folder, then inserts the markdown image.
 
+import type { EditorView } from "@codemirror/view";
 import { state, getActiveTab } from "./state";
 import { isMarkdownFile } from "./preview";
 import { saveImageToFolder, doRefreshFolder } from "./files";
 import { toast, customConfirm } from "./ui";
 import { basename } from "./state";
 
-let attached = false;
-
-/** Attach a paste listener to the main editor's DOM. Call after view init. */
-export function setupPasteImage(): void {
-  if (attached) return;
-  const view = state.view;
-  if (!view) return;
-  attached = true;
+/** Attach a paste listener to an editor view's DOM. Call once per view
+ *  (group0 at boot, group1 when the split is mounted). */
+export function setupPasteImage(view: EditorView): void {
   view.dom.addEventListener("paste", async (e) => {
     if (!isMarkdownFile()) return;
     const cd = e.clipboardData;

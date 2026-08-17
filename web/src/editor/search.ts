@@ -11,6 +11,7 @@ import {
   replaceAll,
   selectMatches,
   openSearchPanel,
+  closeSearchPanel,
 } from "@codemirror/search";
 import { state, getActiveTab } from "./state";
 import { $, escapeHtml, toast } from "./ui";
@@ -104,7 +105,9 @@ async function openSearchResult(r: SearchHit): Promise<void> {
     await openScannedFile({ name, path: name, absPath });
   }
   if (view) {
-    const line = Math.max(1, r.line);
+    // 裁剪到当前 doc 的有效行范围——r.line 来自磁盘文件，若该 tab 已被
+    // 编辑（行数变少），未裁剪的 doc.line(line) 会抛 RangeError。
+    const line = Math.min(Math.max(1, r.line), view.state.doc.lines);
     const lineObj = view.state.doc.line(line);
     view.dispatch({
       selection: { anchor: lineObj.from },
@@ -129,6 +132,9 @@ export function showSearchReplacePanel(showReplace = true): void {
     openSearchPanel(view);
     return;
   }
+  // Close CM6's built-in search panel if it was opened via other shortcuts
+  // (F3/Mod-g), so only our custom panel is visible.
+  closeSearchPanel(view);
   searchPanel = document.createElement("div");
   searchPanel.id = "searchReplacePanel";
   searchPanel.innerHTML = `

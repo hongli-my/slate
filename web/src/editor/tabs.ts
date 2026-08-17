@@ -1,28 +1,29 @@
 // web/src/editor/tabs.ts
 // Tab bar rendering + open/close/switch. FIX #9: confirm on close if modified.
 // Tab switching preserves per-tab EditorState (undo history) via view.setState.
+// Phase 2: group-aware — each editor group has its own tab list + tab bar.
 
-import { state, getActiveTab, type Tab, basename } from "./state";
-import { $ } from "./ui";
-import { customConfirm } from "./ui";
-import { EditorView } from "@codemirror/view";
+import { state, getActiveTab, setActiveGroup, groupElId, type Tab, basename } from "./state";
+import { $, customConfirm } from "./ui";
 import { EditorState } from "@codemirror/state";
 import { setLanguage, setReadOnly, clearOccurrences, applyTheme } from "./cm";
 import { languageLabel } from "./languages";
 import { saveCurrentFile } from "./files";
 import { updateStatusBar, updateEolLabel } from "./statusbar";
 import { renderTree } from "./filetree";
-import { updateFormatButtons, refreshPreviewIfVisible } from "./preview";
+import { updateFormatButtons, refreshPreviewIfVisible, togglePreview } from "./preview";
 import { saveSession } from "./session";
-import { syncSplitToTab } from "./split";
+import { closeSplit } from "./split";
 import { refreshMinimap } from "./minimap";
 
-export function renderTabsBar(): void {
-  const bar = $("tabsBar");
+export function renderTabsBar(groupId: 0 | 1 = state.activeGroup): void {
+  const bar = $(groupElId("tabsBar", groupId));
+  if (!bar) return;
   bar.innerHTML = "";
-  for (const tab of state.openTabs) {
+  const g = state.groups[groupId];
+  for (const tab of g.tabs) {
     const el = document.createElement("div");
-    el.className = "tab" + (tab.id === state.activeTabId ? " active" : "");
+    el.className = "tab" + (tab.id === g.activeTabId ? " active" : "");
     const name = document.createElement("span");
     name.className = "tab-name";
     name.textContent = tab.name + (tab.modified ? " \u2022" : "");
@@ -35,7 +36,7 @@ export function renderTabsBar(): void {
       void closeTab(tab.id);
     };
     el.appendChild(close);
-    el.onclick = () => switchToTab(tab.id);
+    el.onclick = () => switchToTab(tab.id, groupId);
     bar.appendChild(el);
   }
 }
@@ -64,7 +65,8 @@ export function addTab(
   absPath: string | null,
   encoding = "utf-8",
   eol: "LF" | "CRLF" = "LF",
-  mtimeMs: number | null = null
+  mtimeMs: number | null = null,
+  groupId: 0 | 1 = state.activeGroup
 ): Tab {
   const id = ++state.tabIdCounter;
   const tab: Tab = {
@@ -79,25 +81,26 @@ export function addTab(
     mtimeMs,
     lang: languageLabel(name),
   };
-  state.openTabs.push(tab);
-  switchToTab(id);
+  state.groups[groupId].tabs.push(tab);
+  switchToTab(id, groupId);
   return tab;
 }
 
-export function switchToTab(id: number): void {
-  const view = state.view;
+export function switchToTab(id: number, groupId: 0 | 1 = state.activeGroup): void {
+  const g = state.groups[groupId];
+  const view = g.view;
   if (!view) return;
-  const tab = state.openTabs.find((t) => t.id === id);
+  const tab = g.tabs.find((t) => t.id === id);
   if (!tab) return;
 
   // Save the outgoing tab's live state (preserves its undo history).
-  if (state.activeTabId != null && state.activeTabId !== id) {
-    const old = state.openTabs.find((t) => t.id === state.activeTabId);
+  if (g.activeTabId != null && g.activeTabId !== id) {
+    const old = g.tabs.find((t) => t.id === g.activeTabId);
     if (old) old.cmState = view.state;
   }
 
-  state.activeTabId = id;
-  $("emptyState").style.display = "none";
+  g.activeTabId = id;
+  $(groupElId("emptyState", groupId)).style.display = "none";
   view.dom.style.display = "";
 
   // Swap to the tab's saved state (per-tab undo history preserved).
@@ -105,7 +108,6 @@ export function switchToTab(id: number): void {
   if (saved instanceof EditorState) {
     view.setState(saved);
   } else {
-    // Fresh tab whose state couldn't be built: load content via dispatch.
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: String(saved ?? "") } });
   }
   // Re-apply global theme + this file's language + readonly after the swap.
@@ -113,24 +115,33 @@ export function switchToTab(id: number): void {
   setLanguage(view, tab.name);
   setReadOnly(view, false);
   clearOccurrences(view);
+
+  setActiveGroup(groupId);
   view.focus();
 
-  renderTabsBar();
+  renderTabsBar(groupId);
   renderTree();
   updateStatusBar();
   updateEolLabel();
   updateFormatButtons();
   refreshPreviewIfVisible();
-  syncSplitToTab();
   refreshMinimap();
   saveSession();
 }
 
-/** Close a tab. If modified, ask Save/Don't Save/Cancel (FIX #9). */
+/** Close a tab. If modified, ask Save/Don't Save/Cancel (FIX #9).
+ *  Locates the tab across both groups. */
 export async function closeTab(id: number): Promise<void> {
-  const idx = state.openTabs.findIndex((t) => t.id === id);
-  if (idx === -1) return;
-  const tab = state.openTabs[idx];
+  // Locate the tab across all groups.
+  let groupId: 0 | 1 | -1 = -1;
+  let idx = -1;
+  for (let i = 0 as 0 | 1; i < 2; i = (i + 1) as 0 | 1) {
+    idx = state.groups[i].tabs.findIndex((t) => t.id === id);
+    if (idx !== -1) { groupId = i; break; }
+  }
+  if (groupId === -1) return;
+  const g = state.groups[groupId];
+  const tab = g.tabs[idx];
 
   if (tab.modified) {
     const choice = await customConfirm({
@@ -143,25 +154,51 @@ export async function closeTab(id: number): Promise<void> {
     });
     if (choice === "cancel") return;
     if (choice === "yes") {
+      // Route save to the tab's group.
+      const prev = state.activeGroup;
+      setActiveGroup(groupId);
       const ok = await saveCurrentFile();
-      if (!ok) return; // save failed/cancelled, keep tab open
+      setActiveGroup(prev);
+      if (!ok) return;
     }
   }
 
-  state.openTabs.splice(idx, 1);
-  const view = state.view;
-  if (state.openTabs.length === 0) {
-    state.activeTabId = null;
-    if (view) view.dom.style.display = "none";
-    $("emptyState").style.display = "flex";
-    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "" } });
-    updateFormatButtons();
-    localStorage.removeItem("slate.session.v1");
-  } else if (state.activeTabId === id) {
-    const newIdx = Math.min(idx, state.openTabs.length - 1);
-    switchToTab(state.openTabs[newIdx].id);
+  g.tabs.splice(idx, 1);
+  const view = g.view;
+  // Close preview if closing the active tab of the active group.
+  if (state.previewVisible && state.activeGroup === groupId && g.activeTabId === id) {
+    togglePreview();
   }
-  renderTabsBar();
+
+  if (g.tabs.length === 0) {
+    g.activeTabId = null;
+    if (view) {
+      view.dom.style.display = "none";
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: "" } });
+    }
+    $(groupElId("emptyState", groupId)).style.display = "flex";
+
+    if (groupId === 0) {
+      // group0 empty: if split is open, close it (merges group1 tabs into group0).
+      if (state.splitActive) {
+        await closeSplit(); // closeSplit switches to the merged tab + renders.
+        renderTree();
+        updateStatusBar();
+        updateEolLabel();
+        saveSession();
+        return;
+      }
+      // No split, truly empty.
+      updateFormatButtons();
+      localStorage.removeItem("slate.session.v1");
+    }
+    // group1 empty: keep split open (VS Code-style empty group).
+  } else if (g.activeTabId === id) {
+    // Closed the active tab — switch to neighbor in same group.
+    const newIdx = Math.min(idx, g.tabs.length - 1);
+    switchToTab(g.tabs[newIdx].id, groupId);
+  }
+  renderTabsBar(groupId);
   renderTree();
   updateStatusBar();
   updateEolLabel();
