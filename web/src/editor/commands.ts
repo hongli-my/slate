@@ -9,6 +9,11 @@ import { updateStatusBar, updateEolLabel } from "./statusbar";
 import { toast } from "./ui";
 import { saveSession } from "./session";
 
+// Flink 分布提示（distribution hint）：JOIN [shuffle](...) / JOIN [broadcast](...)
+// sql-formatter 的解析文法不支持该语法，格式化前先替换为注释占位符，格式化后还原。
+const FLINK_HINT_RE = /\[(shuffle|broadcast)\]\s*(?=\()/gi;
+const FLINK_HINT_RESTORE_RE = /\/\*HINT:(shuffle|broadcast)\*\//g;
+
 export function formatSQL(): void {
   const view = state.view;
   if (!view) return;
@@ -17,12 +22,14 @@ export function formatSQL(): void {
   const btn = document.getElementById("btnFormat");
   try {
     const raw = view.state.doc.toString();
+    // 预处理：保护 [shuffle]( / [broadcast]( 分布提示，避免 sql-formatter 报语法错误
+    const sanitized = raw.replace(FLINK_HINT_RE, "/*HINT:$1*/");
     const dialects = ["mysql", "mariadb", "postgresql", "sql"] as const;
     let formatted: string | null = null;
     let lastErr: unknown = null;
     for (const lang of dialects) {
       try {
-        formatted = sqlFormat(raw, {
+        formatted = sqlFormat(sanitized, {
           language: lang,
           tabWidth: 4,
           useTabs: false,
@@ -36,11 +43,13 @@ export function formatSQL(): void {
     }
     if (formatted === null) {
       try {
-        formatted = sqlFormat(raw, { tabWidth: 4, useTabs: false, keywordCase: "upper" });
+        formatted = sqlFormat(sanitized, { tabWidth: 4, useTabs: false, keywordCase: "upper" });
       } catch (e2) {
         throw lastErr || e2;
       }
     }
+    // 还原分布提示：/*HINT:shuffle*/ -> [shuffle]
+    formatted = formatted.replace(FLINK_HINT_RESTORE_RE, "[$1]");
     replaceWholeDoc(view, formatted);
     if (btn) {
       btn.textContent = "\u2713 已格式化";

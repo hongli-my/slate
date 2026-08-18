@@ -72614,6 +72614,8 @@ init_tabs();
 init_statusbar();
 init_ui();
 init_session();
+var FLINK_HINT_RE = /\[(shuffle|broadcast)\]\s*(?=\()/gi;
+var FLINK_HINT_RESTORE_RE = /\/\*HINT:(shuffle|broadcast)\*\//g;
 function formatSQL() {
   const view = state.view;
   if (!view) return;
@@ -72622,12 +72624,13 @@ function formatSQL() {
   const btn = document.getElementById("btnFormat");
   try {
     const raw = view.state.doc.toString();
+    const sanitized = raw.replace(FLINK_HINT_RE, "/*HINT:$1*/");
     const dialects = ["mysql", "mariadb", "postgresql", "sql"];
     let formatted = null;
     let lastErr = null;
     for (const lang of dialects) {
       try {
-        formatted = format(raw, {
+        formatted = format(sanitized, {
           language: lang,
           tabWidth: 4,
           useTabs: false,
@@ -72641,11 +72644,12 @@ function formatSQL() {
     }
     if (formatted === null) {
       try {
-        formatted = format(raw, { tabWidth: 4, useTabs: false, keywordCase: "upper" });
+        formatted = format(sanitized, { tabWidth: 4, useTabs: false, keywordCase: "upper" });
       } catch (e2) {
         throw lastErr || e2;
       }
     }
+    formatted = formatted.replace(FLINK_HINT_RESTORE_RE, "[$1]");
     replaceWholeDoc(view, formatted);
     if (btn) {
       btn.textContent = "\u2713 \u5DF2\u683C\u5F0F\u5316";
