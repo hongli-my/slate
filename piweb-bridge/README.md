@@ -1,0 +1,204 @@
+# pi-bridge
+
+把 [`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) 的 `AgentSession` 桥接成 HTTP/SSE 服务，供 OpenResty 下的 **piweb** 前端消费。
+
+## 它在整体架构中的位置
+
+```
+浏览器 http://localhost/  “对话”tab
+   │ iframe
+   ▼
+OpenResty  /piweb/            静态文件 (nginx/html/piweb)
+           /piweb/api/*  ──反代──▶  pi-bridge :8643  ──SDK──▶  pi AgentSession
+                                         │
+                                         ▼
+                                   LLM (OpenAI 兼容 / Anthropic / ...)
+```
+
+- **前端** `nginx/html/piweb/`：纯静态，复刻自 Hermes WebUI 外壳，事件处理改为 pi 原生 `AgentSessionEvent`
+- **反代** `nginx/conf/piweb.conf`：`/piweb/api/` → `127.0.0.1:8643`，SSE 关闭 buffering
+- **桥接** `pi-bridge.ts`（本目录）：HTTP/SSE 对外，进程内用 SDK 驱动 `AgentSession`，事件原样透传
+
+## 协议
+
+| 层 | 协议 |
+|----|------|
+| 浏览器 ↔ OpenResty | HTTP + SSE（`text/event-stream`） |
+| OpenResty ↔ pi-bridge | HTTP 反代 |
+| pi-bridge ↔ pi | SDK 进程内 `session.subscribe()` 事件流 |
+
+**事件语义**：pi 的 `AgentSessionEvent` 原样序列化为 SSE `data: <json>`，消息体由 pi-bridge 转成前端兼容格式（`content` string + `tool_calls` + `reasoning`），前端渲染逻辑无需改动。
+
+主要事件类型：
+`agent_start` · `turn_start` · `message_start` · `message_update`(`text_delta`/`thinking_delta`/`toolcall_*`) · `tool_execution_start`/`update`/`end` · `message_end` · `turn_end` · `agent_end` · `agent_settled` · `extension_ui_request` · `queue_update`
+
+## pi session 与目录的关系（重要）
+
+pi 的 session **按 cwd（工作目录）分目录存储**，无需额外关联表：
+
+```
+~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
+```
+
+- 编码规则：cwd 去掉前导 `/`，把 `/ \ :` 替换成 `-`，首尾加 `--`
+  例：`/Users/honglichang/openresty` → `--Users-honglichang-openresty--`
+- 每个 session 文件头记录原始 `cwd`，`SessionInfo.cwd` 直接返回
+
+piweb 的"项目"概念 = pi 的 cwd：
+- `GET /projects` 从所有 session 的 cwd 聚合出真实目录列表（`id=cwd`, `name=目录名`）
+- 默认"全部目录"显示所有会话；选中某目录只显示该目录的会话
+- 新建会话用当前选中目录（或默认 `PIWEB_CWD`）作为 cwd，agent 的文件操作以此为根
+
+## 启动
+
+### 1. 准备模型认证（与 pi CLI 一致，通常已在 shell 环境）
+
+```bash
+export PI_PROVIDER=my-openai-proxy
+export PI_MODEL=glm5-cdp
+export OPENAI_API_KEY=sk-xxx
+export OPENAI_BASE_URL=http://your-proxy/v1
+```
+
+### 2. 启动 pi-bridge
+
+**前台启动**（调试用）：
+```bash
+cd ~/ai-home/slate/piweb-bridge
+./start.sh
+# 或
+./start.sh foreground
+```
+
+**后台启动**（推荐）：
+```bash
+cd ~/ai-home/slate/piweb-bridge
+./start.sh start
+```
+
+**其他管理命令**：
+```bash
+./start.sh stop      # 停止
+./start.sh restart   # 重启
+./start.sh status    # 查看状态
+./start.sh logs      # 查看日志（tail -f）
+```
+
+**日志位置**：`pi-bridge.log`（自动创建在 piweb-bridge 目录）
+
+**PID 文件**：`pi-bridge.pid`（用于进程管理）
+
+### 3. OpenResty（已配置，只需 reload）
+
+```bash
+cd /Users/honglichang/openresty
+./nginx/sbin/nginx -t && ./nginx/sbin/nginx -s reload
+```
+
+### 4. 访问
+
+打开 http://localhost/ ，点"对话"tab。
+
+## 配置项
+
+| 环境变量 | 默认 | 说明 |
+|---------|------|------|
+| `PIWEB_PORT` | 8643 | 监听端口 |
+| `PIWEB_CWD` | `~/ai-home`（脚本上级目录） | 新建会话的默认工作目录 |
+| `PIWEB_AGENT_DIR` | `~/.pi/agent` | pi 配置目录（auth.json/models.json/sessions） |
+| `PI_PROVIDER` | - | 模型 provider，与 pi CLI 一致 |
+| `PI_MODEL` | - | 模型 id，与 pi CLI 一致 |
+| `OPENAI_*` | - | OpenAI 兼容接口认证 |
+
+## REST 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/health` | 健康检查 |
+| GET | `/sessions` | 会话列表（带 cwd） |
+| POST | `/sessions` | 新建会话（body: `working_dir`） |
+| GET | `/sessions/:id` | 会话详情 |
+| GET | `/sessions/:id/messages` | 消息（已转格式） |
+| DELETE | `/sessions/:id` | 删除会话 |
+| POST | `/sessions/:id/fork` | fork 当前路径为新会话 |
+| POST | `/chat/stream` | 流式对话（SSE） |
+| POST | `/steer` | 边跑边插话 |
+| POST | `/follow_up` | 跑完再做 |
+| POST | `/abort` | 中止当前 |
+| POST | `/ui-response` | 审批/扩展 UI 响应回传 |
+| GET | `/context` | 上下文用量 |
+| GET/POST | `/projects` | 项目=目录列表 / 新增目录 |
+| GET | `/projects/mapping` | sessionId → cwd |
+| GET/POST | `/model` `/providers` `/models` | 模型切换 |
+
+## 与 Hermes 的区别
+
+| | Hermes | piweb |
+|---|--------|-------|
+| 上游事件 | OpenAI delta + `hermes.*` 补丁 | pi 原生 `AgentSessionEvent` |
+| 工具进度 | `hermes.tool.progress/call/result` | `tool_execution_start/update/end`（含流式 partialResult） |
+| 思维链 | `delta.reasoning_content` | `thinking_delta` |
+| 审批 | `approval.request` + 独立 REST | `extension_ui_request` 子协议 |
+| 插话 | ❌ 无 | ✅ `steer` / `followUp` |
+| 会话 | 线性 session id | 树形 fork/branch |
+| 项目 | 人工 project_id 关联 | 天然 = cwd 目录 |
+
+## 编译为单二进制（供 Tauri sidecar 打包）
+
+pi-bridge 可用 `bun build --compile` 编译为单可执行二进制，随 [slate](..) app 作为 sidecar 打包分发。piweb-bridge 已迁入 slate 仓库（`slate/piweb-bridge/`），构建由 `slate/scripts/build-pi-bridge.sh` 一键完成（安装依赖 → 编译 → 拷入 `src-tauri/binaries/` → macOS ad-hoc 签名 + JIT entitlements），`tauri build` 的 `beforeBuildCommand` 自动调用：
+
+```bash
+cd ~/ai-home/slate
+bun run build:pi-bridge
+```
+
+手动编译（等价于脚本核心步骤）：
+
+```bash
+cd ~/ai-home/slate/piweb-bridge
+bun install
+bun build --compile --minify --sourcemap --target=bun-darwin-arm64 ./pi-bridge.ts --outfile pi-bridge
+mkdir -p ~/ai-home/slate/src-tauri/binaries
+cp pi-bridge ~/ai-home/slate/src-tauri/binaries/pi-bridge-aarch64-apple-darwin
+```
+
+产物 ~71MB（含 Bun runtime + pi SDK）。跨平台替换 `--target` 与文件名后缀：
+
+| 平台 | target | 产物用途 |
+|------|--------|----------|
+| macOS ARM | `bun-darwin-arm64` | `pi-bridge-aarch64-apple-darwin` |
+| macOS Intel | `bun-darwin-x64` | `pi-bridge-x86_64-apple-darwin` |
+| Linux x64 | `bun-linux-x64` | `pi-bridge-x86_64-unknown-linux-gnu` |
+| Windows x64 | `bun-windows-x64` | `pi-bridge-x86_64-pc-windows-msvc.exe` |
+
+**注意事项**：
+- ⚠️ 不要加 `--bytecode`：与 pi-bridge.ts:38 的 top-level await 不兼容。
+- 编译后 `import.meta.dir` / `__dirname` 指向虚拟 `/$bunfs/root/`，**读运行时用户配置必须用 `os.homedir()`**（pi-bridge 已如此，无需改动）。
+- 环境变量正常可用（`process.env`），所有 PIWEB_* / OPENAI_* 由宿主 app spawn 时注入。
+- macOS 分发需配 JIT entitlements（见 slate README）。
+
+## 调试
+
+```bash
+# 看日志
+tail -f /tmp/pi-bridge.log
+```
+
+常见问题：
+- **EADDRINUSE**：`pkill -f pi-bridge.ts` 后重启
+- **默认模型 401**：检查 `PI_PROVIDER`/`PI_MODEL`/`OPENAI_API_KEY` 是否与 pi CLI 一致
+- **hang 在 user message 后**：start.sh 已清除 `PI_SESSION_*` 环境变量，若仍 hang 检查是否误继承
+- **前端连接失败**：确认 pi-bridge 在跑（`curl http://localhost/piweb/api/health`）
+
+## 文件结构
+
+```
+~/ai-home/slate/piweb-bridge/
+├── pi-bridge.ts        # 桥接服务（HTTP/SSE + SDK）
+├── start.sh            # 启动脚本
+├── package.json
+└── README.md           # 本文件
+
+nginx/html/piweb/       # 前端（copy 自 hermes，已清理冗余）
+nginx/conf/piweb.conf   # 静态 + API 反代
+```

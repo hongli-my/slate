@@ -21,6 +21,24 @@ window.Hermes = window.Hermes || {};
   const esc = window.Hermes.esc;
   const api = window.Hermes.api;
 
+  // morphdom 优先替换 innerHTML：流式期保留 DOM identity，消除重排抖动与
+  // CSS animation 重启；未加载时降级为 innerHTML。childrenOnly 只 diff 子节点。
+  function _morph(el, html) {
+    if (window.morphdom) {
+      try {
+        window.morphdom(el, html, {
+          childrenOnly: true,
+          onBeforeElUpdated: function(fromEl, toEl) {
+            if (fromEl.isEqualNode(toEl)) return false;  // 跳过相同节点
+            return true;
+          }
+        });
+        return;
+      } catch(e) {}  // morphdom 失败则降级 innerHTML
+    }
+    el.innerHTML = html;
+  }
+
   // ---- 数据访问层（委托给 SessionManager）----
   const getMsgs = window.Hermes.getMsgs;
   const setMsgs = window.Hermes.setMsgs;
@@ -322,12 +340,14 @@ window.Hermes = window.Hermes || {};
     }
 
     // Step 3: 重新分组并渲染
+    // B2: 用 morphdom 替代 innerHTML 全替换，保留工具卡片等未变节点的 DOM identity，
+    // 消除回复结束瞬间的重排闪烁（与流式期 morphdom 策略一致）
     const freshTurns = window.Hermes.groupIntoTurns(msgs);
     if (freshTurns.length > 0) {
       const freshTurn = freshTurns[freshTurns.length - 1];
       var stepsHtml = window.Hermes.renderTurnStepsHTML(freshTurn);
       var stepsEl = turnEl.querySelector('.turn-steps');
-      if (stepsEl) stepsEl.innerHTML = stepsHtml;
+      if (stepsEl) _morph(stepsEl, stepsHtml);
     }
 
     // 去掉 data-streaming 标记
@@ -383,7 +403,11 @@ window.Hermes = window.Hermes || {};
           // 思考出现/消失、正文出现等结构性变化才全量重建。
           var _ts = streamingMsg._toolSteps || [];
           var _toolSig = _ts.map(function(s) {
-            return (s.running ? 'r' : (s.result !== undefined ? 'd' : 'p')) + '|' + (s.toolCallId || '') + '|' + (s.name || '') + '|' + (s.result != null ? String(s.result).length : 0);
+            // running 时不计 result 长度：partialResult 更新（tool_execution_update）
+            // 对 running 卡片 UI 无影响（renderToolCard running 态只显示 spinner+计时，
+            // 不读 result），避免 partialResult 频繁更新触发无意义全量 stepsEl 重建。
+            var base = (s.running ? 'r' : (s.result !== undefined ? 'd' : 'p')) + '|' + (s.toolCallId || '') + '|' + (s.name || '');
+            return s.running ? base : (base + '|' + (s.result != null ? String(s.result).length : 0));
           }).join(',');
           var _sig = [
             'tc=' + _ts.length,
@@ -407,18 +431,18 @@ window.Hermes = window.Hermes || {};
               var _stableEl = _finalBody.querySelector('.md-stable');
               var _activeEl = _finalBody.querySelector('.md-active');
               if (_activeEl) {
-                if (_sfSplit.stableChanged && _stableEl) _stableEl.innerHTML = _sfSplit.stableHtml;
-                _activeEl.innerHTML = _sfSplit.activeHtml;
+                if (_sfSplit.stableChanged && _stableEl) _morph(_stableEl, _sfSplit.stableHtml);
+                _morph(_activeEl, _sfSplit.activeHtml);
               } else {
                 // 兼容旧 DOM（未拆分容器，如 finalize 后残留）
-                _finalBody.innerHTML = _sfSplit.fullHtml;
+                _morph(_finalBody, _sfSplit.fullHtml);
               }
             }
             var _tmBody = streamingTurnEl.querySelector('.tm-active .tm-body');
             if (_tmBody && streamingMsg.reasoning) {
               var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
               var _tmStick = _tmOff < 24;
-              _tmBody.innerHTML = window.Hermes.renderStreamingMarkdown(streamingMsg.reasoning.trim(), 'tm');
+              _morph(_tmBody, window.Hermes.renderStreamingMarkdown(streamingMsg.reasoning.trim(), 'tm'));
               _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
             }
             if (atBottom) _pinToBottom();
@@ -481,7 +505,7 @@ window.Hermes = window.Hermes || {};
               if (agentBody) agentBody.insertAdjacentHTML('afterend', newMarginHtml);
             } else if (tmOldBody) {
               // 骨架已存在：只更新 body 内容
-              tmOldBody.innerHTML = window.Hermes.renderStreamingMarkdown((streamingMsg.reasoning || '').trim(), 'tm');
+              _morph(tmOldBody, window.Hermes.renderStreamingMarkdown((streamingMsg.reasoning || '').trim(), 'tm'));
             }
           } else if (marginEl) {
             // 思考结束 → 移除气泡

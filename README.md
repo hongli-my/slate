@@ -46,7 +46,7 @@ openresty 项目下原有两个编辑器实现和一组本地工具服务：
 - **前端**：纯 HTML/CSS/JS，零框架；编辑器 CodeMirror 6（esbuild 打包）
 - **后端**：Rust + rusqlite（bundled SQLite），Tauri command IPC
 - **插件**：tauri-plugin-global-shortcut / tauri-plugin-dialog / tauri-plugin-fs / tauri-plugin-log / tauri-plugin-shell（sidecar 进程管理）
-- **对话引擎**：[piweb-bridge](../piweb-bridge) 编译为单二进制，作为 Tauri sidecar 随 app 打包；app 启动自动拉起，设置页可管理
+- **对话引擎**：[piweb-bridge](./piweb-bridge)（本仓库子目录）编译为单二进制，作为 Tauri sidecar 随 app 打包；app 启动自动拉起，设置页可管理
 
 ### 目录结构
 
@@ -65,6 +65,13 @@ slate/
 │  └─ chat/                  # 对话前端（Hermes/Pi WebUI，纯前端薄客户端）
 │     ├─ index.html          # 装载 13 个 JS 模块
 │     └─ js/                 # state/api/session/chat/gateway/router/admin ...
+├─ piweb-bridge/              # 对话引擎源码（已迁入本仓库，独立依赖）
+│  ├─ pi-bridge.ts            # 桥接服务（HTTP/SSE + pi SDK）
+│  ├─ start.sh                # 独立运行启动脚本（dev 用；sidecar 模式由 Rust 拉起）
+│  ├─ package.json            # pi SDK + croner 依赖
+│  └─ README.md               # piweb-bridge 详细文档
+├─ scripts/
+│  └─ build-pi-bridge.sh      # 编译 pi-bridge sidecar + 签名（tauri build 自动调用）
 └─ src-tauri/
    ├─ Cargo.toml             # tauri 2 + rusqlite(bundled) + 5 个 plugin + reqwest + tokio
    ├─ tauri.conf.json        # 窗口/CSP/图标/externalBin/macOS entitlements
@@ -160,35 +167,25 @@ bun install          # 67 packages → node_modules/，esbuild 才能解析 @cod
 
 ### 二、编译 pi-bridge sidecar
 
-piweb-bridge 编译为单二进制并拷入 sidecar 目录（文件名按 target triple 命名）：
+piweb-bridge 源码已迁入本仓库 `piweb-bridge/`，构建脚本 `scripts/build-pi-bridge.sh` 一键完成：安装依赖 → `bun build --compile` → 拷入 `src-tauri/binaries/pi-bridge-<triple>` → macOS ad-hoc 签名 + JIT entitlements。
 
-```bash
-cd ~/ai-home/piweb-bridge
-bun install
-bun build --compile --minify --sourcemap --target=bun-darwin-arm64 ./pi-bridge.ts --outfile pi-bridge
-mkdir -p ~/ai-home/slate/src-tauri/binaries
-cp pi-bridge ~/ai-home/slate/src-tauri/binaries/pi-bridge-aarch64-apple-darwin
-```
-
-> ⚠️ `--bytecode` 与 top-level await 不兼容（pi-bridge.ts:38），不要加。其他平台替换 `--target` 与文件名后缀（如 `bun-darwin-x64` → `pi-bridge-x86_64-apple-darwin`）。
-
-产物 ~74MB（含 Bun runtime + pi SDK）。
-
-### 三、签名 sidecar（hardened runtime 必须）
-
-app 开启 `hardenedRuntime: true`，而 bun 用 JavaScriptCore 需 JIT，sidecar 必须在打包前以 ad-hoc 签名 + JIT entitlements，否则运行时被内核直接 kill：
+`tauri build` 的 `beforeBuildCommand` 已自动串联此脚本（`bun run build && bun run build:pi-bridge`），**生产打包无需手动执行**。仅 `tauri dev` 在全新 clone（sidecar 二进制尚未生成）时需先手动跑一次：
 
 ```bash
 cd ~/ai-home/slate
-codesign --force --sign - \
-  --entitlements src-tauri/Entitlements.plist \
-  src-tauri/binaries/pi-bridge-aarch64-apple-darwin
-codesign -dv src-tauri/binaries/pi-bridge-aarch64-apple-darwin   # 验证 Signature=adhoc
+bun run build:pi-bridge     # 产物 ~71MB（含 Bun runtime + pi SDK），自动签名
 ```
 
-> 这一步同时规避 [tauri#11992](https://github.com/tauri-apps/tauri/issues/11992)（sidecar 签名顺序偶致公证失败）——在 `beforeBuildCommand` 阶段预先签好，bundler 直接复用。
+跨平台编译用环境变量覆盖宿主默认：
 
-### 四、构建 app
+| 环境变量 | 说明 | 示例 |
+|---------|------|------|
+| `PI_BRIDGE_TARGET` | bun `--target` | `bun-darwin-x64` |
+| `PI_BRIDGE_TRIPLE` | rust target triple（决定 sidecar 文件名） | `x86_64-apple-darwin` |
+
+> ⚠️ `--bytecode` 与 top-level await 不兼容（pi-bridge.ts:38），脚本未加。macOS 签名同时规避 [tauri#11992](https://github.com/tauri-apps/tauri/issues/11992)——sidecar 在 `beforeBuildCommand` 阶段预先签好，bundler 直接复用。
+
+### 三、构建 app
 
 ```bash
 cd ~/ai-home/slate
@@ -196,7 +193,7 @@ bunx tauri dev       # 开发（热重载，先跑 bun run build:watch）
 bunx tauri build     # 生产打包
 ```
 
-`tauri build` 依次执行：`bun run build`（esbuild → `web/vendor/editor.bundle.js`）→ `cargo build --release` → bundle。实测 cargo 编译 ~40s（命中缓存），全流程约 1 分钟。
+`tauri build` 依次执行：`bun run build`（esbuild → `web/vendor/editor.bundle.js`）→ `bun run build:pi-bridge`（sidecar 编译 + 签名）→ `cargo build --release` → bundle。实测 cargo 编译 ~40s（命中缓存），全流程约 1.5 分钟。
 
 ### 产物
 
@@ -220,4 +217,4 @@ open ~/Desktop/Slate.app
 
 - **本地开发**：ad-hoc 签名（`signingIdentity: "-"`）+ `Entitlements.plist`（JIT 权限），本机可直接跑。
 - **分发**：需 Apple Developer ID 签名 + 公证 + staple。CI 走 [tauri-action](https://github.com/tauri-apps/tauri-action)，设 `APPLE_SIGNING_IDENTITY` / `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` 环境变量自动完成。
-- **已知坑**：[tauri#11992](https://github.com/tauri-apps/tauri/issues/11992) sidecar 签名顺序偶致公证失败，解法是 `beforeBuildCommand` 阶段预先 `codesign` 手动签名 sidecar。
+- **已知坑**：[tauri#11992](https://github.com/tauri-apps/tauri/issues/11992) sidecar 签名顺序偶致公证失败，解法是在 `beforeBuildCommand` 阶段预先 `codesign` 签名 sidecar——已由 `scripts/build-pi-bridge.sh` 自动完成。

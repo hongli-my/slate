@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="./css/base.css?v=9">
 <link rel="stylesheet" href="./css/sidebar.css?v=11">
 <link rel="stylesheet" href="./css/main.css?v=6">
-<link rel="stylesheet" href="./css/chat.css?v=19">
+<link rel="stylesheet" href="./css/chat.css?v=20">
 <link rel="stylesheet" href="./css/markdown.css?v=6">
 <link rel="stylesheet" href="./css/shortcuts.css?v=5">
 <link rel="stylesheet" href="./css/admin.css?v=3">
@@ -22,6 +22,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.11/purify.min.js"></script>
+
+<!-- remend: 流式 markdown 修复（闭合未完成标记 ** / [ / ( / ` / 围栏，减少流式闪烁）-->
+<!-- morphdom: DOM diff/morph 替换活跃块 innerHTML 全替换，保留 DOM identity 消除重排抖动 -->
+<!-- 均 ESM 异步加载，JS 侧 feature detect（window.remend / window.morphdom），加载前/失败降级 -->
+<script type="module">
+  import remend from 'https://esm.sh/remend@1.3.0';
+  import morphdom from 'https://esm.sh/morphdom@2.7.8';
+  window.remend = remend.default || remend;
+  window.morphdom = morphdom.default || morphdom;
+</script>
 
 <style>
 /* ============================================================
@@ -818,14 +828,14 @@ body {
 <!-- JS (modular, load order matters) -->
     <script src="./vendor/cronstrue.min.js?v=1"></script>
     <script src="./js/state.js?v=25"></script>
-<script src="./js/api.js?v=22"></script>
+<script src="./js/api.js?v=23"></script>
 <script src="./js/project-manager.js?v=2"></script>
-<script src="./js/session-manager.js?v=26"></script>
+<script src="./js/session-manager.js?v=27"></script>
 <script src="./js/router.js?v=21"></script>
-<script src="./js/markdown.js?v=14"></script>
+<script src="./js/markdown.js?v=16"></script>
 <script src="./js/eventsource-parser.js?v=10"></script>
-<script src="./js/session.js?v=35"></script>
-<script src="./js/chat.js?v=38"></script>
+<script src="./js/session.js?v=36"></script>
+<script src="./js/chat.js?v=41"></script>
 <script src="./js/gateway.js?v=17"></script>
 <script src="./js/shortcuts.js?v=10"></script>
     <script src="./js/admin.js?v=3"></script>

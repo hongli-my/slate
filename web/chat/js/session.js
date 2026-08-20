@@ -1155,6 +1155,15 @@ window.Hermes = window.Hermes || {};
         dom.messageList.classList.remove('switching');
         var sl = dom.messageList.querySelector('.switch-loading');
         if (sl) sl.remove();
+        // M3: 显示错误占位（可点击重试），避免用户看到空白不知是加载失败还是空会话
+        if (!dom.messageList.querySelector('.load-error')) {
+          var errEl = document.createElement('div');
+          errEl.className = 'switch-loading load-error';
+          errEl.textContent = '会话加载失败：' + (e && e.message ? e.message : '未知错误') + '（点击重试）';
+          errEl.style.cursor = 'pointer';
+          errEl.onclick = (function(id) { return function() { selectSession(id); }; })(sessionId);
+          dom.messageList.insertBefore(errEl, dom.messageList.firstChild);
+        }
       }
     }
   }

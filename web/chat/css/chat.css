@@ -22,6 +22,8 @@
 }
 /* P#4: 稳定段容器隔离布局，流式只 patch .md-active 时不影响 stable 子树 */
 .turn .md-stable { contain: layout style; }
+/* 活跃块隔离：morphdom patch 时 reflow 不扩散到 stable 子树与外部布局 */
+.turn .md-active { contain: layout style; }
 
 .turn-user {
   display: flex;

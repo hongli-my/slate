@@ -6,7 +6,8 @@
   "description": "Slate Tauri app — local esbuild + CodeMirror 6 bundling pipeline",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "build:watch": "node esbuild.config.mjs --watch"
+    "build:watch": "node esbuild.config.mjs --watch",
+    "build:pi-bridge": "bash scripts/build-pi-bridge.sh"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"

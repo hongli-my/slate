@@ -25,27 +25,41 @@ window.Hermes = window.Hermes || {};
     if (opts.method) fetchOpts.method = opts.method;
     if (opts.body) fetchOpts.body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
     if (opts.headers) Object.assign(fetchOpts.headers, opts.headers);
-    if (opts.signal) fetchOpts.signal = opts.signal;
 
     var isGet = !fetchOpts.method || fetchOpts.method === 'GET';
+    // 调用方外部 signal（如 abortStream 的 abortController）
+    var externalSignal = opts.signal || null;
 
     async function attempt() {
-      var res = await fetch(H.API_BASE + path, fetchOpts);
-      var data;
-      try {
-        data = await res.json();
-      } catch(e) {
-        throw new Error('API 响应解析失败: ' + res.status);
+      // H3: 每次尝试创建带超时的 AbortController（GET 8s / POST 20s），
+      // 防止 sidecar hang 时 fetch 永久挂起。外部 signal 合并：abort 传播到内部。
+      var ctrl = new AbortController();
+      var timer = setTimeout(function() { ctrl.abort(); }, isGet ? 8000 : 20000);
+      if (externalSignal) {
+        if (externalSignal.aborted) ctrl.abort();
+        else externalSignal.addEventListener('abort', function() { ctrl.abort(); });
       }
-      if (!data.ok) throw new Error(data.error || 'unknown error');
-      return data;
+      fetchOpts.signal = ctrl.signal;
+      try {
+        var res = await fetch(H.API_BASE + path, fetchOpts);
+        var data;
+        try {
+          data = await res.json();
+        } catch(e) {
+          throw new Error('API 响应解析失败: ' + res.status);
+        }
+        if (!data.ok) throw new Error(data.error || 'unknown error');
+        return data;
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
     try {
       return await attempt();
     } catch(e) {
-      // S#7: GET 请求自动重试一次（网络抖动容错）
-      if (isGet && (!opts.signal || !opts.signal.aborted)) {
+      // S#7: GET 请求自动重试一次（网络抖动容错）；外部 signal abort 不重试
+      if (isGet && (!externalSignal || !externalSignal.aborted)) {
         await new Promise(function(r) { setTimeout(r, 1000); });
         return await attempt();
       }

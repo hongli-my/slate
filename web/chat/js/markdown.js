@@ -20,13 +20,17 @@ window.Hermes = window.Hermes || {};
       const lang = typeof codeObj === 'string' ? arguments[1] : (codeObj.lang || '');
       let highlighted;
       var needAutoHighlight = false;
+      var hlLang = '';  // 异步高亮用的语言（空=highlightAuto）
       if (_streamingMode) {
         // 流式阶段跳过 hljs（highlightAuto 可达 100-500ms），仅转义
         // 代码块结构（header/语言标签/复制按钮）与最终渲染一致
         highlighted = esc(text);
       } else if (lang && hljs.getLanguage(lang)) {
-        try { highlighted = hljs.highlight(text, { language: lang }).value; }
-        catch(e) { highlighted = esc(text); }
+        // B2: 已知语言也异步化——同步 hljs.highlight 2-10ms/块，多块阻塞 finalize
+        // 先转义 + 标记 need-auto-highlight + data-lang，scheduleIdleHighlight 用指定语言高亮
+        highlighted = esc(text);
+        needAutoHighlight = true;
+        hlLang = lang;
       } else {
         // P#2: 大代码块(>2000字)跳过 highlightAuto（O(n) 尝试所有语言），降级为纯 esc
         if (text.length > 2000) {
@@ -39,10 +43,11 @@ window.Hermes = window.Hermes || {};
       }
       const langLabel = lang ? '<span class="code-lang">' + esc(lang) + '</span>' : '';
       var codeClass = 'hljs language-' + esc(lang || 'text') + (needAutoHighlight ? ' need-auto-highlight' : '');
+      var dataLangAttr = hlLang ? (' data-lang="' + esc(hlLang) + '"') : '';
       return '<div class="code-block">' +
         '<div class="code-header">' + langLabel +
         '<button class="code-copy-btn" data-action="copy-code">复制</button></div>' +
-        '<pre><code class="' + codeClass + '">' + highlighted + '</code></pre></div>';
+        '<pre><code class="' + codeClass + '"' + dataLangAttr + '>' + highlighted + '</code></pre></div>';
     };
     marked.setOptions({
       renderer: renderer,
@@ -281,7 +286,10 @@ window.Hermes = window.Hermes || {};
       try { sh = stableText ? marked.parse(stableText) : ''; }
       catch(e) { sh = stableText ? '<p>' + esc(stableText) + '</p>' : ''; }
       finally { _streamingMode = false; }
-      if (typeof DOMPurify !== 'undefined' && sh) {
+      // 流式期跳过 DOMPurify（3-15ms/帧，是流式渲染最大瓶颈）。
+      // 带 cacheKey = 流式路径：marked 输出结构化 HTML，innerHTML 不执行 script，
+      // 风险窗口仅限流式期间；finalize 由 renderMarkdown 统一 sanitize 兜底。
+      if (!cacheKey && typeof DOMPurify !== 'undefined' && sh) {
         sh = DOMPurify.sanitize(sh, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
       }
       c = { stableText: stableText, stableHtml: sh };
@@ -290,12 +298,15 @@ window.Hermes = window.Hermes || {};
     }
 
     // 活跃块每次重新解析（体积小，开销低）
+    // remend 修复未闭合标记（** / [ / ( / ` / 围栏），避免流式期 marked 解析闪烁
+    if (window.remend) { try { activeBlock = window.remend(activeBlock, { linkMode: 'text-only' }); } catch(e) {} }
     _streamingMode = true;
     var activeHtml;
     try { activeHtml = marked.parse(activeBlock); }
     catch(e) { activeHtml = '<p>' + esc(activeBlock) + '</p>'; }
     finally { _streamingMode = false; }
-    if (typeof DOMPurify !== 'undefined' && activeHtml) {
+    // 活跃块跳过 DOMPurify（每帧调用，最大性能瓶颈）；finalize 由 renderMarkdown 兜底
+    if (!cacheKey && typeof DOMPurify !== 'undefined' && activeHtml) {
       activeHtml = DOMPurify.sanitize(activeHtml, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
     }
 
@@ -329,7 +340,13 @@ window.Hermes = window.Hermes || {};
         var codeEl = pending[i];
         try {
           var text = codeEl.textContent;
-          codeEl.innerHTML = hljs.highlightAuto(text).value;
+          // B2: 有 data-lang 用指定语言高亮（比 highlightAuto 快且准），否则回退 highlightAuto
+          var lang = codeEl.dataset.lang;
+          if (lang && hljs.getLanguage(lang)) {
+            codeEl.innerHTML = hljs.highlight(text, { language: lang }).value;
+          } else {
+            codeEl.innerHTML = hljs.highlightAuto(text).value;
+          }
         } catch(e) {}
         codeEl.classList.remove('need-auto-highlight');
         i++;

@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../web",
     "beforeDevCommand": "bun run build:watch",
-    "beforeBuildCommand": "bun run build"
+    "beforeBuildCommand": "bun run build && bun run build:pi-bridge"
   },
   "app": {
     "withGlobalTauri": true,

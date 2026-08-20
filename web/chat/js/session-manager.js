@@ -142,7 +142,17 @@ window.Hermes = window.Hermes || {};
     if (!stream) return false;
     if (stream.abortController) stream.abortController.abort();
 
-    // 标记 _streaming 消息为已中止
+    // H2: 通知后端中止 agent（fire-and-forget），防止 orphan agent 继续跑消耗 token / 写 DB
+    // 仅发请求不等结果；后端 /abort 立即释放忙锁 + session.abort()
+    try {
+      fetch(H.API_BASE + '/abort', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sid }),
+      }).catch(function() {});
+    } catch(e) {}
+
+    // 标记 _streaming 消息为已中止；同时清 _toolSteps running 状态（L1: 让中止的工具卡片显示而非消失）
     var cache = state.sessionMessages[sid];
     if (cache) {
       var msgs = cache.messages;
@@ -150,6 +160,7 @@ window.Hermes = window.Hermes || {};
         if (msgs[i]._streaming) {
           msgs[i]._streaming = false;
           msgs[i]._aborted = true;
+          if (msgs[i]._toolSteps) msgs[i]._toolSteps.forEach(function(s) { s.running = false; });
           break;
         }
       }
@@ -219,6 +230,13 @@ window.Hermes = window.Hermes || {};
 
       // S#2: 如果在 await 期间又有新的 re-fetch 发起，放弃本次（旧数据可能覆盖新数据）
       if (mySeq !== _reFetchSeq[sid]) return;
+
+      // M2: 若 re-fetch 期间用户已发新消息（新流 active），跳过覆盖——
+      // 避免新流的 streaming 引用被 DB 旧数据替换导致后续 SSE 写旧对象 DOM 不更新
+      if (hasActiveStream(sid)) {
+        console.log('[backgroundReFetch] skipped: new stream active for', sid);
+        return;
+      }
 
       // 只有 re-fetch 数据比缓存更多时才替换（防止 DB 延迟导致数据丢失）
       if (freshMsgs.length >= cache.messages.length) {
