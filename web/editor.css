@@ -337,6 +337,29 @@
         /* 聚焦指示：当前活动 group 的编辑区有高亮边框 */
         .editor-group.focused > .editor-pane { box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
 
+        /* ===== 分栏拖拽分隔条 ===== */
+        .split-divider {
+            display: none;
+            flex: 0 0 6px;
+            background: #555;
+            z-index: 12;
+        }
+        .editor-area.split-active:not(.split-vertical) .split-divider {
+            display: block;
+            cursor: col-resize;
+        }
+        .editor-area.split-active.split-vertical .split-divider {
+            display: block;
+            cursor: row-resize;
+        }
+        .split-divider:hover,
+        .split-divider.dragging {
+            background: #6677aa;
+        }
+        /* 分栏时去掉 group 之间的静态边框（由分隔条代替） */
+        .editor-area.split-active .editor-group.split-right { border-left: none; }
+        .editor-area.split-active.split-vertical .editor-group.split-bottom { border-top: none; }
+
         /* ===== 编辑器右键菜单 ===== */
         .ctx-menu {
             position: fixed; z-index: 2000;

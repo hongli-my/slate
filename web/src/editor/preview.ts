@@ -79,17 +79,42 @@ export function isJsonFile(): boolean {
   return !!tab && /\.json$/i.test(tab.name);
 }
 
-export function updateFormatButtons(): void {
-  const tab = getActiveTab();
-  const showFmt = tab ? isSQLFile() : false;
-  const showJson = tab ? isJsonFile() : false;
-  const showPreview = tab ? isMarkdownFile() : false;
-  const fmt = document.getElementById("btnFormat");
-  const fmtJ = document.getElementById("btnFormatJson");
-  const pv = document.getElementById("btnPreviewFloat");
-  if (fmt) fmt.style.display = showFmt ? "block" : "none";
-  if (fmtJ) fmtJ.style.display = showJson ? "block" : "none";
-  if (pv) pv.style.display = showPreview ? "block" : "none";
+export function updateFormatButtons(groupId?: 0 | 1): void {
+  // Per-group: each group's toolbar buttons reflect THAT group's active tab
+  // (not the global active group), so both panes show the right actions.
+  const groups: (0 | 1)[] = groupId != null ? [groupId] : [0, 1];
+  for (const gi of groups) {
+    const g = state.groups[gi];
+    const tab = g.tabs.find((t) => t.id === g.activeTabId) ?? null;
+    const showFmt = tab ? /\.(sql)$/i.test(tab.name) : false;
+    const showJson = tab ? /\.(json)$/i.test(tab.name) : false;
+    const showPreview = tab ? /\.(md|markdown)$/i.test(tab.name) : false;
+    const fmt = document.getElementById(groupElId("btnFormat", gi));
+    const fmtJ = document.getElementById(groupElId("btnFormatJson", gi));
+    const pv = document.getElementById(groupElId("btnPreviewFloat", gi));
+    if (fmt) fmt.style.display = showFmt ? "block" : "none";
+    if (fmtJ) fmtJ.style.display = showJson ? "block" : "none";
+    if (pv) pv.style.display = showPreview ? "block" : "none";
+  }
+  // Keep preview button labels in sync with the global preview state.
+  updatePreviewButton();
+}
+
+/** Sync each group's preview button label/class with the global previewVisible
+ *  state. Only the active group shows the "编辑" (editing) label; the inactive
+ *  group resets to "预览". Called on preview toggle and on group/focus switch. */
+export function updatePreviewButton(): void {
+  for (const gi of [0, 1] as const) {
+    const btn = document.getElementById(groupElId("btnPreviewFloat", gi));
+    if (!btn) continue;
+    if (gi === state.activeGroup && state.previewVisible) {
+      btn.classList.add("active");
+      btn.innerHTML = "&#9998; 编辑";
+    } else {
+      btn.classList.remove("active");
+      btn.innerHTML = "&#128065; 预览";
+    }
+  }
 }
 
 let mdTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,6 +145,7 @@ export function syncPreviewPane(): void {
   if (isMarkdownFile()) renderMarkdownPreview();
   else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">预览仅支持 Markdown 文件</div>';
   pane.style.display = "block";
+  updatePreviewButton();
 }
 
 function renderMarkdownPreview(): void {
@@ -247,13 +273,8 @@ function addHeadingFold(container: HTMLElement): void {
 
 export function togglePreview(): void {
   state.previewVisible = !state.previewVisible;
-  const btn = document.getElementById("btnPreviewFloat");
   if (state.previewVisible) {
     syncPreviewPane();
-    if (btn) {
-      btn.classList.add("active");
-      btn.innerHTML = "&#9998; 编辑";
-    }
     const mm = document.getElementById("minimap");
     if (mm) mm.classList.remove("visible");
   } else {
@@ -262,13 +283,10 @@ export function togglePreview(): void {
       const p = $(groupElId("previewPane", gi));
       if (p) p.style.display = "none";
     }
-    if (btn) {
-      btn.classList.remove("active");
-      btn.innerHTML = "&#128065; 预览";
-    }
     const mm = document.getElementById("minimap");
     if (mm && state.minimapOn) mm.classList.add("visible");
   }
+  updatePreviewButton();
 }
 
 /** Exported to allow paste-image handler to trigger preview refresh. */

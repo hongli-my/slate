@@ -50,6 +50,7 @@ function saveSessionNow(): void {
       activeGroup: state.activeGroup,
       splitActive: state.splitActive,
       splitMode: state.splitMode,
+      splitRatio: state.splitRatio,
       cursor,
       theme: state.lightTheme,
     };
@@ -97,6 +98,7 @@ export async function restoreSession(): Promise<void> {
     let activeGroup: 0 | 1 = 0;
     let splitActive = false;
     let splitMode: "horizontal" | "vertical" | null = null;
+    let splitRatio: number | null = null;
     let cursor = 0;
     let theme = false;
 
@@ -114,6 +116,7 @@ export async function restoreSession(): Promise<void> {
         data.splitMode === "vertical" ? "vertical"
         : data.splitMode === "horizontal" ? "horizontal"
         : null;
+      splitRatio = typeof data.splitRatio === "number" ? data.splitRatio : null;
       cursor = typeof data.cursor === "number" ? data.cursor : 0;
       theme = !!data.theme;
     } else if (data && Array.isArray(data.tabs) && data.tabs.length > 0) {
@@ -159,6 +162,8 @@ export async function restoreSession(): Promise<void> {
     if (splitActive && groupTabsList[1].length > 0) {
       const { mountGroup1 } = await import("./split");
       const dir = splitMode ?? "horizontal";
+      // Stash ratio before mountGroup1 consumes it (mountGroup1 reads state.splitRatio).
+      state.splitRatio = splitRatio;
       const g1View = mountGroup1(dir);
       if (g1View) {
         for (const t of groupTabsList[1]) {

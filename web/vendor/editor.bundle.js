@@ -6002,9 +6002,6 @@ function placeholder$1(code2) {
     return "\u2424";
   return String.fromCharCode(9216 + code2);
 }
-function highlightActiveLine() {
-  return activeLineHighlighter;
-}
 function rectangleFor(state2, a2, b2) {
   let startLine = Math.min(a2.line, b2.line), endLine = Math.max(a2.line, b2.line);
   let ranges = [];
@@ -6265,7 +6262,7 @@ function maxLineNumber(lines) {
 function highlightActiveLineGutter() {
   return activeLineGutterHighlighter;
 }
-var nav, doc, ie_edge, ie_upto10, ie_11up, ie2, gecko, chrome, webkit, safari, ios, browser, noAttrs, WidgetType, BlockType, Decoration, MarkDecoration, LineDecoration, PointDecoration, BlockWrapper, DOMSelectionState, preventScrollSupported, scratchRange, DOMPos, Direction, LTR, RTL, LowTypes, ArabicTypes, Brackets, BracketStack, BidiRE, BidiSpan, types, movedOver, clickAddsSelectionRange, dragMovesSelection$1, mouseSelectionStyle, exceptionSink, updateListener, inputHandler, focusChangeEffect, clipboardInputFilter, clipboardOutputFilter, perLineTextDirection, nativeSelectionHidden, scrollHandler, ScrollTarget, scrollIntoView, setEditContextFormatting, editable, nextPluginID, viewPlugin, ViewPlugin, PluginInstance, editorAttributes, contentAttributes, decorations, blockWrappers, outerDecorations, atomicRanges, bidiIsolatedRanges, scrollMargins, styleModule, ChangedRange, ViewUpdate, noChildren, Tile, CompositeTile, DocTile, BlockWrapperTile, LineTile, MarkTile, TextTile, WidgetTile, WidgetBufferTile, TilePointer, OpenWrapper, TileBuilder, TextStream, buckets, TileCache, TileUpdate, lineBaseAttrs, NullWidget, BreakWidget, DocView, DecorationComparator$1, WrapperComparator, BlockGapWidget, PosAssoc, InlineCoordsScan, LineBreakPlaceholder, DOMReader, DOMPoint, DOMChange, InputState, PendingKeys, EmacsyPendingKeys, modifierCodes, dragScrollMargin, MouseSelection, handlers, observers, brokenClipboardAPI, BadMouseDetail, lastMouseDown, lastMouseDownCount, lastMouseDownTime, lastLinewiseCopy, isFocusChange, appliedFirefoxHack, wrappingWhiteSpace, heightChangeFlag, HeightOracle, MeasuredHeights, BlockInfo, QueryType, Epsilon, HeightMap, SpaceDeco, HeightMapBlock, HeightMapText, HeightMapGap, HeightMapBranch, relevantWidgetHeight, NodeBuilder, DecorationComparator2, LineGap, LineGapWidget, ViewState, Viewport, IdScaler, BigScaler, theme, darkTheme, baseThemeID, baseLightID, baseDarkID, lightDarkIDs, baseTheme$1, observeOptions, useCharData, DOMObserver, EditContextManager, EditorView, MaxBidiLine, BadMeasure, CachedOrder, currentPlatform, handleKeyEvents, keymap, Keymaps, storedPrefix, PrefixTimeout, currentKeyEvent, RectangleMarker, LayerView, layerOrder, selectionConfig, cursorLayer, selectionLayer, selectionBg, hideNativeSelection, setDropCursorPos, dropCursorPos, drawDropCursor, MatchDecorator, UnicodeRegexpSupport, Specials, Names, _supportsTabSize, specialCharConfig, _plugin, DefaultPlaceholder, SpecialCharWidget, TabWidget, lineDeco, activeLineHighlighter, MaxOff, keys, showCrosshair, Outside, TooltipViewManager, tooltipConfig, knownHeight, tooltipPlugin, baseTheme, noOffset, showTooltip, panelConfig, panelPlugin, PanelGroup, showPanel, dialogField, openDialogEffect, closeDialogEffect, GutterMarker, gutterLineClass, gutterWidgetClass, defaults, activeGutters, unfixGutters, gutterView, UpdateContext, SingleGutterView, GutterElement, lineNumberMarkers, lineNumberWidgetMarker, lineNumberConfig, NumberMarker, lineNumberGutter, activeLineGutterMarker, activeLineGutterHighlighter;
+var nav, doc, ie_edge, ie_upto10, ie_11up, ie2, gecko, chrome, webkit, safari, ios, browser, noAttrs, WidgetType, BlockType, Decoration, MarkDecoration, LineDecoration, PointDecoration, BlockWrapper, DOMSelectionState, preventScrollSupported, scratchRange, DOMPos, Direction, LTR, RTL, LowTypes, ArabicTypes, Brackets, BracketStack, BidiRE, BidiSpan, types, movedOver, clickAddsSelectionRange, dragMovesSelection$1, mouseSelectionStyle, exceptionSink, updateListener, inputHandler, focusChangeEffect, clipboardInputFilter, clipboardOutputFilter, perLineTextDirection, nativeSelectionHidden, scrollHandler, ScrollTarget, scrollIntoView, setEditContextFormatting, editable, nextPluginID, viewPlugin, ViewPlugin, PluginInstance, editorAttributes, contentAttributes, decorations, blockWrappers, outerDecorations, atomicRanges, bidiIsolatedRanges, scrollMargins, styleModule, ChangedRange, ViewUpdate, noChildren, Tile, CompositeTile, DocTile, BlockWrapperTile, LineTile, MarkTile, TextTile, WidgetTile, WidgetBufferTile, TilePointer, OpenWrapper, TileBuilder, TextStream, buckets, TileCache, TileUpdate, lineBaseAttrs, NullWidget, BreakWidget, DocView, DecorationComparator$1, WrapperComparator, BlockGapWidget, PosAssoc, InlineCoordsScan, LineBreakPlaceholder, DOMReader, DOMPoint, DOMChange, InputState, PendingKeys, EmacsyPendingKeys, modifierCodes, dragScrollMargin, MouseSelection, handlers, observers, brokenClipboardAPI, BadMouseDetail, lastMouseDown, lastMouseDownCount, lastMouseDownTime, lastLinewiseCopy, isFocusChange, appliedFirefoxHack, wrappingWhiteSpace, heightChangeFlag, HeightOracle, MeasuredHeights, BlockInfo, QueryType, Epsilon, HeightMap, SpaceDeco, HeightMapBlock, HeightMapText, HeightMapGap, HeightMapBranch, relevantWidgetHeight, NodeBuilder, DecorationComparator2, LineGap, LineGapWidget, ViewState, Viewport, IdScaler, BigScaler, theme, darkTheme, baseThemeID, baseLightID, baseDarkID, lightDarkIDs, baseTheme$1, observeOptions, useCharData, DOMObserver, EditContextManager, EditorView, MaxBidiLine, BadMeasure, CachedOrder, currentPlatform, handleKeyEvents, keymap, Keymaps, storedPrefix, PrefixTimeout, currentKeyEvent, RectangleMarker, LayerView, layerOrder, selectionConfig, cursorLayer, selectionLayer, selectionBg, hideNativeSelection, setDropCursorPos, dropCursorPos, drawDropCursor, MatchDecorator, UnicodeRegexpSupport, Specials, Names, _supportsTabSize, specialCharConfig, _plugin, DefaultPlaceholder, SpecialCharWidget, TabWidget, MaxOff, keys, showCrosshair, Outside, TooltipViewManager, tooltipConfig, knownHeight, tooltipPlugin, baseTheme, noOffset, showTooltip, panelConfig, panelPlugin, PanelGroup, showPanel, dialogField, openDialogEffect, closeDialogEffect, GutterMarker, gutterLineClass, gutterWidgetClass, defaults, activeGutters, unfixGutters, gutterView, UpdateContext, SingleGutterView, GutterElement, lineNumberMarkers, lineNumberWidgetMarker, lineNumberConfig, NumberMarker, lineNumberGutter, activeLineGutterMarker, activeLineGutterHighlighter;
 var init_dist2 = __esm({
   "node_modules/@codemirror/view/dist/index.js"() {
     init_dist();
@@ -13078,29 +13075,6 @@ var init_dist2 = __esm({
         return false;
       }
     };
-    lineDeco = /* @__PURE__ */ Decoration.line({ class: "cm-activeLine" });
-    activeLineHighlighter = /* @__PURE__ */ ViewPlugin.fromClass(class {
-      constructor(view) {
-        this.decorations = this.getDeco(view);
-      }
-      update(update) {
-        if (update.docChanged || update.selectionSet)
-          this.decorations = this.getDeco(update.view);
-      }
-      getDeco(view) {
-        let lastLineStart = -1, deco = [];
-        for (let r2 of view.state.selection.ranges) {
-          let line = view.lineBlockAt(r2.head);
-          if (line.from > lastLineStart) {
-            deco.push(lineDeco.range(line.from));
-            lastLineStart = line.from;
-          }
-        }
-        return Decoration.set(deco);
-      }
-    }, {
-      decorations: (v2) => v2.decorations
-    });
     MaxOff = 2e3;
     keys = {
       Alt: [18, (e) => !!e.altKey],
@@ -14153,6 +14127,9 @@ var init_state = __esm({
       splitActive: false,
       /** Current split direction when splitActive is true. */
       splitMode: null,
+      /** Current split size ratio (group0's share, 0..1). null = default 50/50.
+       *  Persisted across toggles within a session; cleared on app exit. */
+      splitRatio: null,
       minimapOn: false,
       lightTheme: false,
       macroRecording: false,
@@ -22047,18 +22024,6 @@ function toCharEnd(text2, pos) {
     pos++;
   return pos;
 }
-function highlightSelectionMatches(options) {
-  let ext = [defaultTheme, matchHighlighter];
-  if (options)
-    ext.push(highlightConfig.of(options));
-  return ext;
-}
-function insideWordBoundaries(check, state2, from3, to) {
-  return (from3 == 0 || check(state2.sliceDoc(from3 - 1, from3)) != CharCategory.Word) && (to == state2.doc.length || check(state2.sliceDoc(to, to + 1)) != CharCategory.Word);
-}
-function insideWord(check, state2, from3, to) {
-  return check(state2.sliceDoc(from3, from3 + 1)) == CharCategory.Word && check(state2.sliceDoc(to - 1, to)) == CharCategory.Word;
-}
 function findNextOccurrence(state2, query) {
   let { main, ranges } = state2.selection;
   let word = state2.wordAt(main.head), fullWord = word && word.from == main.from && word.to == main.to;
@@ -22080,6 +22045,9 @@ function findNextOccurrence(state2, query) {
       return cursor.value;
     }
   }
+}
+function search(config2) {
+  return config2 ? [searchConfigFacet.of(config2), searchExtensions] : searchExtensions;
 }
 function wrapStringTest(test, state2, inner) {
   return (from3, to, buffer, bufferPos) => {
@@ -22184,7 +22152,7 @@ function announceMatch(view, { from: from3, to }) {
   }
   return EditorView.announce.of(`${view.state.phrase("current match")}. ${text2} ${view.state.phrase("on line")} ${line.number}.`);
 }
-var basicNormalize, SearchCursor, empty, baseFlags, RegExpCursor, flattened, FlattenedDoc, MultilineRegExpCursor, gotoLine, defaultHighlightOptions, highlightConfig, matchDeco, mainMatchDeco, matchHighlighter, defaultTheme, selectWord, selectNextOccurrence, searchConfigFacet, SearchQuery, QueryType2, StringQuery, RegExpQuery, setSearchQuery, togglePanel, searchState, SearchState, matchMark, selectedMatchMark, searchHighlighter, findNext, findPrevious, selectMatches, selectSelectionMatches, replaceNext, replaceAll, openSearchPanel, closeSearchPanel, searchKeymap, SearchPanel, AnnounceMargin, Break, baseTheme4, searchExtensions;
+var basicNormalize, SearchCursor, empty, baseFlags, RegExpCursor, flattened, FlattenedDoc, MultilineRegExpCursor, gotoLine, selectWord, selectNextOccurrence, searchConfigFacet, SearchQuery, QueryType2, StringQuery, RegExpQuery, setSearchQuery, togglePanel, searchState, SearchState, matchMark, selectedMatchMark, searchHighlighter, findNext, findPrevious, selectMatches, selectSelectionMatches, replaceNext, replaceAll, openSearchPanel, closeSearchPanel, searchKeymap, SearchPanel, AnnounceMargin, Break, baseTheme4, searchExtensions;
 var init_dist8 = __esm({
   "node_modules/@codemirror/search/dist/index.js"() {
     init_dist2();
@@ -22483,84 +22451,6 @@ var init_dist8 = __esm({
       });
       return true;
     };
-    defaultHighlightOptions = {
-      highlightWordAroundCursor: false,
-      minSelectionLength: 1,
-      maxMatches: 100,
-      wholeWords: false
-    };
-    highlightConfig = /* @__PURE__ */ Facet.define({
-      combine(options) {
-        return combineConfig(options, defaultHighlightOptions, {
-          highlightWordAroundCursor: (a2, b2) => a2 || b2,
-          minSelectionLength: Math.min,
-          maxMatches: Math.min
-        });
-      }
-    });
-    matchDeco = /* @__PURE__ */ Decoration.mark({ class: "cm-selectionMatch" });
-    mainMatchDeco = /* @__PURE__ */ Decoration.mark({ class: "cm-selectionMatch cm-selectionMatch-main" });
-    matchHighlighter = /* @__PURE__ */ ViewPlugin.fromClass(class {
-      constructor(view) {
-        this.decorations = this.getDeco(view);
-      }
-      update(update) {
-        if (update.selectionSet || update.docChanged || update.viewportChanged)
-          this.decorations = this.getDeco(update.view);
-      }
-      getDeco(view) {
-        let conf = view.state.facet(highlightConfig);
-        let { state: state2 } = view, sel = state2.selection;
-        if (sel.ranges.length > 1)
-          return Decoration.none;
-        let range = sel.main, query, check = null;
-        if (range.empty) {
-          if (!conf.highlightWordAroundCursor)
-            return Decoration.none;
-          let word = state2.wordAt(range.head);
-          if (!word)
-            return Decoration.none;
-          check = state2.charCategorizer(range.head);
-          query = state2.sliceDoc(word.from, word.to);
-        } else {
-          let len = range.to - range.from;
-          if (len < conf.minSelectionLength || len > 200)
-            return Decoration.none;
-          if (conf.wholeWords) {
-            query = state2.sliceDoc(range.from, range.to);
-            check = state2.charCategorizer(range.head);
-            if (!(insideWordBoundaries(check, state2, range.from, range.to) && insideWord(check, state2, range.from, range.to)))
-              return Decoration.none;
-          } else {
-            query = state2.sliceDoc(range.from, range.to);
-            if (!query)
-              return Decoration.none;
-          }
-        }
-        let deco = [];
-        for (let part of view.visibleRanges) {
-          let cursor = new SearchCursor(state2.doc, query, part.from, part.to);
-          while (!cursor.next().done) {
-            let { from: from3, to } = cursor.value;
-            if (!check || insideWordBoundaries(check, state2, from3, to)) {
-              if (range.empty && from3 <= range.from && to >= range.to)
-                deco.push(mainMatchDeco.range(from3, to));
-              else if (from3 >= range.to || to <= range.from)
-                deco.push(matchDeco.range(from3, to));
-              if (deco.length > conf.maxMatches)
-                return Decoration.none;
-            }
-          }
-        }
-        return Decoration.set(deco);
-      }
-    }, {
-      decorations: (v2) => v2.decorations
-    });
-    defaultTheme = /* @__PURE__ */ EditorView.baseTheme({
-      ".cm-selectionMatch": { backgroundColor: "#99ff7780" },
-      ".cm-searchMatch .cm-selectionMatch": { backgroundColor: "transparent" }
-    });
     selectWord = ({ state: state2, dispatch }) => {
       let { selection } = state2;
       let newSel = EditorSelection.create(selection.ranges.map((range) => state2.wordAt(range.head) || EditorSelection.cursor(range.head)), selection.mainIndex);
@@ -23168,6 +23058,14 @@ var init_theme = __esm({
           backgroundColor: "rgba(255,255,255,0.12)",
           borderBottom: "1px solid rgba(255,255,255,0.3)"
         },
+        // Selection-match (from highlightSelectionMatches) must NOT look like the
+        // actual selection — use a distinct tinted background + underline. The
+        // higher-specificity selector (.cm-content prefix) overrides the default
+        // "#99ff7780" that highlightSelectionMatches injects.
+        ".cm-content .cm-selectionMatch": {
+          backgroundColor: "rgba(120,180,255,0.18)",
+          outline: "1px solid rgba(120,180,255,0.35)"
+        },
         ".cm-searchMatch": { backgroundColor: "rgba(255,200,0,0.4)" },
         ".cm-searchMatch-selected": { backgroundColor: "rgba(255,200,0,0.6)" },
         // autocomplete popup
@@ -23253,6 +23151,10 @@ var init_theme = __esm({
         ".cm-occurrence": {
           backgroundColor: "rgba(0,0,0,0.08)",
           borderBottom: "1px solid rgba(0,0,0,0.2)"
+        },
+        ".cm-content .cm-selectionMatch": {
+          backgroundColor: "rgba(80,130,220,0.15)",
+          outline: "1px solid rgba(80,130,220,0.3)"
         },
         ".cm-searchMatch": { backgroundColor: "rgba(255,200,0,0.4)" },
         ".cm-searchMatch-selected": { backgroundColor: "rgba(255,200,0,0.6)" },
@@ -37723,68 +37625,6 @@ var init_languages = __esm({
 function clearOccurrences(view) {
   view.dispatch({ effects: setOccurrences.of([]) });
 }
-function scheduleOccurrenceHighlight(view) {
-  if (occTimer) clearTimeout(occTimer);
-  occTimer = setTimeout(() => {
-    occTimer = null;
-    highlightOccurrences(view);
-  }, 220);
-}
-function highlightOccurrences(view) {
-  if (!view) return;
-  if (view.state.selection.ranges.length > 1) {
-    clearOccurrences(view);
-    return;
-  }
-  const doc2 = view.state.doc;
-  if (doc2.length > MAX_OCC_DOC) {
-    clearOccurrences(view);
-    return;
-  }
-  const sel = view.state.selection.main;
-  let word = "";
-  let wordFrom = sel.from;
-  let wordTo = sel.to;
-  if (sel.from !== sel.to) {
-    const s = doc2.sliceString(sel.from, sel.to);
-    if (s.length > 40 || s.includes("\n")) {
-      clearOccurrences(view);
-      return;
-    }
-    word = s;
-    wordFrom = sel.from;
-    wordTo = sel.to;
-  } else {
-    const line = doc2.lineAt(sel.head);
-    const text3 = line.text;
-    let s = sel.head - line.from;
-    let a2 = s;
-    while (a2 > 0 && /[\w$]/.test(text3[a2 - 1])) a2--;
-    let b2 = s;
-    while (b2 < text3.length && /[\w$]/.test(text3[b2])) b2++;
-    word = text3.slice(a2, b2);
-    wordFrom = line.from + a2;
-    wordTo = line.from + b2;
-    if (word.length < 2 || !/^[\w$]+$/.test(word)) {
-      clearOccurrences(view);
-      return;
-    }
-  }
-  const ranges = [];
-  const text2 = doc2.toString();
-  let i2 = 0;
-  let count2 = 0;
-  while (i2 <= text2.length) {
-    const idx = text2.indexOf(word, i2);
-    if (idx < 0) break;
-    if (!(idx === wordFrom && idx + word.length === wordTo)) {
-      ranges.push({ from: idx, to: idx + word.length });
-      if (++count2 >= MAX_OCC) break;
-    }
-    i2 = idx + word.length;
-  }
-  view.dispatch({ effects: setOccurrences.of(ranges) });
-}
 function makeUpdateListener(onUpdate) {
   return EditorView.updateListener.of(onUpdate);
 }
@@ -37816,7 +37656,12 @@ function buildExtensions(onUpdate) {
     closeBrackets(),
     rectangularSelection(),
     crosshairCursor(),
-    highlightActiveLine(),
+    // FIX: highlightActiveLine() REMOVED — with lineWrapping on, a long line
+    // (e.g. a long SQL string in JSON) wraps into a dozen visual lines, and the
+    // whole-line active background then paints a huge block that looks exactly
+    // like a spurious multi-line selection. Keep only the gutter (line-number)
+    // highlight so the cursor line is still locatable, but the content area
+    // stays clean.
     highlightActiveLineGutter(),
     codeFolding(),
     foldGutter({
@@ -37828,10 +37673,10 @@ function buildExtensions(onUpdate) {
       }
     }),
     lineNumbers(),
-    // Built-in selection-match highlighter also helps, but we keep our own
-    // occurrence field for the broader "all occurrences" behavior.
-    highlightSelectionMatches(),
-    occurrenceField,
+    // NOTE: highlightSelectionMatches() and occurrenceField were REMOVED because
+    // they caused confusing "fake selection" backgrounds — clicking on a common
+    // word (e.g., "selected", "total" in JSON) would highlight ALL occurrences
+    // across many lines, making it look like a large block was selected.
     EditorView.lineWrapping,
     // default wrap on (matches CM5 lineWrapping:true)
     wrapComp.of([]),
@@ -37840,12 +37685,27 @@ function buildExtensions(onUpdate) {
     readOnlyComp.of(EditorState.readOnly.of(true)),
     minimapComp.of([]),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    // Load the search() extension so searchState always exists. Without it,
+    // setSearchQuery.of() effects have no handler (highlights never appear),
+    // and findNext/findPrevious — used by our custom panel's "next/prev"
+    // buttons AND by the F3/Mod-g keymap — fall back to openSearchPanel(),
+    // which dynamically injects searchExtensions and spawns CM6's native
+    // bottom panel. search() itself does NOT open the panel (the panel only
+    // shows on togglePanel.of(true) / openSearchPanel), so loading it is safe.
+    search(),
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
-      // Drop CM6's built-in Ctrl+F (openSearchPanel) — it dynamically loads
-      // searchExtensions and spawns the native panel alongside our custom one.
-      ...searchKeymap.filter((k2) => k2.key !== "Mod-f"),
+      // Drop CM6's built-in search-panel-opening keys. Mod-f is handled by a
+      // document-level listener (keymap.ts) that opens our custom panel. F3
+      // and Mod-g (find next/prev) are dropped because with an empty/invalid
+      // query — the state right after opening our panel — they still call
+      // openSearchPanel() and spawn the native panel. Our custom panel's
+      // buttons call findNext/findPrevious directly and, with search() loaded
+      // and a valid query, take the normal branch without opening the panel.
+      ...searchKeymap.filter(
+        (k2) => k2.key !== "Mod-f" && k2.key !== "F3" && k2.key !== "Mod-g"
+      ),
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
@@ -37886,7 +37746,7 @@ function applyTheme(view, light) {
 function setReadOnly(view, ro) {
   view.dispatch({ effects: readOnlyComp.reconfigure(EditorState.readOnly.of(ro)) });
 }
-var setOccurrences, occurrenceField, occTimer, MAX_OCC, MAX_OCC_DOC, themeComp, langComp, readOnlyComp, wrapComp, minimapComp;
+var setOccurrences, occurrenceField, themeComp, langComp, readOnlyComp, wrapComp, minimapComp;
 var init_cm = __esm({
   "web/src/editor/cm.ts"() {
     init_dist2();
@@ -37919,9 +37779,6 @@ var init_cm = __esm({
       },
       provide: (f2) => EditorView.decorations.from(f2)
     });
-    occTimer = null;
-    MAX_OCC = 300;
-    MAX_OCC_DOC = 2e5;
     themeComp = new Compartment();
     langComp = new Compartment();
     readOnlyComp = new Compartment();
@@ -48925,25 +48782,35 @@ function isMarkdownFile() {
   const tab3 = getActiveTab();
   return !!tab3 && /\.(md|markdown)$/i.test(tab3.name);
 }
-function isSQLFile() {
-  const tab3 = getActiveTab();
-  return !!tab3 && /\.sql$/i.test(tab3.name);
+function updateFormatButtons(groupId) {
+  const groups = groupId != null ? [groupId] : [0, 1];
+  for (const gi of groups) {
+    const g = state.groups[gi];
+    const tab3 = g.tabs.find((t2) => t2.id === g.activeTabId) ?? null;
+    const showFmt = tab3 ? /\.(sql)$/i.test(tab3.name) : false;
+    const showJson = tab3 ? /\.(json)$/i.test(tab3.name) : false;
+    const showPreview = tab3 ? /\.(md|markdown)$/i.test(tab3.name) : false;
+    const fmt = document.getElementById(groupElId("btnFormat", gi));
+    const fmtJ = document.getElementById(groupElId("btnFormatJson", gi));
+    const pv = document.getElementById(groupElId("btnPreviewFloat", gi));
+    if (fmt) fmt.style.display = showFmt ? "block" : "none";
+    if (fmtJ) fmtJ.style.display = showJson ? "block" : "none";
+    if (pv) pv.style.display = showPreview ? "block" : "none";
+  }
+  updatePreviewButton();
 }
-function isJsonFile() {
-  const tab3 = getActiveTab();
-  return !!tab3 && /\.json$/i.test(tab3.name);
-}
-function updateFormatButtons() {
-  const tab3 = getActiveTab();
-  const showFmt = tab3 ? isSQLFile() : false;
-  const showJson = tab3 ? isJsonFile() : false;
-  const showPreview = tab3 ? isMarkdownFile() : false;
-  const fmt = document.getElementById("btnFormat");
-  const fmtJ = document.getElementById("btnFormatJson");
-  const pv = document.getElementById("btnPreviewFloat");
-  if (fmt) fmt.style.display = showFmt ? "block" : "none";
-  if (fmtJ) fmtJ.style.display = showJson ? "block" : "none";
-  if (pv) pv.style.display = showPreview ? "block" : "none";
+function updatePreviewButton() {
+  for (const gi of [0, 1]) {
+    const btn = document.getElementById(groupElId("btnPreviewFloat", gi));
+    if (!btn) continue;
+    if (gi === state.activeGroup && state.previewVisible) {
+      btn.classList.add("active");
+      btn.innerHTML = "&#9998; \u7F16\u8F91";
+    } else {
+      btn.classList.remove("active");
+      btn.innerHTML = "&#128065; \u9884\u89C8";
+    }
+  }
 }
 function scheduleMdRender() {
   if (mdTimer) clearTimeout(mdTimer);
@@ -48967,6 +48834,7 @@ function syncPreviewPane() {
   if (isMarkdownFile()) renderMarkdownPreview();
   else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">\u9884\u89C8\u4EC5\u652F\u6301 Markdown \u6587\u4EF6</div>';
   pane.style.display = "block";
+  updatePreviewButton();
 }
 function renderMarkdownPreview() {
   const pane = $(groupElId("previewPane", state.activeGroup));
@@ -49083,13 +48951,8 @@ function addHeadingFold(container) {
 }
 function togglePreview() {
   state.previewVisible = !state.previewVisible;
-  const btn = document.getElementById("btnPreviewFloat");
   if (state.previewVisible) {
     syncPreviewPane();
-    if (btn) {
-      btn.classList.add("active");
-      btn.innerHTML = "&#9998; \u7F16\u8F91";
-    }
     const mm = document.getElementById("minimap");
     if (mm) mm.classList.remove("visible");
   } else {
@@ -49097,13 +48960,10 @@ function togglePreview() {
       const p = $(groupElId("previewPane", gi));
       if (p) p.style.display = "none";
     }
-    if (btn) {
-      btn.classList.remove("active");
-      btn.innerHTML = "&#128065; \u9884\u89C8";
-    }
     const mm = document.getElementById("minimap");
     if (mm && state.minimapOn) mm.classList.add("visible");
   }
+  updatePreviewButton();
 }
 var markedConfigured, mdTimer;
 var init_preview = __esm({
@@ -49279,8 +49139,10 @@ var init_paste_image = __esm({
 // web/src/editor/split.ts
 var split_exports = {};
 __export(split_exports, {
+  applySplitRatio: () => applySplitRatio,
   closeSplit: () => closeSplit,
   mountGroup1: () => mountGroup1,
+  setupSplitDivider: () => setupSplitDivider,
   toggleSplitView: () => toggleSplitView
 });
 function toggleSplitView(direction = "horizontal") {
@@ -49344,6 +49206,7 @@ function mountGroup1(direction) {
   state.splitActive = true;
   area.classList.add("split-active");
   applySplitDirection(area);
+  applySplitRatio(state.splitRatio);
   return g1View;
 }
 async function closeSplit() {
@@ -49383,6 +49246,7 @@ async function closeSplit() {
   if (area) area.classList.remove("split-active", "split-vertical");
   state.splitActive = false;
   state.splitMode = null;
+  applySplitRatio(null);
   setActiveGroup(0);
   const g0 = state.groups[0];
   if (g0.tabs.length > 0) {
@@ -49404,6 +49268,52 @@ function applySplitDirection(area) {
     area.classList.remove("split-vertical");
     group1.classList.add("split-right");
     group1.classList.remove("split-bottom");
+  }
+}
+function applySplitRatio(ratio) {
+  const g0 = document.getElementById("group0");
+  const g1 = document.getElementById("group1");
+  if (!g0 || !g1) return;
+  if (ratio == null) {
+    g0.style.flexGrow = "";
+    g1.style.flexGrow = "";
+  } else {
+    const r2 = Math.min(0.9, Math.max(0.1, ratio));
+    g0.style.flexGrow = String(r2);
+    g1.style.flexGrow = String(1 - r2);
+  }
+}
+function setupSplitDivider() {
+  const divider = document.getElementById("splitDivider");
+  const area = document.getElementById("editorArea");
+  if (!divider || !area) return;
+  let dragging = false;
+  divider.addEventListener("mousedown", (e) => {
+    if (!state.splitActive) return;
+    dragging = true;
+    e.preventDefault();
+    divider.classList.add("dragging");
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = state.splitMode === "vertical" ? "row-resize" : "col-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+  function onMove(e) {
+    if (!dragging) return;
+    const rect = area.getBoundingClientRect();
+    const ratio = state.splitMode === "vertical" ? (e.clientY - rect.top) / rect.height : (e.clientX - rect.left) / rect.width;
+    applySplitRatio(ratio);
+    state.splitRatio = Math.min(0.9, Math.max(0.1, ratio));
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove("dragging");
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    saveSession();
   }
 }
 var init_split = __esm({
@@ -49448,6 +49358,7 @@ function saveSessionNow() {
       activeGroup: state.activeGroup,
       splitActive: state.splitActive,
       splitMode: state.splitMode,
+      splitRatio: state.splitRatio,
       cursor,
       theme: state.lightTheme
     };
@@ -49480,6 +49391,7 @@ async function restoreSession() {
     let activeGroup = 0;
     let splitActive = false;
     let splitMode = null;
+    let splitRatio = null;
     let cursor = 0;
     let theme2 = false;
     if (data2 && data2.version === 2 && Array.isArray(data2.groups)) {
@@ -49493,6 +49405,7 @@ async function restoreSession() {
       activeGroup = data2.activeGroup === 1 ? 1 : 0;
       splitActive = !!data2.splitActive && groupTabsList[1].length > 0;
       splitMode = data2.splitMode === "vertical" ? "vertical" : data2.splitMode === "horizontal" ? "horizontal" : null;
+      splitRatio = typeof data2.splitRatio === "number" ? data2.splitRatio : null;
       cursor = typeof data2.cursor === "number" ? data2.cursor : 0;
       theme2 = !!data2.theme;
     } else if (data2 && Array.isArray(data2.tabs) && data2.tabs.length > 0) {
@@ -49525,6 +49438,7 @@ async function restoreSession() {
     if (splitActive && groupTabsList[1].length > 0) {
       const { mountGroup1: mountGroup12 } = await Promise.resolve().then(() => (init_split(), split_exports));
       const dir = splitMode ?? "horizontal";
+      state.splitRatio = splitRatio;
       const g1View = mountGroup12(dir);
       if (g1View) {
         for (const t2 of groupTabsList[1]) {
@@ -72610,6 +72524,7 @@ var formatDialect = (query, _a2) => {
 // web/src/editor/commands.ts
 init_state();
 init_cm();
+init_dist8();
 init_tabs();
 init_statusbar();
 init_ui();
@@ -72621,7 +72536,7 @@ function formatSQL() {
   if (!view) return;
   const tab3 = getActiveTab();
   if (!tab3 || !/\.sql$/i.test(tab3.name)) return;
-  const btn = document.getElementById("btnFormat");
+  const btn = document.getElementById(groupElId("btnFormat", state.activeGroup));
   try {
     const raw = view.state.doc.toString();
     const sanitized = raw.replace(FLINK_HINT_RE, "/*HINT:$1*/");
@@ -72670,7 +72585,7 @@ function formatJSON() {
   if (!view) return;
   const tab3 = getActiveTab();
   if (!tab3 || !/\.json$/i.test(tab3.name)) return;
-  const btn = document.getElementById("btnFormatJson");
+  const btn = document.getElementById(groupElId("btnFormatJson", state.activeGroup));
   try {
     const raw = view.state.doc.toString();
     const parsed = JSON.parse(raw);
@@ -72692,7 +72607,18 @@ function formatJSON() {
 }
 function replaceWholeDoc(view, text2) {
   const v2 = view;
-  v2.dispatch({ changes: { from: 0, to: v2.state.doc.length, insert: text2 } });
+  const oldHead = v2.state.selection.main.head;
+  const newPos = Math.min(Math.max(oldHead, 0), text2.length);
+  v2.dispatch({
+    changes: { from: 0, to: v2.state.doc.length, insert: text2 },
+    selection: { anchor: newPos },
+    effects: setSearchQuery.of(new SearchQuery({ search: "" }))
+    // ^ Clear stale in-file search highlights in the same transaction. MUST be
+    // a valid SearchQuery, not null: now that search() is loaded (cm.ts), the
+    // setSearchQuery effect is handled and the handler dereferences
+    // effect.value — passing null throws "effect.value.create" TypeError.
+  });
+  v2.focus();
 }
 function toggleEol() {
   const view = state.view;
@@ -73325,6 +73251,7 @@ init_files();
 init_tabs();
 init_filetree();
 init_preview();
+init_dist8();
 init_split();
 init_minimap();
 
@@ -73454,16 +73381,14 @@ function onDocUpdate(u2) {
   }
   if (u2.selectionSet || u2.focusChanged) {
     updateStatusCursor();
-    if (u2.view.hasFocus) {
-      scheduleOccurrenceHighlight(u2.view);
-      if (g.id !== state.activeGroup) {
-        setActiveGroup(g.id);
-        syncPreviewPane();
-      }
+    if (u2.view.hasFocus && g.id !== state.activeGroup) {
+      setActiveGroup(g.id);
+      syncPreviewPane();
     }
   }
   if (u2.docChanged) {
-    scheduleOccurrenceHighlight(u2.view);
+    const v2 = u2.view;
+    if (v2) clearOccurrences(v2);
   }
 }
 async function initEditor() {
@@ -73478,12 +73403,15 @@ async function initEditor() {
     setupShortcuts();
     setupPasteImage(view);
     setupEditorContextMenu();
+    setupSplitDivider();
+    setupGroupActivation();
     updateFormatButtons();
     await loadRecents();
     await restoreSession();
     if (state.openTabs.length === 0) {
       $("emptyState").style.display = "flex";
     }
+    exposeGlobals();
   } catch (err) {
     console.error("Slate init failed:", err);
     const pane = $("editorPane");
@@ -73519,6 +73447,21 @@ function setupResizer() {
     document.removeEventListener("mouseup", onUp);
   }
 }
+function setupGroupActivation() {
+  const area = document.getElementById("editorArea");
+  if (!area) return;
+  area.addEventListener("mousedown", (e) => {
+    const grp = e.target?.closest(".editor-group");
+    if (!grp) return;
+    const gid = grp.dataset.group;
+    if (gid !== "0" && gid !== "1") return;
+    const g = Number(gid);
+    if (state.activeGroup !== g) {
+      setActiveGroup(g);
+      syncPreviewPane();
+    }
+  }, true);
+}
 function exposeGlobals() {
   const w = window;
   w.doOpenFolder = doOpenFolder;
@@ -73534,6 +73477,11 @@ function exposeGlobals() {
   w.toggleSplitView = toggleSplitView;
   w.toggleMinimap = toggleMinimap;
   w.__slate = state;
+  w.setSearch = (q2) => {
+    if (state.view) {
+      state.view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: q2 })) });
+    }
+  };
 }
 function setupGlobalErrorHandlers() {
   window.addEventListener("error", (e) => {

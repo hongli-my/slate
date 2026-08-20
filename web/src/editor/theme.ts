@@ -48,6 +48,14 @@ export const darkTheme = EditorView.theme(
       backgroundColor: "rgba(255,255,255,0.12)",
       borderBottom: "1px solid rgba(255,255,255,0.3)",
     },
+    // Selection-match (from highlightSelectionMatches) must NOT look like the
+    // actual selection — use a distinct tinted background + underline. The
+    // higher-specificity selector (.cm-content prefix) overrides the default
+    // "#99ff7780" that highlightSelectionMatches injects.
+    ".cm-content .cm-selectionMatch": {
+      backgroundColor: "rgba(120,180,255,0.18)",
+      outline: "1px solid rgba(120,180,255,0.35)",
+    },
     ".cm-searchMatch": { backgroundColor: "rgba(255,200,0,0.4)" },
     ".cm-searchMatch-selected": { backgroundColor: "rgba(255,200,0,0.6)" },
     // autocomplete popup
@@ -137,6 +145,10 @@ export const lightTheme = EditorView.theme(
     ".cm-occurrence": {
       backgroundColor: "rgba(0,0,0,0.08)",
       borderBottom: "1px solid rgba(0,0,0,0.2)",
+    },
+    ".cm-content .cm-selectionMatch": {
+      backgroundColor: "rgba(80,130,220,0.15)",
+      outline: "1px solid rgba(80,130,220,0.3)",
     },
     ".cm-searchMatch": { backgroundColor: "rgba(255,200,0,0.4)" },
     ".cm-searchMatch-selected": { backgroundColor: "rgba(255,200,0,0.6)" },

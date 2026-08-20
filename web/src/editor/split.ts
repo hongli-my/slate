@@ -93,6 +93,7 @@ export function mountGroup1(direction: "horizontal" | "vertical"): EditorView | 
   state.splitActive = true;
   area.classList.add("split-active");
   applySplitDirection(area);
+  applySplitRatio(state.splitRatio);
   return g1View;
 }
 
@@ -142,6 +143,8 @@ export async function closeSplit(): Promise<void> {
   if (area) area.classList.remove("split-active", "split-vertical");
   state.splitActive = false;
   state.splitMode = null;
+  // Clear inline flex sizing so group0 returns to full width.
+  applySplitRatio(null);
 
   setActiveGroup(0);
   // Switch to group0's active tab (or the last merged one).
@@ -167,5 +170,61 @@ function applySplitDirection(area: HTMLElement): void {
     area.classList.remove("split-vertical");
     group1.classList.add("split-right");
     group1.classList.remove("split-bottom");
+  }
+}
+
+/** Apply a split size ratio to the two groups via inline flex-grow.
+ *  ratio = group0's share (0..1). null restores the default 50/50. */
+export function applySplitRatio(ratio: number | null): void {
+  const g0 = document.getElementById("group0");
+  const g1 = document.getElementById("group1");
+  if (!g0 || !g1) return;
+  if (ratio == null) {
+    g0.style.flexGrow = "";
+    g1.style.flexGrow = "";
+  } else {
+    const r = Math.min(0.9, Math.max(0.1, ratio)); // clamp 10%-90%
+    g0.style.flexGrow = String(r);
+    g1.style.flexGrow = String(1 - r);
+  }
+}
+
+/** Wire the draggable split-divider (mounted once at boot; the divider DOM
+ *  is shown/hidden via the .split-active class on #editorArea). Dragging
+ *  adjusts the flex-grow ratio of the two groups and persists it. */
+export function setupSplitDivider(): void {
+  const divider = document.getElementById("splitDivider");
+  const area = document.getElementById("editorArea");
+  if (!divider || !area) return;
+  let dragging = false;
+  divider.addEventListener("mousedown", (e) => {
+    if (!state.splitActive) return;
+    dragging = true;
+    e.preventDefault();
+    divider.classList.add("dragging");
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = state.splitMode === "vertical" ? "row-resize" : "col-resize";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+  function onMove(e: MouseEvent): void {
+    if (!dragging) return;
+    const rect = area.getBoundingClientRect();
+    const ratio =
+      state.splitMode === "vertical"
+        ? (e.clientY - rect.top) / rect.height
+        : (e.clientX - rect.left) / rect.width;
+    applySplitRatio(ratio);
+    state.splitRatio = Math.min(0.9, Math.max(0.1, ratio));
+  }
+  function onUp(): void {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove("dragging");
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    saveSession();
   }
 }

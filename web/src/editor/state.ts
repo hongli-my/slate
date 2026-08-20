@@ -91,6 +91,9 @@ export const state = {
   splitActive: false,
   /** Current split direction when splitActive is true. */
   splitMode: null as "horizontal" | "vertical" | null,
+  /** Current split size ratio (group0's share, 0..1). null = default 50/50.
+   *  Persisted across toggles within a session; cleared on app exit. */
+  splitRatio: null as number | null,
   minimapOn: false,
   lightTheme: false,
   macroRecording: false,

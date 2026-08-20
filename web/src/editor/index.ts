@@ -5,14 +5,15 @@
 
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { state, viewGroup, setActiveGroup } from "./state";
-import { createEditorView, buildExtensions, scheduleOccurrenceHighlight, clearOccurrences } from "./cm";
+import { createEditorView, buildExtensions, clearOccurrences } from "./cm";
 import { setupShortcuts } from "./keymap";
 import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile } from "./files";
 import { renderTabsBar, switchToTab, addTab } from "./tabs";
 import { renderTree } from "./filetree";
 import { togglePreview, scheduleMdRender, updateFormatButtons, isMarkdownFile, syncPreviewPane } from "./preview";
 import { formatSQL, formatJSON, toggleEol, toggleTheme } from "./commands";
-import { toggleSplitView } from "./split";
+import { setSearchQuery, SearchQuery } from "@codemirror/search";
+import { toggleSplitView, setupSplitDivider } from "./split";
 import { toggleMinimap } from "./minimap";
 import { setupEditorContextMenu } from "./contextmenu";
 import { restoreSession } from "./session";
@@ -43,19 +44,16 @@ function onDocUpdate(u: ViewUpdate): void {
   }
   if (u.selectionSet || u.focusChanged) {
     updateStatusCursor();
-    if (u.view.hasFocus) {
-      scheduleOccurrenceHighlight(u.view);
-      // Focus routing: make this view's group the active one.
-      if (g.id !== state.activeGroup) {
-        setActiveGroup(g.id);
-        syncPreviewPane(); // move preview pane to the newly active group
-      }
+    // Focus routing: make this view's group the active one.
+    if (u.view.hasFocus && g.id !== state.activeGroup) {
+      setActiveGroup(g.id);
+      syncPreviewPane(); // move preview pane to the newly active group
     }
   }
-  // On transactions that change the doc, occurrence highlights may be stale.
+  // On transactions that change the doc, clear any stale occurrence highlights.
   if (u.docChanged) {
-    // Re-evaluate occurrences after edits (debounced).
-    scheduleOccurrenceHighlight(u.view);
+    const v = u.view;
+    if (v) clearOccurrences(v);
   }
 }
 
@@ -80,6 +78,8 @@ export async function initEditor(): Promise<void> {
     setupShortcuts();
     setupPasteImage(view);
     setupEditorContextMenu();
+    setupSplitDivider();
+    setupGroupActivation();
     updateFormatButtons();
 
     await loadRecents();
@@ -89,6 +89,8 @@ export async function initEditor(): Promise<void> {
     if (state.openTabs.length === 0) {
       $("emptyState").style.display = "flex";
     }
+    // Expose window.* handlers (formatJSON, etc.) + __slate for debugging.
+    exposeGlobals();
   } catch (err) {
     // FIX #17: init error guard — surface the failure in the editor pane.
     console.error("Slate init failed:", err);
@@ -132,6 +134,26 @@ function setupResizer(): void {
   }
 }
 
+// ---- Group activation router ----
+// Any mousedown inside an editor group (editor, tabs, buttons, empty area)
+// makes that group the active one. This ensures toolbar buttons (format /
+// preview) operate on the group they belong to, not the previously focused one.
+function setupGroupActivation(): void {
+  const area = document.getElementById("editorArea");
+  if (!area) return;
+  area.addEventListener("mousedown", (e) => {
+    const grp = (e.target as HTMLElement | null)?.closest(".editor-group") as HTMLElement | null;
+    if (!grp) return;
+    const gid = grp.dataset.group;
+    if (gid !== "0" && gid !== "1") return;
+    const g = Number(gid) as 0 | 1;
+    if (state.activeGroup !== g) {
+      setActiveGroup(g);
+      syncPreviewPane();
+    }
+  }, true);
+}
+
 // ---- Export functions to window for index.html onclick handlers ----
 export function exposeGlobals(): void {
   const w = window as unknown as Record<string, unknown>;
@@ -149,6 +171,12 @@ export function exposeGlobals(): void {
   w.toggleMinimap = toggleMinimap;
   // Expose for debugging.
   w.__slate = state;
+  // Debug helper: trigger an in-file search so tests can verify highlight clearing.
+  w.setSearch = (q: string) => {
+    if (state.view) {
+      state.view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: q })) });
+    }
+  };
 }
 
 // FIX #22: global error handlers -> toast.

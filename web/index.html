@@ -251,9 +251,13 @@
                             </div>
                         </div>
                     </div>
+                    <div class="split-divider" id="splitDivider"></div>
                     <div class="editor-group" id="group1" data-group="1" hidden>
                         <div class="tabs-bar" id="tabsBar1"></div>
                         <div class="editor-pane" id="editorPane1">
+                            <button class="editor-format-btn" id="btnFormat1" onclick="formatSQL()">&#9998; 格式化 SQL</button>
+                            <button class="editor-format-btn" id="btnFormatJson1" onclick="formatJSON()">&#9998; 格式化 JSON</button>
+                            <button class="editor-preview-btn" id="btnPreviewFloat1" onclick="togglePreview()">&#128065; 预览</button>
                             <div class="empty-state" id="emptyState1">
                                 <div class="big-icon">&#128221;</div>
                                 <h2>分栏编辑区</h2>
@@ -269,6 +273,7 @@
                     <span id="stLang">-</span>
                     <span id="stEol" onclick="toggleEol()" title="点击切换 LF / CRLF" style="cursor:pointer;">LF</span>
                     <span>UTF-8</span>
+                    <span id="stBuild" title="构建版本（用于确认 app 是否跑的最新代码）" style="color:#aaa;">b0819-6</span>
                 </div>
             </div>
         </div>

@@ -47,7 +47,7 @@ import {
   autocompletion,
   completionKeymap,
 } from "@codemirror/autocomplete";
-import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
+import { search, searchKeymap, setSearchQuery, SearchQuery } from "@codemirror/search";
 import { EditorView as EV } from "@codemirror/view";
 
 import { state, setActiveGroup } from "./state";
@@ -86,6 +86,13 @@ export function clearOccurrences(view: EditorView): void {
   view.dispatch({ effects: setOccurrences.of([]) });
 }
 
+/** Clear the in-file search highlight (cm-searchMatch) so a stale search term
+ *  doesn't keep painting matches across the document after an operation that
+ *  replaces the whole doc (e.g. format / EOL toggle). */
+export function clearSearchHighlights(view: EditorView): void {
+  view.dispatch({ effects: setSearchQuery.of(null) });
+}
+
 let occTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_OCC = 300;
 const MAX_OCC_DOC = 200000;
@@ -97,6 +104,15 @@ export function scheduleOccurrenceHighlight(view: EditorView): void {
     occTimer = null;
     highlightOccurrences(view);
   }, 220);
+}
+
+/** Cancel a pending (debounced) occurrence highlight. Used after operations
+ *  that replace the whole doc, so we don't re-highlight a stale cursor word. */
+export function cancelOccurrenceHighlight(): void {
+  if (occTimer) {
+    clearTimeout(occTimer);
+    occTimer = null;
+  }
 }
 
 function highlightOccurrences(view: EditorView): void {
@@ -112,18 +128,25 @@ function highlightOccurrences(view: EditorView): void {
     return;
   }
   const sel = view.state.selection.main;
+  // FIX: CM6's selection mapping can produce a range where `from > to` when
+  // both endpoints were inside a fully-deleted range (e.g., after
+  // `replaceWholeDoc`). Normalize to (min, max) before any sliceString call.
+  const selFrom = Math.min(sel.from, sel.to);
+  const selTo = Math.max(sel.from, sel.to);
   let word = "";
-  let wordFrom = sel.from;
-  let wordTo = sel.to;
-  if (sel.from !== sel.to) {
-    const s = doc.sliceString(sel.from, sel.to);
-    if (s.length > 40 || s.includes("\n")) {
+  let wordFrom = selFrom;
+  let wordTo = selTo;
+  if (selFrom !== selTo) {
+    const s = doc.sliceString(selFrom, selTo);
+    if (s.length === 0 || s.length > 40 || s.includes("\n")) {
+      // FIX: empty result (e.g., from a reversed-from mapping) is treated as
+      // "no usable word" — clear highlights instead of inifinte-loop padding.
       clearOccurrences(view);
       return;
     }
     word = s;
-    wordFrom = sel.from;
-    wordTo = sel.to;
+    wordFrom = selFrom;
+    wordTo = selTo;
   } else {
     // Word at cursor (Sublime-style).
     const line = doc.lineAt(sel.head);
@@ -157,7 +180,12 @@ function highlightOccurrences(view: EditorView): void {
     }
     i = idx + word.length;
   }
-  view.dispatch({ effects: setOccurrences.of(ranges) });
+  // FIX: defensively filter out any empty/zero-width ranges so we never
+  // throw "Mark decorations may not be empty" inside the field update.
+  const safeRanges = ranges.length === ranges.filter((r) => r.from !== r.to).length
+    ? ranges
+    : ranges.filter((r) => r.from !== r.to);
+  view.dispatch({ effects: setOccurrences.of(safeRanges) });
 }
 
 // ---- Compartments ----
@@ -203,7 +231,12 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
     closeBrackets(),
     rectangularSelection(),
     crosshairCursor(),
-    highlightActiveLine(),
+    // FIX: highlightActiveLine() REMOVED — with lineWrapping on, a long line
+    // (e.g. a long SQL string in JSON) wraps into a dozen visual lines, and the
+    // whole-line active background then paints a huge block that looks exactly
+    // like a spurious multi-line selection. Keep only the gutter (line-number)
+    // highlight so the cursor line is still locatable, but the content area
+    // stays clean.
     highlightActiveLineGutter(),
     codeFolding(),
     foldGutter({
@@ -215,10 +248,10 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
       },
     }),
     lineNumbers(),
-    // Built-in selection-match highlighter also helps, but we keep our own
-    // occurrence field for the broader "all occurrences" behavior.
-    highlightSelectionMatches(),
-    occurrenceField,
+    // NOTE: highlightSelectionMatches() and occurrenceField were REMOVED because
+    // they caused confusing "fake selection" backgrounds — clicking on a common
+    // word (e.g., "selected", "total" in JSON) would highlight ALL occurrences
+    // across many lines, making it look like a large block was selected.
     EditorView.lineWrapping, // default wrap on (matches CM5 lineWrapping:true)
     wrapComp.of([]),
     themeComp.of(state.lightTheme ? lightThemeExt : darkThemeExt),
@@ -226,12 +259,27 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
     readOnlyComp.of(EditorState.readOnly.of(true)),
     minimapComp.of([]),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    // Load the search() extension so searchState always exists. Without it,
+    // setSearchQuery.of() effects have no handler (highlights never appear),
+    // and findNext/findPrevious — used by our custom panel's "next/prev"
+    // buttons AND by the F3/Mod-g keymap — fall back to openSearchPanel(),
+    // which dynamically injects searchExtensions and spawns CM6's native
+    // bottom panel. search() itself does NOT open the panel (the panel only
+    // shows on togglePanel.of(true) / openSearchPanel), so loading it is safe.
+    search(),
     keymap.of([
       ...closeBracketsKeymap,
       ...defaultKeymap,
-      // Drop CM6's built-in Ctrl+F (openSearchPanel) — it dynamically loads
-      // searchExtensions and spawns the native panel alongside our custom one.
-      ...searchKeymap.filter((k) => k.key !== "Mod-f"),
+      // Drop CM6's built-in search-panel-opening keys. Mod-f is handled by a
+      // document-level listener (keymap.ts) that opens our custom panel. F3
+      // and Mod-g (find next/prev) are dropped because with an empty/invalid
+      // query — the state right after opening our panel — they still call
+      // openSearchPanel() and spawn the native panel. Our custom panel's
+      // buttons call findNext/findPrevious directly and, with search() loaded
+      // and a valid query, take the normal branch without opening the panel.
+      ...searchKeymap.filter(
+        (k) => k.key !== "Mod-f" && k.key !== "F3" && k.key !== "Mod-g",
+      ),
       ...historyKeymap,
       ...foldKeymap,
       ...completionKeymap,
