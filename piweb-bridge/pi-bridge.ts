@@ -478,6 +478,20 @@ async function ensureSession(sid: string): Promise<AgentSession> {
 }
 
 // ---------------- 消息格式转换：pi AgentMessage → Hermes 兼容 ----------------
+
+// HTML 转义（compaction/branch summary 摘要文本嵌入 HTML 前防注入）
+function escHtml(s: string): string {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// token 数格式化：86200 → "86.2K"，1200000 → "1.2M"（与前端 chat.js _fmtK 一致）
+function fmtK(n: number): string {
+  if (!n || n <= 0) return "0";
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
+
 function toHermesMessage(msg: any): any {
   if (!msg) return msg;
   const ts = msg.timestamp ? Math.floor(new Date(msg.timestamp).getTime() / 1000) : undefined;
@@ -528,6 +542,31 @@ function toHermesMessage(msg: any): any {
       timestamp: ts,
       id: msg.id,
     };
+  }
+
+  // 压缩摘要：SDK compact() 后 session.messages 头部会插入一条
+  // { role: "compactionSummary", summary, tokensBefore }。转成前端可渲染的
+  // system 消息（带 _compactionHtml），复用 compaction-step 卡片样式。
+  if (msg.role === "compactionSummary") {
+    const before = msg.tokensBefore || 0;
+    const head = "✂️ 上下文已压缩" + (before > 0 ? " " + fmtK(before) + " tokens" : "");
+    const summary = msg.summary || "";
+    const html = '<div class="compaction-result">'
+      + '<div class="compaction-head">' + escHtml(head) + '</div>'
+      + (summary ? '<details class="compaction-summary"><summary>查看压缩摘要</summary><div class="compaction-summary-body">' + escHtml(summary) + '</div></details>' : '')
+      + '</div>';
+    return { role: "system", content: head, _isCompaction: true, _compactionHtml: html, timestamp: ts, id: msg.id };
+  }
+
+  // 分支摘要：session 分支合并时插入的 { role: "branchSummary", summary, fromId }
+  if (msg.role === "branchSummary") {
+    const summary = msg.summary || "";
+    const head = "🌿 分支摘要";
+    const html = '<div class="compaction-result">'
+      + '<div class="compaction-head">' + escHtml(head) + '</div>'
+      + (summary ? '<details class="compaction-summary"><summary>查看分支摘要</summary><div class="compaction-summary-body">' + escHtml(summary) + '</div></details>' : '')
+      + '</div>';
+    return { role: "system", content: head, _isCompaction: true, _compactionHtml: html, timestamp: ts, id: msg.id };
   }
 
   return msg;

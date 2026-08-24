@@ -286,6 +286,18 @@ window.Hermes = window.Hermes || {};
           }
         }
         turns.push(turn);
+      } else if (m.role === 'system' && m._compactionHtml) {
+        // 压缩/分支摘要：SDK compact() 后 session.messages 头部会插入一条
+        // { role: "system", _compactionHtml }，前面可能还有 user 之前被 SDK
+        // 折叠掉的若干 assistant/tool（firstKept 之前的消息）。这些"孤儿"消息
+        // 在 user turn 之外、不应单独渲染成 .msg-bubble——既会被渲染成扁平
+        // 不换行的整块（视觉灾难），又会因无 user 包络而失去 assistant bubble。
+        // 处理：只把压缩卡片作为独立 turn 推入，跳过它后面直到下一个 user 的
+        // 所有孤儿消息（避免一次性把整段历史渲染成杂烩）。
+        turns.push({ type: 'other', message: m });
+        i++;
+        // 跳过所有非 user 的孤儿消息，直到下一个 user 才允许开新 turn
+        while (i < messages.length && messages[i].role !== 'user') i++;
       } else {
         turns.push({ type: 'other', message: m });
         i++;
@@ -673,6 +685,14 @@ window.Hermes = window.Hermes || {};
   function renderSingleTurnHTML(turn) {
     if (turn.type === 'other') {
       const m = turn.message;
+      // 压缩/分支摘要：re-fetch 后端历史时，compactionSummary 经 toHermesMessage
+      // 转成的 system 消息独立出现在数组头部（前面无 user），不在任何 user turn 内，
+      // 故走 type:'other' 分支。识别 _compactionHtml 渲染成 compaction-step 卡片。
+      if (m._compactionHtml) {
+        // 独立出现的系统步骤，不套 assistant bubble（直接用 .step.compaction-step 已有样式）
+        // 避免与外层 .turn-agent-body 的 background/border/max-width 叠加产生双层气泡
+        return `<div class="turn"><div class="step system-step compaction-step">${m._compactionHtml}</div></div>`;
+      }
       return `<div class="msg-bubble msg-${m.role}"><div class="msg-content">${esc(m.content || '')}</div></div>`;
     }
 
