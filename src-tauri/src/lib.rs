@@ -1,3 +1,4 @@
+mod chat_pane;
 mod fs_ops;
 mod otel;
 mod pi_bridge;
@@ -38,7 +39,14 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
         &PredefinedMenuItem::select_all(app, None)?,
     ])?;
 
+    // 视图切换菜单项：加速键走原生菜单系统，子 webview（对话）聚焦时也能生效，
+    // 不受"keydown 不跨 webview 冒泡"的限制。
     let view_submenu = Submenu::with_items(app, "视图", true, &[
+        &MenuItem::with_id(app, "view-editor", "编辑器", true, Some("CmdOrCtrl+1"))?,
+        &MenuItem::with_id(app, "view-onetab", "OneTab", true, Some("CmdOrCtrl+2"))?,
+        &MenuItem::with_id(app, "view-otel", "OTel", true, Some("CmdOrCtrl+3"))?,
+        &MenuItem::with_id(app, "view-chat", "对话", true, Some("CmdOrCtrl+4"))?,
+        &PredefinedMenuItem::separator(app)?,
         &MenuItem::with_id(app, "preview", "预览", true, Some("CmdOrCtrl+P"))?,
         &PredefinedMenuItem::separator(app)?,
         &MenuItem::with_id(app, "reload", "重新加载", true, Some("CmdOrCtrl+R"))?,
@@ -55,6 +63,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(pi_bridge::SidecarState::default())
+        .on_window_event(|window, event| {
+            chat_pane::on_window_event(window, event);
+        })
         .invoke_handler(tauri::generate_handler![
             otel::otel_stats,
             otel::otel_sessions,
@@ -71,6 +82,9 @@ pub fn run() {
             pi_bridge::stop_bridge,
             pi_bridge::restart_bridge,
             pi_bridge::bridge_status,
+            chat_pane::chat_pane_show,
+            chat_pane::chat_pane_hide,
+            chat_pane::chat_pane_reload,
         ])
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -108,13 +122,13 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // 日志始终开启（release 也写 ~/Library/Logs/com.slate.app/），
+            // 便于定位子 webview / sidecar 运行问题
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
             // app 启动自动拉起 pi-bridge sidecar（异步，不阻塞 setup）
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

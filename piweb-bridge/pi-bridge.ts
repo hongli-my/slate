@@ -608,19 +608,60 @@ function sseResponse(session: AgentSession, message: string, lockSid?: string): 
   const startedAt = Date.now();
   let finishReason = "unknown";
 
+  // ---- text_delta / thinking_delta 帧合并状态（finish/cancel 均需访问 → 放函数级）----
+  // pi SDK 逐 token 发 text_delta；若逐个透传，每次都是 SSE 写 + 前端 JSON.parse
+  // + 结构签名 + morphdom diff，在 WKWebView（与编辑器共享进程）下被放大成卡顿/蹦字。
+  // 这里把 ~FLUSH_MS 窗口内的增量攒成一帧（一次写、一次前端渲染）；结构性事件
+  // （工具/消息边界/错误/结束）仍即时冲刷透传，保证工具卡、结束状态不延迟。
+  const FLUSH_MS = 40;
+  let pendingText = "";
+  let pendingThinking = "";
+  let flushTimer: ReturnType<typeof setInterval> | undefined;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const doSend = (obj: any) => {
+      const sendRaw = (obj: any) => {
         if (finished) return;
         try { controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`)); } catch {}
       };
+      /** 把攒下的增量按类型各合并成一帧事件写出；空缓冲时停掉定时器。 */
+      const flushBuffer = () => {
+        if (finished) return;
+        if (pendingText) {
+          const delta = pendingText;
+          pendingText = "";
+          sendRaw({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta } });
+        }
+        if (pendingThinking) {
+          const delta = pendingThinking;
+          pendingThinking = "";
+          sendRaw({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta } });
+        }
+        if (flushTimer && !pendingText && !pendingThinking) {
+          clearInterval(flushTimer);
+          flushTimer = undefined;
+        }
+      };
+      /** 结构性事件：先冲刷缓冲，再立即发送（保证事件顺序）。 */
+      const doSend = (obj: any) => {
+        flushBuffer();
+        sendRaw(obj);
+      };
+      /** 首个增量到达时启动冲刷定时器。 */
+      const ensureFlushTimer = () => {
+        if (!flushTimer) flushTimer = setInterval(flushBuffer, FLUSH_MS);
+      };
       const finish = (reason?: string) => {
         if (finished) return;
+        // 收尾前先把残余增量冲刷出去（此时 finished 仍为 false，sendRaw 可用），
+        // 避免 prompt 结束到 agent_settled 之间最后一段文本丢失。
+        try { flushBuffer(); } catch {}
         finished = true;
         if (reason) finishReason = reason;
         try { if (unsub) unsub(); } catch {}
         try { if (heartbeat) clearInterval(heartbeat); } catch {}
         try { if (watchdog) clearTimeout(watchdog); } catch {}
+        try { if (flushTimer) clearInterval(flushTimer); } catch {}
         try { if (lockSid) busySessions.delete(lockSid); } catch {}
         try { controller.close(); } catch {}
         try { activeStreamFinishers.delete(finisher); } catch {}
@@ -650,7 +691,20 @@ function sseResponse(session: AgentSession, message: string, lockSid?: string): 
       // 订阅事件：每个事件独立 try/catch，避免单个坏事件导致 agent_settled 漏处理 → 流永不关闭
       unsub = session.subscribe((event: any) => {
         try {
-          doSend(transformEvent(event));
+          const t = event?.type;
+          const ae = t === "message_update" ? event?.assistantMessageEvent : null;
+          const isDelta =
+            ae && (ae.type === "text_delta" || ae.type === "thinking_delta") &&
+            typeof ae.delta === "string" && ae.delta.length > 0;
+          if (isDelta) {
+            // 增量事件：入缓冲，按帧合并冲刷
+            if (ae.type === "text_delta") pendingText += ae.delta;
+            else pendingThinking += ae.delta;
+            ensureFlushTimer();
+          } else {
+            // 结构性事件：冲刷缓冲后即时透传
+            doSend(transformEvent(event));
+          }
         } catch (e: any) {
           console.warn(`[pi-bridge] [${ts()}] transform/send event failed:`, e?.message, "type=", event?.type);
         }
@@ -678,6 +732,7 @@ function sseResponse(session: AgentSession, message: string, lockSid?: string): 
       try { if (unsub) unsub(); } catch {}
       try { if (heartbeat) clearInterval(heartbeat); } catch {}
       try { if (watchdog) clearTimeout(watchdog); } catch {}
+      try { if (flushTimer) clearInterval(flushTimer); } catch {}
       try { if (lockSid) busySessions.delete(lockSid); } catch {}
       try { activeStreamFinishers.delete(finisher); } catch {}
       try { session.abort(); } catch {}

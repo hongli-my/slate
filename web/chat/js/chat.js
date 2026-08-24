@@ -1442,7 +1442,20 @@ window.Hermes = window.Hermes || {};
         const { done, value } = await reader.read();
         if (done) break;
         lastByteAt = Date.now();
-        parser.feed(decoder.decode(value, { stream: true }));
+        // 分片喂入 parser：WKWebView 可能把多个 SSE 帧合并成一个大 chunk，
+        // 一次同步解析 N 帧会长时间阻塞主线程（N 次 JSON.parse + 渲染队列堆积）。
+        // 按 4KB 子块喂入 + 每次让出事件循环，把解析摊到多个 macrotask。
+        // （pi-bridge 已做 40ms 帧合并，此分支仅在收到超大合并 chunk 时兜底）
+        const text = decoder.decode(value, { stream: true });
+        const SUB = 4096;
+        if (text.length > SUB) {
+          for (let i = 0; i < text.length; i += SUB) {
+            parser.feed(text.slice(i, i + SUB));
+            await new Promise(function(resolve) { setTimeout(resolve, 0); });
+          }
+        } else {
+          parser.feed(text);
+        }
       }
 
       // 流正常结束：清理看门狗，统一收尾
@@ -1615,4 +1628,25 @@ window.Hermes = window.Hermes || {};
   window.Hermes.getNextInputHistory = getNextInputHistory;
   window.Hermes.handleImageFile = handleImageFile;
 
+})();
+
+// ---- 窗口缩放防御 ----
+// 消息区大量使用 content-visibility:auto（长对话滚动性能优化）。
+// WebKit 在视口尺寸变化（窗口缩放/子 webview autoresize）后，部分 content-visibility
+// 区域的可见性判定可能不刷新 → 出现空白/不重绘。这里在 resize 后短暂强制所有 turn
+// 可见再恢复，触发 WebKit 重新评估可见性与重绘（150ms 防抖，仅缩放时触发，不影响流式）。
+(function () {
+  var _cvTimer = 0;
+  window.addEventListener('resize', function () {
+    if (_cvTimer) clearTimeout(_cvTimer);
+    _cvTimer = setTimeout(function () {
+      _cvTimer = 0;
+      var turns = document.querySelectorAll('.turn');
+      if (!turns.length) return;
+      turns.forEach(function (t) { t.style.contentVisibility = 'visible'; });
+      requestAnimationFrame(function () {
+        turns.forEach(function (t) { t.style.contentVisibility = ''; });
+      });
+    }, 150);
+  });
 })();

@@ -300,7 +300,8 @@
             <iframe src="otel/index.html" loading="lazy"></iframe>
         </div>
         <div class="view" id="view-chat">
-            <iframe src="chat/index.html" loading="lazy"></iframe>
+            <!-- 对话由原生子 webview 承载（src-tauri/src/chat_pane.rs）：独立主线程，
+                 与编辑器/WKWebView 隔离；此处仅为视图切换占位 -->
         </div>
         <div class="view" id="view-settings">
             <!-- settings.js 动态填充 -->
@@ -324,6 +325,17 @@
         });
     }
 
+    // ===== 对话子 webview 控制（原生层，独立主线程）=====
+    function callChatPane(cmd) {
+        try {
+            if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+                window.__TAURI__.core.invoke(cmd).catch((e) => console.warn(cmd + ' failed:', e));
+            }
+        } catch (e) {
+            console.warn(cmd + ' failed:', e);
+        }
+    }
+
     // ===== 侧边栏视图切换 =====
     const navBtns = document.querySelectorAll('.nav-btn[data-view]');
     const views = document.querySelectorAll('.view');
@@ -331,6 +343,12 @@
 
     function switchView(name) {
         if (name === currentView) return;
+        // 对话由原生子 webview 承载：切入显示、切出隐藏
+        if (name === 'chat') {
+            callChatPane('chat_pane_show');
+        } else if (currentView === 'chat') {
+            callChatPane('chat_pane_hide');
+        }
         // 离开设置页：清理 listener & 轮询
         if (currentView === 'settings' && window.SlateSettings) {
             window.SlateSettings.deactivate();
@@ -350,15 +368,20 @@
     const btnRefresh = document.getElementById('btn-refresh');
     if (btnRefresh) {
         btnRefresh.addEventListener('click', () => {
-            const activeView = document.querySelector('.view.active');
-            if (!activeView) return;
-            const iframe = activeView.querySelector('iframe');
-            if (!iframe) return;  // 占位视图无 iframe，不处理
             // 旋转反馈
             btnRefresh.classList.remove('spinning');
             void btnRefresh.offsetWidth;  // 触发重排以重启动画
             btnRefresh.classList.add('spinning');
             setTimeout(() => btnRefresh.classList.remove('spinning'), 600);
+            // 对话是原生子 webview，单独 reload
+            if (currentView === 'chat') {
+                callChatPane('chat_pane_reload');
+                return;
+            }
+            const activeView = document.querySelector('.view.active');
+            if (!activeView) return;
+            const iframe = activeView.querySelector('iframe');
+            if (!iframe) return;  // 占位视图无 iframe，不处理
             // reload iframe
             try {
                 iframe.contentWindow.location.reload();
@@ -377,14 +400,18 @@
     });
 
     // ===== 菜单事件桥接 =====
-    // 文件操作类菜单 → 先切到编辑器视图，再让 editor iframe 处理
+    // 文件操作类菜单 → 先切到编辑器视图，再让编辑器处理
     const fileActions = new Set(['open-folder', 'open-file', 'new-file', 'save', 'delete', 'preview']);
+    // 视图菜单（Cmd+1~4 原生加速键，子 webview 聚焦时也能切换）
+    const viewActions = { 'view-editor': 'editor', 'view-onetab': 'onetab', 'view-otel': 'otel', 'view-chat': 'chat' };
     if (window.__TAURI__ && window.__TAURI__.event) {
         window.__TAURI__.event.listen('menu-action', (e) => {
             const action = e.payload;
             if (fileActions.has(action)) {
                 switchView('editor');
             }
+            const v = viewActions[action];
+            if (v) switchView(v);
         });
     }
 </script>
