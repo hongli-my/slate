@@ -133,46 +133,6 @@ window.Hermes = window.Hermes || {};
   window.Hermes._startLiveTimer = _startLiveTimer;
   window.Hermes._stopLiveTimer = _stopLiveTimer;
 
-  // ---- 从 SSE 事件中兜底提取工具「参数」----
-  // 上游不同实现的字段名各异，按优先级尝试常见命名（label 也是常见参数载体）
-  function extractToolArgs(evt) {
-    if (!evt || typeof evt !== 'object') return null;
-    var candidates = [evt.args, evt.arguments, evt.input, evt.params, evt.parameters, evt.label];
-    for (var i = 0; i < candidates.length; i++) {
-      var c = candidates[i];
-      if (c == null || c === '') continue;
-      if (typeof c === 'object') return c;
-      if (typeof c === 'string') {
-        var s = c.trim();
-        if (s.startsWith('{') || s.startsWith('[')) {
-          try { return JSON.parse(s); } catch (e) {}
-        }
-        return s;
-      }
-    }
-    // 单字段兜底：把常见的单参数字段拼成对象
-    var single = {};
-    ['command', 'cmd', 'path', 'file', 'file_path', 'query', 'url', 'title', 'name', 'pattern'].forEach(function (k) {
-      if (evt[k] != null && typeof evt[k] !== 'object') single[k] = evt[k];
-    });
-    return Object.keys(single).length > 0 ? single : null;
-  }
-
-  // ---- 从 SSE 事件中兜底提取工具「结果」----
-  function extractToolResult(evt) {
-    if (!evt || typeof evt !== 'object') return null;
-    var candidates = [evt.result, evt.output, evt.content, evt.summary, evt.preview, evt.message, evt.text, evt.data];
-    for (var i = 0; i < candidates.length; i++) {
-      var c = candidates[i];
-      if (c == null || c === '') continue;
-      if (typeof c === 'object') {
-        try { return JSON.stringify(c); } catch (e) { return String(c); }
-      }
-      return c;
-    }
-    return null;
-  }
-
   // pi: 从 content blocks 提取纯文本
   function _extractText(content) {
     if (!content) return '';
@@ -285,41 +245,27 @@ window.Hermes = window.Hermes || {};
     // 记住滚动位置
     const prevScrollTop = dom.chatMessages.scrollTop;
 
-    // 用完整渲染逻辑拿到最后一个 turn 的 HTML
-    const turns = window.Hermes.groupIntoTurns(msgs);
-    if (turns.length === 0) return;
-    const lastTurn = turns[turns.length - 1];
-    const lastStep = lastTurn.steps[lastTurn.steps.length - 1];
-    const lastAssistant = lastStep && (lastStep.assistant || lastStep.streaming);
+    // 直接从 msgs 找原 streaming msg 对象（onStreamComplete 已把 _streaming 设 false）。
+    // 不能用 groupIntoTurns 返回的 lastStep.assistant —— 那是 Object.assign 创建的
+    // 副本（normA），修改它不影响原对象，lastIndexOf 也找不到（返回 -1 → 插到数组开头）。
+    var lastAssistant = null;
+    for (var mi = msgs.length - 1; mi >= 0; mi--) {
+      if (msgs[mi].role === 'assistant') { lastAssistant = msgs[mi]; break; }
+    }
+    if (!lastAssistant) return;
 
-    // Step 1: 如果有 _toolSteps 但没有 tool_calls（SSE 只发了 progress 事件），
-    // 把 _toolSteps 转成标准 tool_calls 格式
-    if (lastAssistant && lastAssistant._toolSteps && lastAssistant._toolSteps.length > 0 && !lastAssistant.tool_calls) {
-      lastAssistant.tool_calls = lastAssistant._toolSteps.map(function(ts) {
-        return {
-          id: ts.toolCallId || ('call_' + Math.random().toString(36).substr(2, 9)),
-          type: 'function',
-          function: { name: ts.name, arguments: ts.args ? JSON.stringify(ts.args) : '{}' }
-        };
-      });
-      // 确保有对应的 tool result 消息（让 renderToolCard 能显示 ✓）
-      // 只补缺失的
-      var existingToolMsgs = msgs.filter(function(m) { return m.role === 'tool'; });
+    // Step 1: 流式结束时，_toolSteps 里仍 running 的标记为完成（tool_execution_end 可能晚到）
+    if (lastAssistant._toolSteps) {
       lastAssistant._toolSteps.forEach(function(ts) {
-        var tcId = ts.toolCallId || null;
-        var exists = existingToolMsgs.some(function(m) { return m.tool_call_id === tcId; });
-        if (!exists) {
-          msgs.push({ role: 'tool', tool_call_id: tcId, content: JSON.stringify({ success: !ts.running, output: '' }) });
-        }
+        if (ts.running) { ts.running = false; ts.endTime = ts.endTime || Date.now(); }
       });
     }
 
-    // Step 2: 流式消息同时有 tool_calls 和正文 content 时，把 content 拆分到
+    // Step 1b: streaming msg 同时有 _toolSteps 和正文 content 时，把 content 拆分到
     // 单独的 final assistant 消息。否则 renderTurnStepsHTML 会把这条消息归为
-    // toolStep（hasTools=true），正文只被当成"📝说明"或直接跳过，不显示为
-    // 最终回复块。刷新后 DB 里是分开的两条消息所以正常——此修复让流式结束
-    // 后的渲染与刷新后一致。
-    if (lastAssistant && lastAssistant.tool_calls && lastAssistant.tool_calls.length > 0 &&
+    // toolStep，正文只被当成“📝说明”而非最终回复。
+    // backgroundReFetch 后 DB 里是分开的两条消息（pi 原生），所以正常。
+    if (lastAssistant._toolSteps && lastAssistant._toolSteps.length > 0 &&
         lastAssistant.content && lastAssistant.content.trim().length > 0) {
       var finalMsg = {
         role: 'assistant',
@@ -330,16 +276,15 @@ window.Hermes = window.Hermes || {};
       };
       lastAssistant.content = '';
       lastAssistant.reasoning = '';
-      // 在 streaming 消息及其后续 tool result 之后插入 final 消息
       var lastAssistantIdx = msgs.lastIndexOf(lastAssistant);
       var insertIdx = lastAssistantIdx + 1;
-      while (insertIdx < msgs.length && msgs[insertIdx].role === 'tool') {
+      while (insertIdx < msgs.length && (msgs[insertIdx].role === 'toolResult' || msgs[insertIdx].role === 'tool')) {
         insertIdx++;
       }
       msgs.splice(insertIdx, 0, finalMsg);
     }
 
-    // Step 3: 重新分组并渲染
+    // Step 2: 重新分组并渲染
     // B2: 用 morphdom 替代 innerHTML 全替换，保留工具卡片等未变节点的 DOM identity，
     // 消除回复结束瞬间的重排闪烁（与流式期 morphdom 策略一致）
     const freshTurns = window.Hermes.groupIntoTurns(msgs);
@@ -1122,7 +1067,7 @@ window.Hermes = window.Hermes || {};
               }
               var _curMsgs = getMsgs(sid);
               if (_curMsgs && evt.result) {
-                _curMsgs.push({ role: 'tool', tool_call_id: evt.toolCallId, content: _extractText(evt.result.content) });
+                _curMsgs.push({ role: 'toolResult', toolCallId: evt.toolCallId, content: _extractText(evt.result.content) });
               }
               scheduleRender(sid, false);
               return;
@@ -1138,20 +1083,26 @@ window.Hermes = window.Hermes || {};
                 streamAssistantMsg.reasoning += (_ae.delta || '');
                 scheduleRender(sid, false);
               } else if (_ae.type === 'toolcall_end' && _ae.toolCall) {
-                streamAssistantMsg.tool_calls = streamAssistantMsg.tool_calls || [];
-                streamAssistantMsg.tool_calls.push({
-                  id: _ae.toolCall.id,
-                  type: 'function',
-                  function: { name: _ae.toolCall.name, arguments: typeof _ae.toolCall.arguments === 'string' ? _ae.toolCall.arguments : JSON.stringify(_ae.toolCall.arguments || {}) }
-                });
+                // pi 原生 ToolCall block：同步到 _toolSteps（tool_execution_start 可能还未到达）
+                var _tc = _ae.toolCall;
+                var _tcId = _tc.toolCallId || _tc.id || null;
+                var _existing = _tcId ? (streamAssistantMsg._toolSteps || []).find(function(s) { return s.toolCallId === _tcId; }) : null;
+                if (!_existing) {
+                  _existing = { name: _tc.name || 'unknown', toolCallId: _tcId, args: _tc.input != null ? _tc.input : (_tc.arguments != null ? _tc.arguments : null), running: false, startTime: null };
+                  streamAssistantMsg._toolSteps.push(_existing);
+                  streamAssistantMsg._toolCallCount = (streamAssistantMsg._toolCallCount || 0) + 1;
+                } else {
+                  if (!_existing.name || _existing.name === 'unknown') _existing.name = _tc.name || _existing.name;
+                  if (!_existing.toolCallId && _tcId) _existing.toolCallId = _tcId;
+                  if (_existing.args == null && _tc.input != null) _existing.args = _tc.input;
+                }
               }
               return;
             }
             if (_t === 'message_end' && evt.message && evt.message.role === 'assistant') {
-              if (evt.message.content) streamAssistantMsg.content = evt.message.content;
-              if (evt.message.reasoning) streamAssistantMsg.reasoning = evt.message.reasoning;
-              if (evt.message.tool_calls && evt.message.tool_calls.length) streamAssistantMsg.tool_calls = evt.message.tool_calls;
-              if (evt.message._usage) streamAssistantMsg._usage = evt.message._usage;
+              // pi 原生 AssistantMessage：content 是 blocks 数组，已通过 delta 累积到 streamAssistantMsg.content/reasoning
+              // 这里只取 usage，不覆盖 content（blocks ≠ string）
+              if (evt.message.usage) streamAssistantMsg._usage = evt.message.usage;
               return;
             }
             if (_t === 'extension_ui_request') {
@@ -1205,216 +1156,7 @@ window.Hermes = window.Hermes || {};
               return;
             }
             // agent_start / turn_* / agent_end 等无需特殊处理
-            // ---- 以下为旧 Hermes/OpenAI 兼容逻辑（pi 事件已 return，基本不会走到）----
-            if (eventType === 'hermes.tool.progress') {
-              if (evt.status === 'completed') {
-                // Mark the matching running step as done
-                const steps = streamAssistantMsg._toolSteps || [];
-                let matched = null;
-                if (evt.toolCallId) {
-                  for (let i = steps.length - 1; i >= 0; i--) {
-                    if (steps[i].running && steps[i].toolCallId === evt.toolCallId) { matched = steps[i]; break; }
-                  }
-                }
-                // Fallback: if no id match, use last running step
-                if (!matched) {
-                  for (let i = steps.length - 1; i >= 0; i--) {
-                    if (steps[i].running) { matched = steps[i]; break; }
-                  }
-                }
-                if (matched) {
-                  matched.running = false;
-                  matched.endTime = Date.now();
-                  // 兜底从 completed 事件提取结果
-                  var r = extractToolResult(evt);
-                  if (r != null && matched.result === undefined) matched.result = r;
-                  // 兜底补参数（部分上游把参数放在 completed 事件里）
-                  if (matched.args === undefined) {
-                    var ca = extractToolArgs(evt);
-                    if (ca != null) matched.args = ca;
-                  }
-                }
-              } else {
-                // New tool starting
-                const toolName = evt.tool || evt.label || 'unknown';
-                const emoji = evt.emoji || '⚡';
-                streamAssistantMsg._stepNum++;
-                streamAssistantMsg._toolCallCount = (streamAssistantMsg._toolCallCount || 0) + 1;
-                var newStep = { name: toolName, emoji: emoji, running: true, toolCallId: evt.toolCallId || null, startTime: Date.now() };
-                // 兜底从 progress 事件提取参数
-                var sa = extractToolArgs(evt);
-                if (sa != null) newStep.args = sa;
-                streamAssistantMsg._toolSteps.push(newStep);
-                _startLiveTimer();
-              }
-              scheduleRender(sid, false);
-              return;
-            }
-            // Hermes 扩展事件：完整的 tool call 结构
-            if (eventType === 'hermes.tool.call') {
-              streamAssistantMsg.tool_calls = streamAssistantMsg.tool_calls || [];
-              streamAssistantMsg.tool_calls.push(evt);
-              // E#17: 同步更新对应 _toolSteps 的参数信息（优先按 id 匹配，回退到最后一个 running）
-              if (streamAssistantMsg._toolSteps && streamAssistantMsg._toolSteps.length > 0) {
-                var cid = evt.id || evt.call_id || evt.toolCallId || null;
-                var targetStep = null;
-                if (cid) {
-                  for (var ci = streamAssistantMsg._toolSteps.length - 1; ci >= 0; ci--) {
-                    if (streamAssistantMsg._toolSteps[ci].toolCallId === cid) { targetStep = streamAssistantMsg._toolSteps[ci]; break; }
-                  }
-                }
-                if (!targetStep) {
-                  for (var cj = streamAssistantMsg._toolSteps.length - 1; cj >= 0; cj--) {
-                    if (streamAssistantMsg._toolSteps[cj].running) { targetStep = streamAssistantMsg._toolSteps[cj]; break; }
-                  }
-                }
-                if (targetStep) {
-                  var fnName = evt.function && evt.function.name;
-                  var fnArgs = evt.function && evt.function.arguments;
-                  if (fnName && (!targetStep.name || targetStep.name === 'unknown')) targetStep.name = fnName;
-                  if (!targetStep.toolCallId && cid) targetStep.toolCallId = cid;
-                  if (fnArgs) {
-                    try { targetStep.args = JSON.parse(fnArgs); } catch(e) { targetStep.args = fnArgs; }
-                  } else if (targetStep.args === undefined) {
-                    var fa = extractToolArgs(evt);
-                    if (fa != null) targetStep.args = fa;
-                  }
-                }
-              }
-              scheduleRender(sid, false);
-              return;
-            }
-            // Hermes 扩展事件：tool result
-            if (eventType === 'hermes.tool.result') {
-              const currentMsgs = getMsgs(sid);
-              if (currentMsgs) {
-                currentMsgs.push({ role: 'tool', ...evt });
-              }
-              // 将结果关联到对应的 _toolStep，用于流式时间线内联展示（无需展开）
-              if (streamAssistantMsg._toolSteps && streamAssistantMsg._toolSteps.length > 0) {
-                var rid = evt.tool_call_id || evt.toolCallId || null;
-                var tstep = null;
-                if (rid) {
-                  tstep = streamAssistantMsg._toolSteps.find(function(s) { return s.toolCallId === rid; });
-                }
-                if (!tstep) {
-                  // fallback：最后一个尚无结果的步骤
-                  for (var ri = streamAssistantMsg._toolSteps.length - 1; ri >= 0; ri--) {
-                    if (streamAssistantMsg._toolSteps[ri].result === undefined) { tstep = streamAssistantMsg._toolSteps[ri]; break; }
-                  }
-                }
-                if (tstep) {
-                  var res = extractToolResult(evt);
-                  tstep.result = res != null ? res : (evt.content !== undefined ? evt.content : evt);
-                  tstep.running = false;
-                  tstep.endTime = Date.now();
-                }
-              }
-              scheduleRender(sid, false);
-              return;
-            }
-            // Hermes 扩展事件：usage
-            if (eventType === 'hermes.usage') {
-              streamAssistantMsg._usage = evt;
-              return;
-            }
-            // Hermes 扩展事件：审批请求（危险命令需要用户确认）
-            if (eventType === 'approval.request') {
-              streamAssistantMsg._approval = evt;
-              scheduleRender(sid, true);
-              return;
-            }
-            // E#21: subagent 过程可见
-            if (eventType === 'hermes.subagent.start') {
-              streamAssistantMsg._subagents = streamAssistantMsg._subagents || [];
-              streamAssistantMsg._subagents.push({
-                id: evt.id || evt.task_id || ('sub-' + Date.now()),
-                goal: evt.goal || evt.task || '',
-                status: 'running',
-                startedAt: Date.now(),
-                summary: ''
-              });
-              scheduleRender(sid, false);
-              return;
-            }
-            if (eventType === 'hermes.subagent.progress') {
-              var subs = streamAssistantMsg._subagents || [];
-              var sub = subs.find(function(s) { return s.id === (evt.id || evt.task_id); });
-              if (sub) {
-                if (evt.message) sub.summary = evt.message;
-                if (evt.status) sub.status = evt.status;
-              }
-              scheduleRender(sid, false);
-              return;
-            }
-            if (eventType === 'hermes.subagent.complete') {
-              var subs2 = streamAssistantMsg._subagents || [];
-              var sub2 = subs2.find(function(s) { return s.id === (evt.id || evt.task_id); });
-              if (sub2) {
-                sub2.status = evt.success === false ? 'failed' : 'done';
-                sub2.summary = evt.summary || evt.result || sub2.summary;
-                sub2.completedAt = Date.now();
-              }
-              scheduleRender(sid, false);
-              return;
-            }
-            // 标准 OpenAI 事件
-            const choice = evt.choices?.[0];
-            
-            // 标准 OpenAI tool_calls delta（工具名/参数增量流）
-            if (choice?.delta?.tool_calls) {
-              streamAssistantMsg.tool_calls = streamAssistantMsg.tool_calls || [];
-              choice.delta.tool_calls.forEach(function(tc) {
-                // 增量累积：index 匹配已有的，否则新建
-                var existing = streamAssistantMsg.tool_calls[tc.index];
-                if (!existing) {
-                  streamAssistantMsg.tool_calls[tc.index] = { id: tc.id, type: tc.type, function: { name: '', arguments: '' } };
-                  existing = streamAssistantMsg.tool_calls[tc.index];
-                }
-                if (tc.id) existing.id = tc.id;
-                if (tc.type) existing.type = tc.type;
-                if (tc.function?.name) existing.function.name = (existing.function.name || '') + tc.function.name;
-                if (tc.function?.arguments) existing.function.arguments = (existing.function.arguments || '') + tc.function.arguments;
-                
-                // 同步到 _toolSteps：按 index 或最后一个 running 步骤
-                if (streamAssistantMsg._toolSteps && streamAssistantMsg._toolSteps.length > 0) {
-                  var tstep = streamAssistantMsg._toolSteps[tc.index];
-                  if (!tstep) {
-                    // fallback: 最后一个尚无 args 的 running 步骤
-                    for (var ti = streamAssistantMsg._toolSteps.length - 1; ti >= 0; ti--) {
-                      if (!streamAssistantMsg._toolSteps[ti].args && streamAssistantMsg._toolSteps[ti].running) {
-                        tstep = streamAssistantMsg._toolSteps[ti]; break;
-                      }
-                    }
-                    if (!tstep) tstep = streamAssistantMsg._toolSteps[streamAssistantMsg._toolSteps.length - 1];
-                  }
-                  if (tstep) {
-                    if (tc.function?.name && (!tstep.name || tstep.name === 'unknown')) tstep.name = tc.function.name;
-                    if (!tstep.toolCallId && existing.id) tstep.toolCallId = existing.id;
-                    if (existing.function?.arguments) {
-                      try {
-                        var parsed = JSON.parse(existing.function.arguments);
-                        tstep.args = parsed;
-                      } catch(e) {
-                        tstep.args = existing.function.arguments;
-                      }
-                    }
-                  }
-                }
-              });
-              scheduleRender(sid, false);
-            }
-            if (choice?.delta?.reasoning_content) {
-              streamAssistantMsg.reasoning += choice.delta.reasoning_content;
-              scheduleRender(sid, false);
-            }
-            if (choice?.delta?.content) {
-              streamAssistantMsg._toolSteps.forEach(s => { s.running = false; });
-              var dc = choice.delta.content;
-              if (typeof dc !== 'string') dc = JSON.stringify(dc);
-              streamAssistantMsg.content += dc;
-              scheduleRender(sid, false);
-            }
+            // ---- 旧 Hermes/OpenAI 兼容逻辑已删除（新后端只发 pi 原生事件）----
           } catch(e) {
             // S#4: SSE 解析错误不再静默吞掉，记录到 console 帮助排查
             if (window.console && console.warn) {

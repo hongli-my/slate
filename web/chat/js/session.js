@@ -25,20 +25,29 @@ window.Hermes = window.Hermes || {};
   const api = window.Hermes.api;
 
   // ---- 解析 tool 结果 ----
+  // pi 原生 ToolResultMessage.content 可能是 blocks 数组 [{type:'text',text:'...'}]
+  function _extractContentText(content) {
+    if (!content) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) return content.filter(function(b){return b && b.type==='text';}).map(function(b){return b.text || '';}).join('');
+    try { return JSON.stringify(content); } catch(e) { return String(content); }
+  }
+
   function parseToolResult(content) {
-    if (!content) return { success: false, text: '' };
+    var text = _extractContentText(content);
+    if (!text) return { success: false, text: '' };
     try {
-      const obj = typeof content === 'string' ? JSON.parse(content) : content;
+      const obj = typeof text === 'string' ? JSON.parse(text) : text;
       return {
         success: obj.success === true || obj.ok === true || (obj.error == null && (obj.exit_code === undefined || obj.exit_code === 0)),
-        text: obj.error || obj.message || obj.output || content,
-        raw: content,
+        text: obj.error || obj.message || obj.output || text,
+        raw: text,
       };
     } catch(e) {
-      if (content.includes('"error"') || content.startsWith('Error')) {
-        return { success: false, text: content, raw: content };
+      if (text.includes('"error"') || text.startsWith('Error')) {
+        return { success: false, text: text, raw: text };
       }
-      return { success: true, text: content, raw: content };
+      return { success: true, text: text, raw: text };
     }
   }
 
@@ -76,12 +85,16 @@ window.Hermes = window.Hermes || {};
   function renderToolCard(tc, toolResult, stepIdx, isActive, noToggle, running, dur) {
     // Returns { item: HTML, panel: HTML }
     // running: true when tool is still executing (streaming only)
-    const name = tc.function?.name || tc.name || 'unknown';
+    // pi 原生 ToolCall block: {name, input, toolCallId}
+    // _toolSteps: {name, args, toolCallId, result, running}
+    const name = tc.name || tc.function?.name || 'unknown';
+    const tcId = tc.id || tc.toolCallId || tc.call_id;
+    let rawArgs = tc.arguments != null ? tc.arguments : (tc.input != null ? tc.input : (tc.args != null ? tc.args : tc.function?.arguments));
     let args = '';
     let argsPreview = '';
     try {
-      const argsObj = typeof tc.function?.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function?.arguments;
-      if (argsObj) {
+      const argsObj = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+      if (argsObj && typeof argsObj === 'object') {
         const keys = Object.keys(argsObj);
         argsPreview = keys.slice(0, 2).map(k => {
           const v = argsObj[k];
@@ -94,8 +107,11 @@ window.Hermes = window.Hermes || {};
           const v = argsObj[k];
           return `<span class="tc-arg-key">${esc(k)}</span>=<span class="tc-arg-val">${esc(typeof v === 'string' ? v : JSON.stringify(v))}</span>`;
         }).join(' ');
+      } else if (typeof argsObj === 'string' && argsObj) {
+        args = esc(truncate(argsObj, 60));
+        argsPreview = args;
       }
-    } catch(e) { args = esc(truncate(tc.function?.arguments || '', 60)); argsPreview = args; }
+    } catch(e) { args = esc(truncate(String(rawArgs || ''), 60)); argsPreview = args; }
 
     let panelBody = '';
     let statusIcon = '⚡';
@@ -107,6 +123,7 @@ window.Hermes = window.Hermes || {};
       tlClass = 'ow-tl-running';
     } else if (toolResult) {
       const parsed = parseToolResult(toolResult.content);
+      if (toolResult.isError === true) parsed.success = false;  // pi 原生 isError 优先
       statusIcon = parsed.success ? '✓' : '✗';
       statusClass = parsed.success ? 'ow-done' : 'ow-fail';
       tlClass = parsed.success ? 'ow-tl-done' : 'ow-tl-error';
@@ -232,6 +249,43 @@ window.Hermes = window.Hermes || {};
       </div>`;
   }
 
+  // 从 pi 原生 AssistantMessage 的 content blocks 提取 text/thinking/toolCalls
+  // pi ToolCall block: {type:'toolCall', id, name, arguments}
+  // 兼容旧 Hermes: content:string + reasoning:string + tool_calls:[{id,function:{name,arguments}}]
+  function extractAssistantParts(a) {
+    var text = '', reasoning = '', toolCalls = [];
+    if (Array.isArray(a.content)) {
+      var tParts = [], rParts = [];
+      a.content.forEach(function(b) {
+        if (!b || typeof b !== 'object') return;
+        if (b.type === 'text' && b.text) tParts.push(b.text);
+        else if (b.type === 'thinking' && b.text) rParts.push(b.text);
+        else if (b.type === 'toolCall') toolCalls.push({ name: b.name, arguments: b.arguments, id: b.id });
+      });
+      text = tParts.join('');
+      reasoning = rParts.join('');
+    } else if (typeof a.content === 'string') {
+      text = a.content;
+      reasoning = a.reasoning || '';
+      // 旧 Hermes 兼容
+      if (a.tool_calls) {
+        try {
+          var raw = typeof a.tool_calls === 'string' ? JSON.parse(a.tool_calls) : a.tool_calls;
+          toolCalls = (raw || []).map(function(tc) {
+            return { name: tc.function?.name, arguments: tc.function?.arguments, id: tc.id || tc.call_id };
+          });
+        } catch(e) { toolCalls = []; }
+      }
+      // streaming msg 结束后（_streaming=false）的 _toolSteps 兜底
+      if (!toolCalls.length && a._toolSteps && a._toolSteps.length > 0) {
+        toolCalls = a._toolSteps.map(function(ts) {
+          return { name: ts.name, arguments: ts.args, id: ts.toolCallId };
+        });
+      }
+    }
+    return { text: text, reasoning: reasoning, toolCalls: toolCalls };
+  }
+
   // Turn 分组
   function groupIntoTurns(messages) {
     const turns = [];
@@ -239,7 +293,8 @@ window.Hermes = window.Hermes || {};
     while (i < messages.length) {
       const m = messages[i];
       if (m.role === 'user') {
-        const turn = { type: 'user', user: m, steps: [] };
+        var _userContent = typeof m.content === 'string' ? m.content : _extractContentText(m.content);
+        const turn = { type: 'user', user: Object.assign({}, m, { content: _userContent }), steps: [] };
         i++;
         while (i < messages.length && messages[i].role !== 'user') {
           const a = messages[i];
@@ -247,34 +302,33 @@ window.Hermes = window.Hermes || {};
             turn.steps.push({ streaming: a });
             i++;
           } else if (a.role === 'assistant' && a._aborted) {
-            turn.steps.push({ assistant: a, toolCalls: null, toolResults: [], hasMore: false });
+            // 中止的流式消息：content/reasoning 可能已有部分内容
+            var abParts = extractAssistantParts(a);
+            turn.steps.push({ assistant: Object.assign({}, a, { content: abParts.text, reasoning: abParts.reasoning }), toolCalls: null, toolResults: [], hasMore: false });
             i++;
           } else if (a.role === 'assistant') {
-            let toolCalls = null;
-            if (a.tool_calls) {
-              try { toolCalls = typeof a.tool_calls === 'string' ? JSON.parse(a.tool_calls) : a.tool_calls; } catch(e) { toolCalls = null; }
-            }
-            if (toolCalls && toolCalls.length > 0) {
-              const step = { assistant: a, toolCalls: toolCalls, toolResults: [], hasMore: true };
+            // pi 原生 AssistantMessage：content 是 (Text|Thinking|ToolCall)[] blocks
+            var parts = extractAssistantParts(a);
+            var normA = Object.assign({}, a, { content: parts.text, reasoning: parts.reasoning });
+            if (parts.toolCalls.length > 0) {
+              const step = { assistant: normA, toolCalls: parts.toolCalls, toolResults: [], hasMore: true };
               i++;
-              while (i < messages.length && messages[i].role === 'tool') {
+              // pi 原生 toolResult：role === 'toolResult'（兼容旧 'tool'）
+              while (i < messages.length && (messages[i].role === 'toolResult' || messages[i].role === 'tool')) {
                 step.toolResults.push(messages[i]);
                 i++;
               }
+              // 多轮工具调用：下一条 assistant 也有 toolCall blocks → 继续归入下一 step
               if (i < messages.length && messages[i].role === 'assistant') {
-                const nextA = messages[i];
-                let nextTC = null;
-                if (nextA.tool_calls) {
-                  try { nextTC = typeof nextA.tool_calls === 'string' ? JSON.parse(nextA.tool_calls) : nextA.tool_calls; } catch(e) { nextTC = null; }
-                }
-                if (nextTC && nextTC.length > 0) {
+                var nextParts = extractAssistantParts(messages[i]);
+                if (nextParts.toolCalls.length > 0) {
                   turn.steps.push(step);
                   continue;
                 }
               }
               turn.steps.push(step);
             } else {
-              turn.steps.push({ assistant: a, toolCalls: null, toolResults: [], hasMore: false });
+              turn.steps.push({ assistant: normA, toolCalls: null, toolResults: [], hasMore: false });
               i++;
             }
           } else if (a.role === 'system') {
@@ -289,14 +343,23 @@ window.Hermes = window.Hermes || {};
       } else if (m.role === 'system' && m._compactionHtml) {
         // 压缩/分支摘要：SDK compact() 后 session.messages 头部会插入一条
         // { role: "system", _compactionHtml }，前面可能还有 user 之前被 SDK
-        // 折叠掉的若干 assistant/tool（firstKept 之前的消息）。这些"孤儿"消息
+        // 折叠掉的若干 assistant/tool（firstKept 之前的消息）。这些“孤儿”消息
         // 在 user turn 之外、不应单独渲染成 .msg-bubble——既会被渲染成扁平
         // 不换行的整块（视觉灾难），又会因无 user 包络而失去 assistant bubble。
         // 处理：只把压缩卡片作为独立 turn 推入，跳过它后面直到下一个 user 的
-        // 所有孤儿消息（避免一次性把整段历史渲染成杂烩）。
+        // 所有孤儿消息（避免一次性把整段历史渲染成杂烮）。
         turns.push({ type: 'other', message: m });
         i++;
         // 跳过所有非 user 的孤儿消息，直到下一个 user 才允许开新 turn
+        while (i < messages.length && messages[i].role !== 'user') i++;
+      } else if (m.role === 'compactionSummary') {
+        // pi 原生压缩摘要消息：{ role:'compactionSummary', summary:'...' }
+        var _csHtml = '<div class="compaction-result">'
+          + '<div class="compaction-head">✂️ 上下文已压缩</div>'
+          + (m.summary ? '<details class="compaction-summary"><summary>查看压缩摘要</summary><div class="compaction-summary-body">' + esc(m.summary) + '</div></details>' : '')
+          + '</div>';
+        turns.push({ type: 'other', message: { role: 'system', _compactionHtml: _csHtml, _isCompaction: true } });
+        i++;
         while (i < messages.length && messages[i].role !== 'user') i++;
       } else {
         turns.push({ type: 'other', message: m });
@@ -371,10 +434,11 @@ window.Hermes = window.Hermes || {};
       if (step.toolCalls && step.toolCalls.length > 0) {
         var resultMap = {};
         if (step.toolResults) step.toolResults.forEach(function(r) {
-          if (r.tool_call_id) resultMap[r.tool_call_id] = r;
+          var cid = r.toolCallId || r.tool_call_id;
+          if (cid) resultMap[cid] = r;
         });
         step.toolCalls.forEach(function(tc, idx) {
-          var callId = tc.id || tc.call_id;
+          var callId = tc.id || tc.toolCallId || tc.call_id;
           var res = resultMap[callId] || (step.toolResults ? step.toolResults[idx] : null) || null;
           var toolDur = (res && res.timestamp && a.timestamp) ? res.timestamp - a.timestamp : null;
           result.toolDurs[callId] = toolDur;
@@ -426,20 +490,15 @@ window.Hermes = window.Hermes || {};
 
       // 有工具步骤 → 构建 toolStep（reasoning 跟着 toolStep，content 拆到 finalStep）
       if (sm._toolSteps && sm._toolSteps.length > 0) {
-        var toolCalls = [];
+        var toolCalls = sm._toolSteps.map(function(ts, idx) {
+          return { name: ts.name || 'unknown', arguments: ts.args, id: ts.toolCallId || ('call_stream_' + idx) };
+        });
         var toolResults = [];
         stFlags.toolTimes = {};  // tcId → { startTime, endTime, running }
         sm._toolSteps.forEach(function(ts, idx) {
           var tcId = ts.toolCallId || ('call_stream_' + idx);
-          toolCalls.push({
-            id: tcId, type: 'function',
-            function: {
-              name: ts.name || 'unknown',
-              arguments: ts.args ? (typeof ts.args === 'string' ? ts.args : JSON.stringify(ts.args)) : '{}'
-            }
-          });
           if (ts.result !== undefined && ts.result !== null && ts.result !== '') {
-            toolResults.push({ role: 'tool', tool_call_id: tcId, content: typeof ts.result === 'string' ? ts.result : JSON.stringify(ts.result) });
+            toolResults.push({ role: 'toolResult', toolCallId: tcId, content: typeof ts.result === 'string' ? ts.result : JSON.stringify(ts.result), isError: !!ts.error });
           }
           if (ts.running) stFlags.runningSet[tcId] = true;
           stFlags.toolTimes[tcId] = {
@@ -614,9 +673,9 @@ window.Hermes = window.Hermes || {};
 
       // 工具调用 → 时间线 tool item
       const callIdMap = {};
-      if (step.toolResults) step.toolResults.forEach(r => { if (r.tool_call_id) callIdMap[r.tool_call_id] = r; });
+      if (step.toolResults) step.toolResults.forEach(r => { if (r.toolCallId || r.tool_call_id) callIdMap[r.toolCallId || r.tool_call_id] = r; });
       if (step.toolCalls) step.toolCalls.forEach(tc => {
-        const callId = tc.id || tc.call_id;
+        const callId = tc.id || tc.toolCallId || tc.call_id;
         const result = callIdMap[callId] || null;
         const isRunning = isStreaming && stFlags.runningSet && stFlags.runningSet[callId];
         var toolDur = stepDurs ? (stepDurs.toolDurs[callId] != null ? stepDurs.toolDurs[callId] : null) : null;
@@ -693,7 +752,7 @@ window.Hermes = window.Hermes || {};
         // 避免与外层 .turn-agent-body 的 background/border/max-width 叠加产生双层气泡
         return `<div class="turn"><div class="step system-step compaction-step">${m._compactionHtml}</div></div>`;
       }
-      return `<div class="msg-bubble msg-${m.role}"><div class="msg-content">${esc(m.content || '')}</div></div>`;
+      return `<div class="msg-bubble msg-${m.role}"><div class="msg-content">${esc(_extractContentText(m.content) || '')}</div></div>`;
     }
 
     const userId = turn.user.id || '';
@@ -1236,7 +1295,7 @@ window.Hermes = window.Hermes || {};
           }
           if (step.toolCalls) {
             step.toolCalls.forEach(tc => {
-              md += `**🔧 ${tc.function?.name || tc.name || 'tool'}**\n\n`;
+              md += `**🔧 ${tc.name || tc.function?.name || 'tool'}**\n\n`;
             });
           }
         });
