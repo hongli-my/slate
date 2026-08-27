@@ -940,9 +940,10 @@ window.Hermes = window.Hermes || {};
 
     const abortController = new AbortController();
 
-    // 1. user 消息写入 sessionMessages
+    // 1. user 消息写入 sessionMessages（记录流式前的消息数，供 backgroundReFetch 增量拉取）
     const userMsg = { role: 'user', content: input };
     const msgs = getMsgs(sid);
+    const preStreamCount = msgs ? msgs.length : 0;
     if (msgs) msgs.push(userMsg);
 
     // 2. 创建 _streaming assistant 消息
@@ -964,6 +965,7 @@ window.Hermes = window.Hermes || {};
       finished: false,
       sessionId: sid,
       userInput: input,
+      preStreamCount: preStreamCount,
     };
     state.activeStreams[sid] = streamState;
 

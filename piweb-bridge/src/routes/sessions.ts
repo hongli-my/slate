@@ -66,9 +66,20 @@ export async function handleSessionsRoute(p: string, m: string, req: Request, bo
     }
 
     // GET /sessions/:id/messages — pi 原生 AgentMessage[]，零翻译
+    // 可选 ?offset=N：只返回第 N 条起（含 N）的消息。供前端 backgroundReFetch
+    // 增量拉取流式期间新增的部分，避免长会话每次流结束后全量拉取。
     if (sub === "/messages" && m === "GET") {
       const session = await ensureSession(sid);
-      return jsonFn({ ok: true, data: session.messages });
+      let msgs = session.messages;
+      const url = new URL(req.url);
+      const offsetParam = url.searchParams.get("offset");
+      if (offsetParam !== null) {
+        const offset = Number(offsetParam);
+        if (Number.isInteger(offset) && offset >= 0) {
+          msgs = msgs.slice(offset);
+        }
+      }
+      return jsonFn({ ok: true, data: msgs });
     }
 
     // POST /sessions/:id/fork — 复制当前路径为新会话

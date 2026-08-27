@@ -17,21 +17,8 @@
 <!-- 共享设计系统（覆盖 base.css，确保 dashboard 配色生效）-->
 <link rel="stylesheet" href="./dashboard.css?v=1">
 
-<!-- External libs -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.11/purify.min.js"></script>
-
-<!-- remend: 流式 markdown 修复（闭合未完成标记 ** / [ / ( / ` / 围栏，减少流式闪烁）-->
-<!-- morphdom: DOM diff/morph 替换活跃块 innerHTML 全替换，保留 DOM identity 消除重排抖动 -->
-<!-- 均 ESM 异步加载，JS 侧 feature detect（window.remend / window.morphdom），加载前/失败降级 -->
-<script type="module">
-  import remend from 'https://esm.sh/remend@1.3.0';
-  import morphdom from 'https://esm.sh/morphdom@2.7.8';
-  window.remend = remend.default || remend;
-  window.morphdom = morphdom.default || morphdom;
-</script>
+<!-- External libs（已本地化：marked / highlight.js(core+25 语言) / dompurify / morphdom / remend 均打包进 chat.bundle.js）-->
+<link rel="stylesheet" href="./vendor/atom-one-dark.min.css">
 
 <style>
 /* ============================================================
@@ -825,20 +812,9 @@ body {
   </main>
 </div>
 
-<!-- JS (modular, load order matters) -->
+<!-- JS：外部库 + 业务模块已打包为 chat.bundle.js（esbuild，见 esbuild.chat.config.mjs）
+     cronstrue 为 UMD 无 ESM 导出，保持独立加载。 -->
     <script src="./vendor/cronstrue.min.js?v=1"></script>
-    <script src="./js/state.js?v=25"></script>
-<script src="./js/api.js?v=23"></script>
-<script src="./js/project-manager.js?v=2"></script>
-<script src="./js/session-manager.js?v=27"></script>
-<script src="./js/router.js?v=21"></script>
-<script src="./js/markdown.js?v=16"></script>
-<script src="./js/eventsource-parser.js?v=10"></script>
-<script src="./js/session.js?v=36"></script>
-<script src="./js/chat.js?v=43"></script>
-<script src="./js/gateway.js?v=17"></script>
-<script src="./js/shortcuts.js?v=10"></script>
-    <script src="./js/admin.js?v=3"></script>
-<script src="./js/app.js?v=21"></script>
+    <script src="./chat.bundle.js?v=1"></script>
 </body>
 </html>

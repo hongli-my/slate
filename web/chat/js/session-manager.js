@@ -225,7 +225,14 @@ window.Hermes = window.Hermes || {};
         return;
       }
 
-      var result = await H.api('/sessions/' + sid + '/messages');
+      // 增量：流式前的消息数。只拉取流式期间新增的部分（DB 的 pi 原生结构），
+      // 替换前端流式临时结构，避免长会话每次流结束后全量拉取。
+      var stream = state.activeStreams[sid];
+      var offset = (stream && stream.preStreamCount != null) ? stream.preStreamCount : 0;
+      // 防御：删除消息等操作可能使缓存变短，offset 超界则退回全量
+      if (offset > cache.messages.length) offset = 0;
+      var url = '/sessions/' + sid + '/messages' + (offset > 0 ? '?offset=' + offset : '');
+      var result = await H.api(url);
       var freshMsgs = Array.isArray(result.data) ? result.data : [];
 
       // S#2: 如果在 await 期间又有新的 re-fetch 发起，放弃本次（旧数据可能覆盖新数据）
@@ -238,14 +245,23 @@ window.Hermes = window.Hermes || {};
         return;
       }
 
-      // 只有 re-fetch 数据比缓存更多时才替换（防止 DB 延迟导致数据丢失）
-      if (freshMsgs.length >= cache.messages.length) {
+      if (offset > 0 && freshMsgs.length > 0 && freshMsgs.length < cache.messages.length) {
+        // 增量拼接：后端返回的是流式新增部分（条数 < 当前缓存总条数）。
+        // 保留流式前的历史 + 用 DB 原生消息替换流式期间新增部分。
+        cache.messages = cache.messages.slice(0, offset).concat(freshMsgs);
+        cache.version++;
+        cache.isStale = false;
+        cache.loadedAt = Date.now();
+        if (state.focusedSessionId === sid && state.viewMode === 'chat') {
+          H.refreshLastTurn(sid);
+        }
+      } else if (freshMsgs.length >= cache.messages.length) {
+        // 全量覆盖：offset=0，或后端不支持 offset 返回了全量（freshMsgs.length
+        // 不再小于缓存总条数），退回原逻辑避免拼接重复。
         cache.messages = freshMsgs;
         cache.version++;
         cache.isStale = false;
         cache.loadedAt = Date.now();
-
-        // 如果用户仍在此会话的 chat 模式，增量更新最后一个 turn
         if (state.focusedSessionId === sid && state.viewMode === 'chat') {
           H.refreshLastTurn(sid);
         }

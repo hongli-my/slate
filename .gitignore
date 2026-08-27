@@ -5,6 +5,7 @@ node_modules/
 src-tauri/target/
 dist/
 web/vendor/*.bundle.js.map
+web/chat/*.bundle.js.map
 
 # Sidecar 二进制（由 piweb-bridge 编译产物拷入，构建脚本生成）
 src-tauri/binaries/

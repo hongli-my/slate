@@ -230,6 +230,16 @@ window.Hermes = window.Hermes || {};
     return blocks.filter(function(b) { return b.replace(/\s/g, '') !== ''; });
   }
 
+  // 纯文本块检测：单行 + 无 markdown 结构字符 + 无 HTML 标签。
+  // 保守策略——出现任一 markdown 特征即退回 marked 慢路径，保证正确性。
+  function isPlainBlock(text) {
+    if (!text || typeof text !== 'string') return false;
+    if (text.indexOf('\n') !== -1) return false;
+    if (/[`*_#>\[\]|~\\]/.test(text)) return false;
+    if (/<[a-zA-Z/]/.test(text)) return false;
+    return true;
+  }
+
   // ---- 流式 Markdown 渲染（marked.parse + 跳过 hljs + 稳定段缓存）----
   // 与最终 renderMarkdown 格式一致（标题/列表/表格/链接/代码块结构等）
   // 仅代码块无语法高亮颜色，finalizeStreamingTurn 时由 renderMarkdown 补上
@@ -298,14 +308,19 @@ window.Hermes = window.Hermes || {};
     }
 
     // 活跃块每次重新解析（体积小，开销低）
-    // remend 修复未闭合标记（** / [ / ( / ` / 围栏），避免流式期 marked 解析闪烁
-    if (window.remend) { try { activeBlock = window.remend(activeBlock, { linkMode: 'text-only' }); } catch(e) {} }
-    _streamingMode = true;
+    // 纯文本快路径：无 markdown 语法/HTML 标签 → 跳过 remend + marked（对纯文本
+    // 都是无意义的遍历），直接转义。AI 输出大段纯叙述文字时收益明显。
     var activeHtml;
-    try { activeHtml = marked.parse(activeBlock); }
-    catch(e) { activeHtml = '<p>' + esc(activeBlock) + '</p>'; }
-    finally { _streamingMode = false; }
-    // 活跃块跳过 DOMPurify（每帧调用，最大性能瓶颈）；finalize 由 renderMarkdown 兜底
+    if (isPlainBlock(activeBlock)) {
+      activeHtml = '<p>' + esc(activeBlock) + '</p>';
+    } else {
+      // remend 修复未闭合标记（** / [ / ( / ` / 围栏），避免流式期 marked 解析闪烁
+      if (window.remend) { try { activeBlock = window.remend(activeBlock, { linkMode: 'text-only' }); } catch(e) {} }
+      _streamingMode = true;
+      try { activeHtml = marked.parse(activeBlock); }
+      catch(e) { activeHtml = '<p>' + esc(activeBlock) + '</p>'; }
+      finally { _streamingMode = false; }
+    }    // 活跃块跳过 DOMPurify（每帧调用，最大性能瓶颈）；finalize 由 renderMarkdown 兜底
     if (!cacheKey && typeof DOMPurify !== 'undefined' && activeHtml) {
       activeHtml = DOMPurify.sanitize(activeHtml, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
     }
@@ -363,18 +378,24 @@ window.Hermes = window.Hermes || {};
   // ---- Exports ----
   // Define as function declarations first so they're hoisted within the IIFE
   var _mdCache = new Map();
-  var _MD_CACHE_MAX = 80;
+  var _MD_CACHE_MAX = 256;
   function renderMarkdown(md) {
     if (!md) return '';
     if (_mdCache.has(md)) return _mdCache.get(md);
     var html;
-    try {
-      html = marked.parse(md);
-      if (typeof DOMPurify !== 'undefined') {
-        html = DOMPurify.sanitize(html, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
-      }
-    } catch(e) {
+    // 纯文本快路径：单行且无 markdown 语法/HTML → 跳过 marked.parse + DOMPurify.sanitize
+    // （DOMPurify 是长会话全量渲染的主要开销）。user 短消息、纯叙述回复走此路径。
+    if (isPlainBlock(md)) {
       html = '<p>' + esc(md) + '</p>';
+    } else {
+      try {
+        html = marked.parse(md);
+        if (typeof DOMPurify !== 'undefined') {
+          html = DOMPurify.sanitize(html, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
+        }
+      } catch(e) {
+        html = '<p>' + esc(md) + '</p>';
+      }
     }
     if (_mdCache.size >= _MD_CACHE_MAX) {
       var firstKey = _mdCache.keys().next().value;
