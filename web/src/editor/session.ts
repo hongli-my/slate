@@ -12,7 +12,7 @@
 import { state, getActiveView, setActiveGroup } from "./state";
 import { switchToTab } from "./tabs";
 import { applyTheme } from "./cm";
-import { readTextFile } from "./io";
+import { readTextFile, loadRecoveryList, readRecovery } from "./io";
 import { syncPreviewPane } from "./preview";
 import { toast } from "./ui";
 
@@ -86,6 +86,25 @@ async function loadTabContent(
   return { content, encoding, mtimeMs };
 }
 
+/** Like loadTabContent, but if a crash-recovery snapshot exists for this
+ *  path, prefer it over the disk version (the snapshot holds unsaved edits
+ *  from the previous crashed session). `recovered` flags tabs to mark dirty. */
+async function loadTabWithRecovery(
+  t: TabRecord,
+  recoveryPaths: Set<string>
+): Promise<{ content: string; encoding: string; mtimeMs: number | null; recovered: boolean }> {
+  const base = await loadTabContent(t);
+  if (t.absPath && recoveryPaths.has(t.absPath)) {
+    try {
+      const rec = await readRecovery(t.absPath);
+      if (rec) return { content: rec, encoding: base.encoding, mtimeMs: base.mtimeMs, recovered: true };
+    } catch {
+      /* ignore — fall back to disk */
+    }
+  }
+  return { ...base, recovered: false };
+}
+
 export async function restoreSession(): Promise<void> {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -132,21 +151,29 @@ export async function restoreSession(): Promise<void> {
     const totalTabs = groupTabsList[0].length + groupTabsList[1].length;
     if (totalTabs === 0) return;
 
+    // Crash-recovery: collect which paths have a saved snapshot so we can
+    // restore unsaved edits from the previous (crashed) session.
+    const recoveryPaths = new Set((await loadRecoveryList()).map((r) => r.path));
+
     const { addTab } = await import("./tabs");
     const pathToIdPerGroup: Record<number, Record<string, number>> = { 0: {}, 1: {} };
 
     // ---- Restore group0 tabs (group0 view already mounted by initEditor). ----
-    for (const t of groupTabsList[0]) {
-      // Field validation: localStorage may be externally written or version-
-      // migrated. A non-string name makes addTab→languageLabel().split() throw,
-      // which would abort the whole restore loop. Skip invalid entries.
-      if (!t || typeof t.name !== "string" || typeof t.path !== "string") {
-        console.warn("恢复会话: 跳过非法 tab 条目", t);
-        continue;
-      }
-      const { content, encoding, mtimeMs } = await loadTabContent(t);
+    // Parallel-read all tabs (N IPC calls in flight, not serial) — cold start
+    // is N× faster on sessions with many tabs.
+    const g0Valid = groupTabsList[0].filter(
+      (t): t is TabRecord => !!t && typeof t.name === "string" && typeof t.path === "string"
+    );
+    const g0Loaded = await Promise.all(
+      g0Valid.map(async (t) => {
+        const r = await loadTabWithRecovery(t, recoveryPaths);
+        return { t, ...r };
+      })
+    );
+    for (const { t, content, encoding, mtimeMs, recovered } of g0Loaded) {
       const eol: "LF" | "CRLF" = t.eol === "CRLF" ? "CRLF" : "LF";
       const tab = addTab(t.name, t.path, content, t.absPath || null, encoding, eol, mtimeMs, 0);
+      if (recovered) tab.modified = true;
       pathToIdPerGroup[0][t.path] = tab.id;
     }
     // Restore group0 active tab.
@@ -166,14 +193,19 @@ export async function restoreSession(): Promise<void> {
       state.splitRatio = splitRatio;
       const g1View = mountGroup1(dir);
       if (g1View) {
-        for (const t of groupTabsList[1]) {
-          if (!t || typeof t.name !== "string" || typeof t.path !== "string") {
-            console.warn("恢复会话: 跳过非法 tab 条目", t);
-            continue;
-          }
-          const { content, encoding, mtimeMs } = await loadTabContent(t);
+        const g1Valid = groupTabsList[1].filter(
+          (t): t is TabRecord => !!t && typeof t.name === "string" && typeof t.path === "string"
+        );
+        const g1Loaded = await Promise.all(
+          g1Valid.map(async (t) => {
+            const r = await loadTabWithRecovery(t, recoveryPaths);
+            return { t, ...r };
+          })
+        );
+        for (const { t, content, encoding, mtimeMs, recovered } of g1Loaded) {
           const eol: "LF" | "CRLF" = t.eol === "CRLF" ? "CRLF" : "LF";
           const tab = addTab(t.name, t.path, content, t.absPath || null, encoding, eol, mtimeMs, 1);
+          if (recovered) tab.modified = true;
           pathToIdPerGroup[1][t.path] = tab.id;
         }
         // Restore group1 active tab.

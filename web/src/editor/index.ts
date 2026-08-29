@@ -4,17 +4,19 @@
 // FIX #22: global error handlers.
 
 import { EditorView, ViewUpdate } from "@codemirror/view";
-import { state, viewGroup, setActiveGroup } from "./state";
+import { EditorState } from "@codemirror/state";
+import { state, viewGroup, setActiveGroup, getTabByPath, type Tab } from "./state";
 import { createEditorView, buildExtensions, clearOccurrences } from "./cm";
 import { setupShortcuts } from "./keymap";
 import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile } from "./files";
 import { renderTabsBar, switchToTab, addTab } from "./tabs";
 import { renderTree } from "./filetree";
 import { togglePreview, scheduleMdRender, updateFormatButtons, isMarkdownFile, syncPreviewPane } from "./preview";
-import { formatSQL, formatJSON, toggleEol, toggleTheme } from "./commands";
+import { formatSQL, formatJSON, minifyJSON, toggleEol, toggleTheme } from "./commands";
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { toggleSplitView, setupSplitDivider } from "./split";
 import { toggleMinimap } from "./minimap";
+import { saveRecovery, readTextFile } from "./io";
 import { setupEditorContextMenu } from "./contextmenu";
 import { restoreSession } from "./session";
 import { recordMacroUpdate } from "./macros";
@@ -41,6 +43,9 @@ function onDocUpdate(u: ViewUpdate): void {
     if (state.previewVisible && isMarkdownFile()) scheduleMdRender();
     // Session save (debounced 500ms — FIX #12).
     _session.saveSession();
+    // Crash-recovery snapshot (debounced 1s). Only buffers with a path —
+    // untitled buffers have no stable key to restore under.
+    if (tab) scheduleRecoverySave(tab);
   }
   if (u.selectionSet || u.focusChanged) {
     updateStatusCursor();
@@ -50,10 +55,86 @@ function onDocUpdate(u: ViewUpdate): void {
       syncPreviewPane(); // move preview pane to the newly active group
     }
   }
-  // On transactions that change the doc, clear any stale occurrence highlights.
-  if (u.docChanged) {
-    const v = u.view;
-    if (v) clearOccurrences(v);
+  // NOTE: occurrence highlights are NO LONGER cleared on every docChanged.
+  // The occurrence StateField maps its decorations through transactions
+  // (dec.map(tr.changes)), and the debounced re-highlight overwrites the set
+  // on its own. The old per-keystroke clear caused a 120ms flicker to "no
+  // highlights"; removing it makes same-word highlighting feel instant.
+}
+
+// Debounced crash-recovery save. Each docChanged reschedules, so we only
+// write to disk once editing pauses for 1s — cheap even on large files.
+let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleRecoverySave(tab: Tab): void {
+  const path = tab.absPath;
+  if (!path) return; // untitled buffers have no recovery key
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(() => {
+    recoveryTimer = null;
+    const view = state.view;
+    if (!view) return;
+    // Only snapshot if this tab is still open and still dirty (it may have
+    // been saved / closed during the 1s window).
+    const stillDirty = state.groups.some(
+      (g) => g.activeTabId === tab.id && g.tabs.includes(tab) && tab.modified
+    );
+    if (!stillDirty) return;
+    const content = view.state.doc.toString();
+    void saveRecovery(path, content);
+  }, 1000);
+}
+
+/** Listen for external file-change events from the Rust watcher and reload
+ *  (unmodified) or warn (modified) per Sublime behavior. */
+function setupFileWatcher(): void {
+  const w = window as unknown as {
+    __TAURI__?: { event?: { listen?: (ev: string, cb: (e: { payload: { path: string; mtimeMs: number } }) => void) => Promise<void> } };
+  };
+  const listen = w.__TAURI__?.event?.listen;
+  if (typeof listen !== "function") return;
+  listen("file-changed", (e) => {
+    void onFileChanged(e.payload.path, e.payload.mtimeMs);
+  }).catch(() => {
+    /* ignore */
+  });
+}
+
+async function onFileChanged(path: string, mtimeMs: number): Promise<void> {
+  const tab = getTabByPath(path);
+  if (!tab) return;
+  if (mtimeMs === -2) {
+    // Sentinel: file was deleted / moved on disk.
+    toast(
+      tab.modified
+        ? `"${tab.name}" 已被外部删除（缓冲区仍有未保存内容）`
+        : `"${tab.name}" 已被外部删除`
+    );
+    return;
+  }
+  if (tab.modified) {
+    // Don't clobber unsaved edits — let the user decide (Cmd+S overwrite).
+    toast(`"${tab.name}" 已被外部修改，Cmd+S 覆盖或放弃编辑`);
+    return;
+  }
+  // Unmodified buffer — reload silently from disk.
+  try {
+    const r = await readTextFile(path);
+    let content = r.text;
+    const eol = content.includes("\r\n") ? "CRLF" : "LF";
+    content = eol === "CRLF" ? content : content.replace(/\r\n/g, "\n");
+    const g = state.groups.find((gg) => gg.tabs.includes(tab));
+    if (!g) return;
+    const view = g.view;
+    if (view && g.activeTabId === tab.id) {
+      // Swap doc on the live view. Undo returns to the pre-reload state.
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content } });
+    } else if (state.buildExtensions && state.onUpdate) {
+      // Background tab: rebuild its saved state with fresh content.
+      tab.cmState = EditorState.create({ doc: content, extensions: state.buildExtensions(state.onUpdate) });
+    }
+    tab.mtimeMs = mtimeMs;
+  } catch (err) {
+    toast(`重新加载 "${tab.name}" 失败: ${(err as Error).message}`);
   }
 }
 
@@ -80,6 +161,7 @@ export async function initEditor(): Promise<void> {
     setupEditorContextMenu();
     setupSplitDivider();
     setupGroupActivation();
+    setupFileWatcher();
     updateFormatButtons();
 
     await loadRecents();
@@ -165,6 +247,7 @@ export function exposeGlobals(): void {
   w.togglePreview = togglePreview;
   w.formatSQL = formatSQL;
   w.formatJSON = formatJSON;
+  w.minifyJSON = minifyJSON;
   w.toggleEol = toggleEol;
   w.toggleTheme = toggleTheme;
   w.toggleSplitView = toggleSplitView;

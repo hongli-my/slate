@@ -14,6 +14,15 @@ export const minimapExtension = showMinimap.of({
 });
 
 export function toggleMinimap(): void {
+  if (!state.minimapOn) {
+    // Refuse to enable on very large files — the DOM-based @replit minimap
+    // builds one node per line and janks hard past ~20k lines.
+    const view = state.view;
+    if (view && view.state.doc.lines > 20000) {
+      toast2(`文件过大（${view.state.doc.lines} 行），Minimap 已禁用`);
+      return;
+    }
+  }
   state.minimapOn = !state.minimapOn;
   // Toggle the minimap extension on every mounted group view.
   for (const gi of [0, 1] as const) {

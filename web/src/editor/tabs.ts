@@ -3,18 +3,22 @@
 // Tab switching preserves per-tab EditorState (undo history) via view.setState.
 // Phase 2: group-aware — each editor group has its own tab list + tab bar.
 
-import { state, getActiveTab, setActiveGroup, groupElId, type Tab, basename } from "./state";
+import { state, getActiveTab, setActiveGroup, groupElId, getAllTabs, type Tab, basename } from "./state";
 import { $, customConfirm } from "./ui";
 import { EditorState } from "@codemirror/state";
-import { setLanguage, setReadOnly, clearOccurrences, applyTheme } from "./cm";
+import { setLanguage, setReadOnly, clearOccurrences, applyTheme, autoFoldJson } from "./cm";
 import { languageLabel } from "./languages";
 import { saveCurrentFile } from "./files";
 import { updateStatusBar, updateEolLabel } from "./statusbar";
-import { renderTree } from "./filetree";
+import { renderTree, updateTreeSelection } from "./filetree";
 import { updateFormatButtons, refreshPreviewIfVisible, togglePreview } from "./preview";
 import { saveSession } from "./session";
+
+// 记录已自动折叠过的大 JSON tab，避免每次切 tab 重复折叠。
+const foldedTabs = new WeakSet<Tab>();
 import { closeSplit } from "./split";
 import { refreshMinimap } from "./minimap";
+import { watchUntrack, clearRecovery } from "./io";
 
 export function renderTabsBar(groupId: 0 | 1 = state.activeGroup): void {
   const bar = $(groupElId("tabsBar", groupId));
@@ -66,7 +70,8 @@ export function addTab(
   encoding = "utf-8",
   eol: "LF" | "CRLF" = "LF",
   mtimeMs: number | null = null,
-  groupId: 0 | 1 = state.activeGroup
+  groupId: 0 | 1 = state.activeGroup,
+  readOnly = false
 ): Tab {
   const id = ++state.tabIdCounter;
   const tab: Tab = {
@@ -80,6 +85,7 @@ export function addTab(
     eol,
     mtimeMs,
     lang: languageLabel(name),
+    readOnly,
   };
   state.groups[groupId].tabs.push(tab);
   switchToTab(id, groupId);
@@ -113,19 +119,27 @@ export function switchToTab(id: number, groupId: 0 | 1 = state.activeGroup): voi
   // Re-apply global theme + this file's language + readonly after the swap.
   applyTheme(view, state.lightTheme);
   setLanguage(view, tab.name);
-  setReadOnly(view, false);
+  setReadOnly(view, !!tab.readOnly);
   clearOccurrences(view);
 
   setActiveGroup(groupId);
   view.focus();
 
   renderTabsBar(groupId);
-  renderTree();
+  // Tab switch: only re-highlight the active row, don't rebuild the whole
+  // tree (O(viewport) vs O(tree) — matters on large folders).
+  updateTreeSelection();
   updateStatusBar();
   updateEolLabel();
   updateFormatButtons();
   refreshPreviewIfVisible();
   refreshMinimap();
+  // 大 JSON 自动折叠顶层 value（Slate 定位：JSON 查看）。仅首次打开该 tab 时
+  // 执行一次——用户手动展开后切走再回来不会被重新折叠。
+  if (/\.json$/i.test(tab.name) && view.state.doc.lines > 500 && !foldedTabs.has(tab)) {
+    autoFoldJson(view);
+    foldedTabs.add(tab);
+  }
   saveSession();
 }
 
@@ -143,8 +157,9 @@ export async function closeTab(id: number): Promise<void> {
   const g = state.groups[groupId];
   const tab = g.tabs[idx];
 
+  let choice: "yes" | "no" | "cancel" | null = null;
   if (tab.modified) {
-    const choice = await customConfirm({
+    choice = await customConfirm({
       message: `"${tab.name}" 有未保存的修改。是否保存？`,
       title: "关闭文件",
       yesLabel: "保存",
@@ -163,7 +178,16 @@ export async function closeTab(id: number): Promise<void> {
     }
   }
 
+  // User chose "don't save" on a dirty tab with a path — discard its crash
+  // recovery snapshot too (the user explicitly abandoned the buffer).
+  if (choice === "no" && tab.absPath) {
+    void clearRecovery(tab.absPath);
+  }
   g.tabs.splice(idx, 1);
+  // Stop watching for external changes if no other tab still holds this file.
+  if (tab.absPath && !getAllTabs().some((t) => t.absPath === tab.absPath)) {
+    void watchUntrack(tab.absPath);
+  }
   const view = g.view;
   // Close preview if closing the active tab of the active group.
   if (state.previewVisible && state.activeGroup === groupId && g.activeTabId === id) {

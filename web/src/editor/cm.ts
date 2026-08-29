@@ -40,6 +40,8 @@ import {
   syntaxHighlighting,
   defaultHighlightStyle,
   foldKeymap,
+  foldEffect,
+  syntaxTree,
 } from "@codemirror/language";
 import {
   closeBrackets,
@@ -97,13 +99,15 @@ let occTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_OCC = 300;
 const MAX_OCC_DOC = 200000;
 
-/** Debounced (220ms) occurrence highlight of the word at / around the cursor. */
+/** Debounced (120ms) occurrence highlight of the word at / around the cursor.
+ *  120ms (down from 220ms) makes same-word highlighting feel instant, like
+ *  Sublime — the MAX_OCC / MAX_OCC_DOC guards keep this safe on big docs. */
 export function scheduleOccurrenceHighlight(view: EditorView): void {
   if (occTimer) clearTimeout(occTimer);
   occTimer = setTimeout(() => {
     occTimer = null;
     highlightOccurrences(view);
-  }, 220);
+  }, 120);
 }
 
 /** Cancel a pending (debounced) occurrence highlight. Used after operations
@@ -222,6 +226,9 @@ function cmdClickHandler(): Extension {
 export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] {
   return [
     highlightSpecialChars(),
+    // CM6's history has no configurable max depth (only minDepth + grouping
+    // delay); the default minDepth of 100 is fine. Undo memory is bounded
+    // internally by the editor, not by this config.
     history(),
     drawSelection(),
     dropCursor(),
@@ -339,6 +346,38 @@ export function applyTheme(view: EditorView, light: boolean): void {
 
 export function setReadOnly(view: EditorView, ro: boolean): void {
   view.dispatch({ effects: readOnlyComp.reconfigure(EditorState.readOnly.of(ro)) });
+}
+
+/** 自动折叠大 JSON 的顶层 value（Slate 定位：JSON 查看）。
+ *  遍历语法树，找顶层 Object/Array 的直接子节点中类型为 Object/Array 的
+ *  value，逐个 foldEffect。这样打开大 JSON 时每个顶层 key 显示为
+ *  "key": {...} / "key": [...]，深层内容折叠，结构一眼可读。
+ *  幂等：已折叠的范围再 fold 不会出错。 */
+export function autoFoldJson(view: EditorView): void {
+  const tree = syntaxTree(view.state);
+  const top = tree.topNode;
+  if (top.name !== "JsonText") return;
+  const root = top.firstChild; // 顶层 Object 或 Array
+  if (!root) return;
+  const effects: ReturnType<typeof foldEffect.of>[] = [];
+  let child = root.firstChild;
+  while (child) {
+    // Object 的子节点是 Property(name: value)；Array 的子节点直接是 value。
+    // 对 Property，找其子节点中的 Object/Array（即 value）；对 Array 元素同理。
+    let valueNode = child;
+    if (child.name === "Property") {
+      // Property = PropertyName : value；value 是 Object/Array/String/... 之一。
+      valueNode = child.lastChild ?? child;
+    }
+    if (valueNode && (valueNode.name === "Object" || valueNode.name === "Array")) {
+      // 跳过空 {} / []（折叠无意义且可能被 CM6 忽略）。
+      if (valueNode.to > valueNode.from + 2) {
+        effects.push(foldEffect.of({ from: valueNode.from, to: valueNode.to }));
+      }
+    }
+    child = child.nextSibling;
+  }
+  if (effects.length) view.dispatch({ effects });
 }
 
 // re-export for index

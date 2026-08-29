@@ -1,12 +1,41 @@
 // web/src/editor/filetree.ts
-// Render the file tree (recents section + unsaved tabs + folder tree).
-// FIX #19: skip-set + symlink guard handled in io.scanDir.
+// Virtualized file tree.
+//
+// The old renderer built one DOM node per file and wiped+rebuilt the whole
+// tree on every expand / collapse / tab switch — 5000 files meant 5000 sync
+// nodes and a jank on every interaction. This version flattens the visible
+// (expanded) tree into a row array and only renders the rows inside the
+// scroll viewport, so cost is O(viewport) not O(tree).
+//
+// `renderTree()` rebuilds structure (folder switch, unsaved add/remove);
+// `updateTreeSelection()` only re-highlights the active file (tab switch) and
+// is O(viewport) too.
 
 import { state, getActiveTab, type TreeNode, basename } from "./state";
 import { $ } from "./ui";
-import { openScannedFile, openRecentFolder, openRecentFile, clearRecents } from "./files";
+import { openScannedFile } from "./files";
 import { switchToTab } from "./tabs";
 import { getFileIcon } from "./icons";
+
+const ROW_H = 24; // px — must match `.tree-vrow { height }` in editor.css
+const BUFFER = 8; // extra rows rendered above/below the viewport
+
+type RowKind = "header" | "unsaved" | "file" | "dir";
+
+interface VRow {
+  idx: number;
+  kind: RowKind;
+  depth: number;
+  label: string;
+  icon: string;
+  /** file rel-path or unsaved tab.path — used for selection highlight. */
+  path?: string;
+  tabId?: number; // unsaved
+  node?: TreeNode; // dir / file (for expand / open)
+}
+
+let visibleRows: VRow[] = [];
+let scrollHandlerAttached = false;
 
 export function buildTree(
   files: { name: string; path: string; absPath: string }[],
@@ -39,130 +68,178 @@ function sortTree(node: TreeNode): void {
   for (const c of node.children) if (c.type === "dir") sortTree(c);
 }
 
+/** Full structural rebuild: wipe + recompute + render viewport. Use when the
+ *  set of rows changes (folder opened, unsaved added/removed, refresh). */
 export function renderTree(): void {
   const el = $("fileTree");
+  const savedScroll = el.scrollTop;
   el.innerHTML = "";
+  visibleRows = computeVisibleRows();
+  if (visibleRows.length === 0) {
+    el.innerHTML =
+      '<div style="padding:20px;text-align:center;color:#888;font-size:13px;">点击上方按钮打开文件夹</div>';
+    return;
+  }
+  const content = document.createElement("div");
+  content.className = "tree-content";
+  content.style.position = "relative";
+  content.style.height = visibleRows.length * ROW_H + "px";
+  el.appendChild(content);
+  // Restore scroll AFTER the content has a height, otherwise it clamps to 0.
+  el.scrollTop = savedScroll;
+  renderViewport();
+  attachScrollHandler(el);
+}
+
+/** Recompute rows + viewport height without resetting scroll. Use after an
+ *  expand/collapse toggle (row set changes but the user's scroll position
+ *  should be preserved). */
+function refreshStructure(): void {
+  const el = $("fileTree");
+  const content = el.querySelector(".tree-content") as HTMLElement | null;
+  visibleRows = computeVisibleRows();
+  if (content) content.style.height = visibleRows.length * ROW_H + "px";
+  renderViewport();
+}
+
+/** Re-render only the viewport, applying the current active-tab selection.
+ *  O(viewport). Use on tab switch instead of a full renderTree. */
+export function updateTreeSelection(): void {
+  renderViewport();
+}
+
+function attachScrollHandler(el: HTMLElement): void {
+  if (scrollHandlerAttached) return;
+  scrollHandlerAttached = true;
+  let raf = 0;
+  el.addEventListener("scroll", () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      renderViewport();
+    });
+  });
+}
+
+function computeVisibleRows(): VRow[] {
+  const rows: VRow[] = [];
+  const push = (r: Omit<VRow, "idx">) => rows.push({ ...r, idx: rows.length });
 
   // Unsaved tabs (no absPath and not from scanned files).
   const unsaved = state.openTabs.filter(
     (t) => !t.absPath && !state.scannedFiles.some((f) => f.path === t.path)
   );
   if (unsaved.length > 0) {
-    el.appendChild(sectionHeader("未保存文件"));
+    push({ kind: "header", depth: 0, label: "未保存文件", icon: "" });
     for (const tab of unsaved) {
-      const row = treeRow(tab.name + (tab.modified ? " \u2022" : ""), 20, getFileIcon(tab.name));
-      if (tab.id === state.activeTabId) row.classList.add("selected");
-      row.onclick = () => switchToTab(tab.id);
-      el.appendChild(row);
+      push({
+        kind: "unsaved",
+        depth: 0,
+        label: tab.name + (tab.modified ? " \u2022" : ""),
+        icon: getFileIcon(tab.name),
+        path: tab.path,
+        tabId: tab.id,
+      });
     }
   }
 
-  if (!state.folderTree) {
-    if (unsaved.length === 0) {
-      el.innerHTML =
-        '<div style="padding:20px;text-align:center;color:#888;font-size:13px;">点击上方按钮打开文件夹</div>';
+  if (state.folderTree) walkTree(state.folderTree, 0, push);
+  return rows;
+}
+
+function walkTree(node: TreeNode, depth: number, push: (r: Omit<VRow, "idx">) => void): void {
+  if (node.type === "dir") {
+    push({
+      kind: "dir",
+      depth,
+      label: node.name,
+      icon: node.expanded ? "\uD83D\uDCC2" : "\uD83D\uDCC1",
+      node,
+    });
+    if (node.expanded && node.children) {
+      for (const c of node.children) walkTree(c, depth + 1, push);
+    }
+  } else {
+    push({
+      kind: "file",
+      depth,
+      label: node.name,
+      icon: getFileIcon(node.name),
+      path: node.fileRef?.path,
+      node,
+    });
+  }
+}
+
+function renderViewport(): void {
+  const el = $("fileTree");
+  const content = el.querySelector(".tree-content") as HTMLElement | null;
+  if (!content) return;
+  const total = visibleRows.length;
+  if (total === 0) {
+    content.textContent = "";
+    return;
+  }
+  const H = el.clientHeight;
+  const start = Math.max(0, Math.floor(el.scrollTop / ROW_H) - BUFFER);
+  const end = Math.min(total, Math.ceil((el.scrollTop + H) / ROW_H) + BUFFER);
+
+  // Rebuild the visible slice. Cheap: at most ~viewport/ROW_H + 2*BUFFER nodes.
+  content.textContent = "";
+  const active = getActiveTab();
+  const activePath = active?.path;
+  for (let i = start; i < end; i++) {
+    const row = visibleRows[i];
+    const div = document.createElement("div");
+    div.className = "tree-vrow";
+    div.dataset.idx = String(i);
+    div.style.top = i * ROW_H + "px";
+
+    if (row.kind === "header") {
+      div.classList.add("tree-header");
+      div.textContent = row.label;
+      content.appendChild(div);
+      continue;
+    }
+
+    div.style.paddingLeft = 8 + row.depth * 12 + "px";
+    if (row.kind === "dir") {
+      const arrow = document.createElement("span");
+      arrow.className = "tree-arrow " + (row.node!.expanded ? "expanded" : "collapsed");
+      div.appendChild(arrow);
+    }
+    if (row.icon) {
+      const ic = document.createElement("span");
+      ic.className = "icon";
+      ic.textContent = row.icon;
+      div.appendChild(ic);
+    }
+    const lab = document.createElement("span");
+    lab.textContent = row.label;
+    div.appendChild(lab);
+
+    if (row.path && row.path === activePath) div.classList.add("selected");
+    div.addEventListener("click", () => onRowClick(row));
+    content.appendChild(div);
+  }
+}
+
+function onRowClick(row: VRow): void {
+  if (row.kind === "header") return;
+  if (row.kind === "unsaved") {
+    if (row.tabId != null) switchToTab(row.tabId);
+    return;
+  }
+  if (row.kind === "dir") {
+    if (row.node) {
+      row.node.expanded = !row.node.expanded;
+      refreshStructure();
     }
     return;
   }
-  renderTreeNode(state.folderTree, el, 0);
-}
-
-function sectionHeader(text: string): HTMLElement {
-  const h = document.createElement("div");
-  h.className = "tree-item";
-  h.style.cssText =
-    "padding:6px 8px 2px;color:#8b919a;font-size:11px;font-weight:700;" +
-    "text-transform:uppercase;letter-spacing:.8px;cursor:default;";
-  h.textContent = text;
-  return h;
-}
-
-function treeRow(label: string, padLeft: number, icon: string): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "tree-item";
-  row.style.paddingLeft = padLeft + "px";
-  const ic = document.createElement("span");
-  ic.className = "icon";
-  ic.textContent = icon;
-  row.appendChild(ic);
-  const lab = document.createElement("span");
-  lab.textContent = label;
-  row.appendChild(lab);
-  return row;
-}
-
-function renderRecentSection(el: HTMLElement): void {
-  if (!state.recents || state.recents.length === 0) return;
-  const header = sectionHeader("最近打开");
-  header.style.cssText +=
-    "display:flex;align-items:center;justify-content:space-between;";
-  const clear = document.createElement("span");
-  clear.textContent = "清除";
-  clear.style.cssText =
-    "font-size:10px;color:#8b919a;cursor:pointer;text-transform:none;" +
-    "letter-spacing:0;padding:0 4px;border-radius:3px;";
-  clear.onmouseenter = () => (clear.style.color = "#1a73e8");
-  clear.onmouseleave = () => (clear.style.color = "#8b919a");
-  clear.onclick = (e) => {
-    e.stopPropagation();
-    void clearRecents();
-  };
-  header.appendChild(clear);
-  el.appendChild(header);
-
-  for (const r of state.recents.slice(0, 10)) {
-    const icon = r.kind === "folder" ? "\uD83D\uDCC1" : getFileIcon(r.name);
-    const row = treeRow(r.name, 20, icon);
-    const lab = row.querySelector("span:last-child") as HTMLElement;
-    if (lab) lab.title = r.path;
-    row.onclick = () => {
-      if (r.kind === "folder") void openRecentFolder(r.path);
-      else void openRecentFile(r.path, r.name);
-    };
-    el.appendChild(row);
-  }
-}
-
-function renderTreeNode(node: TreeNode, container: HTMLElement, depth: number): void {
-  if (node.type === "dir") {
-    const row = document.createElement("div");
-    row.className = "tree-item";
-    row.style.paddingLeft = 8 + depth * 12 + "px";
-    const arrow = document.createElement("span");
-    arrow.className = "tree-arrow " + (node.expanded ? "expanded" : "collapsed");
-    row.appendChild(arrow);
-    const icon = document.createElement("span");
-    icon.className = "icon";
-    icon.textContent = node.expanded ? "\uD83D\uDCC2" : "\uD83D\uDCC1";
-    row.appendChild(icon);
-    const label = document.createElement("span");
-    label.textContent = node.name;
-    row.appendChild(label);
-    row.onclick = () => {
-      node.expanded = !node.expanded;
-      renderTree();
-    };
-    container.appendChild(row);
-    if (node.expanded && node.children) {
-      for (const child of node.children) renderTreeNode(child, container, depth + 1);
-    }
-  } else {
-    const row = document.createElement("div");
-    row.className = "tree-item";
-    const active = getActiveTab();
-    if (active && node.fileRef && active.path === node.fileRef.path) row.classList.add("selected");
-    row.style.paddingLeft = 8 + depth * 12 + 16 + "px";
-    const icon = document.createElement("span");
-    icon.className = "icon";
-    icon.textContent = getFileIcon(node.name);
-    row.appendChild(icon);
-    const label = document.createElement("span");
-    label.textContent = node.name;
-    row.appendChild(label);
-    row.onclick = () => {
-      if (node.fileRef) void openScannedFile(node.fileRef);
-    };
-    container.appendChild(row);
+  if (row.kind === "file") {
+    if (row.node?.fileRef) void openScannedFile(row.node.fileRef);
+    return;
   }
 }
 

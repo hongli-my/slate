@@ -23,6 +23,8 @@ import {
   pickSavePath,
   confirmDialog,
   isTauriAvailable,
+  watchTrack,
+  clearRecovery,
 } from "./io";
 import { addTab, renderTabsBar, switchToTab } from "./tabs";
 import { renderTree, buildTree } from "./filetree";
@@ -103,17 +105,22 @@ export async function doOpenFiles(): Promise<void> {
       let content = "";
       let encoding = "utf-8";
       let eol: "LF" | "CRLF" = "LF";
+      let readOnly = false;
       try {
         const r = await readTextFile(p); // FIX #20
         content = r.text;
         encoding = r.encoding;
         eol = content.includes("\r\n") ? "CRLF" : "LF";
         content = eol === "CRLF" ? content : content.replace(/\r\n/g, "\n");
+        // 大文件 / 二进制 / 截断 → 只读打开（Slate 定位以查看为主，避免误编辑）。
+        readOnly = r.isBinary || r.truncated || r.size > 2_000_000;
       } catch (err) {
         content = "// 加载失败: " + (err as Error).message;
       }
       const stat = await fileStat(p).catch(() => null);
-      addTab(name, name, content, p, encoding, eol, stat?.mtimeMs ?? null);
+      addTab(name, name, content, p, encoding, eol, stat?.mtimeMs ?? null, state.activeGroup, readOnly);
+      if (readOnly) toast(`"${name}" 较大或为二进制，已只读打开`);
+      await watchTrack(p).catch(() => {}); // 外部修改监听（查看场景刚需）
       await addRecent("file", p, name);
     }
   } catch (err) {
@@ -131,6 +138,7 @@ export async function openScannedFile(fileRef: FileRef): Promise<void> {
   let encoding = "utf-8";
   let eol: "LF" | "CRLF" = "LF";
   let mtimeMs: number | null = null;
+  let readOnly = false;
   try {
     if (fileRef.absPath) {
       const r = await readTextFile(fileRef.absPath); // FIX #20
@@ -140,11 +148,14 @@ export async function openScannedFile(fileRef: FileRef): Promise<void> {
       content = eol === "CRLF" ? content : content.replace(/\r\n/g, "\n");
       const stat = await fileStat(fileRef.absPath).catch(() => null);
       mtimeMs = stat?.mtimeMs ?? null;
+      readOnly = r.isBinary || r.truncated || r.size > 2_000_000;
     }
   } catch (err) {
     content = "// 加载失败: " + (err as Error).message;
   }
-  addTab(fileRef.name, fileRef.path, content, fileRef.absPath || null, encoding, eol, mtimeMs);
+  addTab(fileRef.name, fileRef.path, content, fileRef.absPath || null, encoding, eol, mtimeMs, state.activeGroup, readOnly);
+  if (readOnly) toast(`"${fileRef.name}" 较大或为二进制，已只读打开`);
+  if (fileRef.absPath) await watchTrack(fileRef.absPath).catch(() => {});
 }
 
 export async function openRecentFolder(dirPath: string): Promise<void> {
@@ -167,8 +178,12 @@ export async function openRecentFile(filePath: string, name: string): Promise<vo
     const eol: "LF" | "CRLF" = content.includes("\r\n") ? "CRLF" : "LF";
     content = eol === "CRLF" ? content : content.replace(/\r\n/g, "\n");
     const stat = await fileStat(filePath).catch(() => null);
-    addTab(name || basename(filePath), name || basename(filePath), content, filePath, r.encoding, eol, stat?.mtimeMs ?? null);
-    await addRecent("file", filePath, name || basename(filePath));
+    const readOnly = r.isBinary || r.truncated || r.size > 2_000_000;
+    const displayName = name || basename(filePath);
+    addTab(displayName, displayName, content, filePath, r.encoding, eol, stat?.mtimeMs ?? null, state.activeGroup, readOnly);
+    if (readOnly) toast(`"${displayName}" 较大或为二进制，已只读打开`);
+    await watchTrack(filePath).catch(() => {});
+    await addRecent("file", filePath, displayName);
   } catch (err) {
     toast("打开失败: " + (err as Error).message);
   }
@@ -239,6 +254,10 @@ export async function saveCurrentFile(): Promise<boolean> {
     tab.modified = false;
     const stat = await fileStat(savePath).catch(() => null);
     tab.mtimeMs = stat?.mtimeMs ?? null;
+    // Now that the buffer has a path, track it for external changes and
+    // clear any recovery snapshot (the content is safely on disk).
+    void watchTrack(savePath);
+    void clearRecovery(savePath);
 
     // Add to file tree if saved inside the open folder.
     if (state.currentDirPath && savePath.startsWith(state.currentDirPath + "/")) {

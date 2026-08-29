@@ -5,13 +5,21 @@
 //! - `file_stat`: stat (size / mtime / is_dir); `Ok(None)` if missing. Used by
 //!   the editor to detect external modifications before save / buffer switch.
 //! - `read_text_file_detect`: read bytes and decode with a BOM / UTF-8 / GBK /
-//!   Shift-JIS heuristic, reporting the encoding used.
+//!   Shift-JIS heuristic, reporting the encoding used. Size-capped + binary
+//!   heuristic to avoid OOM / garbage on huge or binary files.
 //! - `search_in_files`: recursive content search over text files.
+//! - `scan_dir_tree`: one-shot recursive directory scan returning a flat list
+//!   of supported files (replaces the old N-IPC JS recursion in io.scanDir).
+//! - `save_recovery` / `load_recovery_list` / `read_recovery` / `clear_recovery`
+//!   / `clear_all_recovery`: crash-recovery snapshots of unsaved buffers.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager};
 
 // ---------------------------------------------------------------------------
 // save_file_atomic
@@ -30,7 +38,6 @@ pub fn save_file_atomic(path: String, content: String) -> Result<(), String> {
 
     // Write + fsync the temp file.
     let write_res = (|| -> std::io::Result<()> {
-        use std::io::Write;
         let mut f = fs::File::create(&tmp_path)?;
         f.write_all(content.as_bytes())?;
         f.sync_all()?; // fsync the file contents to disk
@@ -103,7 +110,21 @@ pub struct ReadResult {
     pub text: String,
     pub encoding: String,
     pub had_errors: bool,
+    /// True when the file exceeded `MAX_READ_SIZE` and was truncated.
+    pub truncated: bool,
+    /// True when the decoded content looks like binary (low printable ratio).
+    /// The editor should open such files read-only with a warning rather than
+    /// letting the user edit garbage.
+    pub is_binary: bool,
+    /// Original file size in bytes (for the editor to show a hint).
+    pub size: u64,
 }
+
+/// Hard cap on how many bytes a single `read_text_file_detect` will decode.
+/// Files larger than this are truncated to `MAX_READ_SIZE` bytes (decoded)
+/// with `truncated = true`. This prevents OOM / multi-second main-thread
+/// freezes when a user opens a 200 MB log file.
+const MAX_READ_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 
 /// Read a file and decode it to text, reporting the encoding used.
 ///
@@ -115,58 +136,109 @@ pub struct ReadResult {
 ///    replacement; if that also errors, try Shift-JIS.
 /// 4. Last resort: UTF-8 with replacement and `had_errors = true`.
 ///
-/// `had_errors` is true when any bytes were replaced or could not be decoded
-/// losslessly by the chosen encoding.
+/// After decoding, a printable-ratio heuristic flags likely-binary files so
+/// the editor can open them read-only instead of presenting garbage.
 #[tauri::command]
 pub fn read_text_file_detect(path: String) -> Result<ReadResult, String> {
     let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    let total_size = bytes.len() as u64;
 
+    // Size cap: decode at most MAX_READ_SIZE bytes. Truncating at a byte
+    // boundary is safe for UTF-8-with-replacement (the decoder handles
+    // truncated sequences); for strict UTF-8 a mid-codepoint cut just falls
+    // through to the GBK / replacement branches.
+    let (buf, truncated) = if total_size > MAX_READ_SIZE {
+        (&bytes[..MAX_READ_SIZE as usize], true)
+    } else {
+        (&bytes[..], false)
+    };
+
+    let (text, encoding, had_errors) = decode_bytes(buf);
+
+    // Binary heuristic: sample the first 8 KB of the decoded text and measure
+    // the printable / whitespace ratio. Binary files decoded as text have a
+    // high density of control chars / replacement chars.
+    let is_binary = is_likely_binary(&text);
+
+    // For binary files, don't hand the editor megabytes of garbage — cap to
+    // a small preview so the buffer is cheap and the warning is visible.
+    let final_text = if is_binary {
+        text.chars().take(4096).collect::<String>()
+    } else {
+        text
+    };
+
+    Ok(ReadResult {
+        text: final_text,
+        encoding,
+        had_errors,
+        truncated,
+        is_binary,
+        size: total_size,
+    })
+}
+
+/// Pure decode routine shared by the size-cap path. Returns (text, encoding,
+/// had_errors).
+fn decode_bytes(bytes: &[u8]) -> (String, String, bool) {
     // 1. BOM?
-    if let Some((enc, _bom_len)) = encoding_rs::Encoding::for_bom(&bytes) {
-        let (cow, _enc_used, had_errors) = enc.decode(&bytes);
-        return Ok(ReadResult {
-            text: cow.into_owned(),
-            encoding: enc.name().to_string(),
-            had_errors,
-        });
+    if let Some((enc, _bom_len)) = encoding_rs::Encoding::for_bom(bytes) {
+        let (cow, _enc_used, had_errors) = enc.decode(bytes);
+        return (cow.into_owned(), enc.name().to_string(), had_errors);
     }
 
     // 2. Strict UTF-8.
-    if let Ok(s) = std::str::from_utf8(&bytes) {
-        return Ok(ReadResult {
-            text: s.to_string(),
-            encoding: "utf-8".to_string(),
-            had_errors: false,
-        });
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return (s.to_string(), "utf-8".to_string(), false);
     }
 
     // 3. GBK fallback (no replacement -> detect errors).
-    let (gbk_cow, gbk_errors) = encoding_rs::GBK.decode_without_bom_handling(&bytes);
+    let (gbk_cow, gbk_errors) = encoding_rs::GBK.decode_without_bom_handling(bytes);
     if !gbk_errors {
-        return Ok(ReadResult {
-            text: gbk_cow.into_owned(),
-            encoding: "gbk".to_string(),
-            had_errors: false,
-        });
+        return (gbk_cow.into_owned(), "gbk".to_string(), false);
     }
 
     // 3b. Shift-JIS fallback.
-    let (sj_cow, sj_errors) = encoding_rs::SHIFT_JIS.decode_without_bom_handling(&bytes);
+    let (sj_cow, sj_errors) = encoding_rs::SHIFT_JIS.decode_without_bom_handling(bytes);
     if !sj_errors {
-        return Ok(ReadResult {
-            text: sj_cow.into_owned(),
-            encoding: "shift_jis".to_string(),
-            had_errors: false,
-        });
+        return (sj_cow.into_owned(), "shift_jis".to_string(), false);
     }
 
     // 4. Final fallback: UTF-8 with replacement.
-    let (cow, had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(&bytes);
-    Ok(ReadResult {
-        text: cow.into_owned(),
-        encoding: "utf-8".to_string(),
-        had_errors,
-    })
+    let (cow, had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(bytes);
+    (cow.into_owned(), "utf-8".to_string(), had_errors)
+}
+
+/// Heuristic: returns true if `text` looks like decoded binary data.
+///
+/// Samples the first 8 KB and counts "printable" characters (letters, digits,
+/// common punctuation, whitespace). If the ratio is below 70%, treat as
+/// binary. This catches the common failure mode where a .bin / .so / image
+/// file happens to decode without errors under GBK but is actually garbage.
+fn is_likely_binary(text: &str) -> bool {
+    // Sample by CHARACTERS, not bytes — slicing `&text[..8192]` would panic
+    // if byte 8192 lands inside a multi-byte UTF-8 sequence.
+    let sample: String = text.chars().take(8192).collect();
+    if sample.is_empty() {
+        return false;
+    }
+    let total = sample.chars().count();
+    if total == 0 {
+        return false;
+    }
+    let printable = sample
+        .chars()
+        .filter(|c| {
+            // Standard whitespace.
+            matches!(c, ' ' | '\t' | '\n' | '\r') ||
+            // Printable ASCII.
+            (*c >= ' ' && *c <= '~') ||
+            // Any non-control Unicode (letters, CJK, etc.).
+            (*c as u32 >= 0xA0)
+        })
+        .count();
+    let ratio = printable as f64 / total as f64;
+    ratio < 0.70
 }
 
 // ---------------------------------------------------------------------------
@@ -365,4 +437,271 @@ fn make_snippet(line: &str) -> String {
         return trimmed.to_string();
     }
     trimmed.chars().take(SNIPPET_CAP).collect()
+}
+
+// ---------------------------------------------------------------------------
+// scan_dir_tree  (one-shot recursive scan — replaces N-IPC JS recursion)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanEntry {
+    pub name: String,
+    /// Path relative to the scanned root (uses `/` separators).
+    pub path: String,
+    pub abs_path: String,
+}
+
+/// Directory names to skip during the tree scan. Kept in sync with the JS-side
+/// `SKIP_DIRS` so the tree matches what `io.scanDir` produced before.
+const TREE_SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".git",
+    ".svn",
+    ".hg",
+    ".idea",
+    ".vscode",
+    "out",
+    "coverage",
+];
+
+/// File extensions considered "supported" for the file tree. Kept in sync with
+/// the JS-side `SUPPORTED_EXTENSIONS` so the tree matches the old behavior.
+const TREE_EXTS: &[&str] = &[
+    "md", "txt", "markdown", "json", "xml", "html", "htm", "css", "js", "ts", "jsx", "tsx", "vue",
+    "svelte", "yml", "yaml", "ini", "cfg", "conf", "properties", "c", "cpp", "cc", "cxx", "h",
+    "hpp", "py", "sh", "bash", "zsh", "fish", "java", "kt", "scala", "swift", "go", "rs", "php",
+    "rb", "lua", "pl", "pm", "sql", "r", "m", "mm", "groovy", "cmake", "diff", "patch", "ps1",
+];
+
+fn is_supported_ext(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    if lower == "makefile" || lower == "dockerfile" {
+        return true;
+    }
+    match lower.rsplit_once('.') {
+        Some((_, ext)) => TREE_EXTS.iter().any(|&t| t == ext),
+        None => false,
+    }
+}
+
+/// Recursively scan `dir` into a flat list of supported files, returned in a
+/// single IPC response. Symlink-safe via a `seen` set of canonicalized paths.
+///
+/// This replaces the old JS recursion in `io.scanDir`, which issued one IPC
+/// `readDir` call per directory (N round-trips for N dirs). Directories in
+/// `TREE_SKIP_DIRS`, hidden entries, and symlinks pointing to already-visited
+/// paths are pruned.
+#[tauri::command]
+pub fn scan_dir_tree(dir: String) -> Result<Vec<ScanEntry>, String> {
+    let root = Path::new(&dir);
+    if !root.is_dir() {
+        return Err(format!("not a directory: {}", dir));
+    }
+    let mut out: Vec<ScanEntry> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    scan_dir_recursive(root, "", &mut out, &mut seen)?;
+    // Stable ordering matching the old JS sort (path.localeCompare).
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+fn scan_dir_recursive(
+    dir: &Path,
+    base: &str,
+    out: &mut Vec<ScanEntry>,
+    seen: &mut std::collections::HashSet<PathBuf>,
+) -> Result<(), String> {
+    // Canonicalize for symlink-loop detection. If canonicalize fails (e.g.
+    // permission), fall back to the raw path so we don't skip a real dir.
+    let canon = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !seen.insert(canon) {
+        return Ok(()); // already visited — symlink loop
+    }
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()), // skip unreadable dirs silently
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Skip hidden entries (covers .git, .venv, .slate-tmp-*, ...).
+        if name.starts_with('.') {
+            continue;
+        }
+        let rel = if base.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", base, name)
+        };
+        let abs = entry.path().to_string_lossy().into_owned();
+
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            if TREE_SKIP_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            // Follow symlinks only if they point to a dir we haven't visited.
+            scan_dir_recursive(&entry.path(), &rel, out, seen)?;
+        } else if ft.is_file() && is_supported_ext(&name) {
+            out.push(ScanEntry {
+                name,
+                path: rel,
+                abs_path: abs,
+            });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Crash recovery  (unsaved-buffer snapshots)
+// ---------------------------------------------------------------------------
+
+/// Subdirectory under the app data dir holding recovery snapshots.
+const RECOVERY_SUBDIR: &str = "recovery";
+/// Manifest file mapping hash -> original path.
+const RECOVERY_MANIFEST: &str = "manifest.json";
+
+fn recovery_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {}", e))?;
+    let dir = base.join(RECOVERY_SUBDIR);
+    fs::create_dir_all(&dir).map_err(|e| format!("create recovery dir: {}", e))?;
+    Ok(dir)
+}
+
+/// FNV-1a 64-bit hash of a path, returned as hex. Used as the recovery file
+/// name so a path containing `/` doesn't collide with the filesystem.
+fn path_hash(path: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in path.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", h)
+}
+
+/// Read the recovery manifest (hash -> path). Empty map if missing/corrupt.
+fn read_manifest(dir: &Path) -> HashMap<String, String> {
+    let p = dir.join(RECOVERY_MANIFEST);
+    match fs::read(&p) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Write the recovery manifest atomically-ish (best effort).
+fn write_manifest(dir: &Path, map: &HashMap<String, String>) -> Result<(), String> {
+    let p = dir.join(RECOVERY_MANIFEST);
+    let json = serde_json::to_string(map).map_err(|e| e.to_string())?;
+    fs::write(&p, json).map_err(|e| e.to_string())
+}
+
+/// Save (or replace) a recovery snapshot for `path`. Called by the editor
+/// whenever a buffer becomes dirty, debounced on the JS side.
+#[tauri::command]
+pub fn save_recovery(app: AppHandle, path: String, content: String) -> Result<(), String> {
+    if path.is_empty() {
+        return Err("empty path".into());
+    }
+    let dir = recovery_dir(&app)?;
+    let h = path_hash(&path);
+    // Write content file.
+    let content_path = dir.join(&h);
+    let tmp = dir.join(format!("{}.tmp", h));
+    {
+        let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        f.write_all(content.as_bytes()).map_err(|e| e.to_string())?;
+        let _ = f.sync_all();
+    }
+    fs::rename(&tmp, &content_path).map_err(|e| e.to_string())?;
+    // Update manifest.
+    let mut map = read_manifest(&dir);
+    map.insert(h, path.clone());
+    write_manifest(&dir, &map)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryEntry {
+    pub path: String,
+    /// mtime of the snapshot file (ms since epoch), for ordering / display.
+    pub mtime_ms: i64,
+}
+
+/// List all recovery snapshots. Called once at startup to offer restore.
+#[tauri::command]
+pub fn load_recovery_list(app: AppHandle) -> Result<Vec<RecoveryEntry>, String> {
+    let dir = recovery_dir(&app)?;
+    let map = read_manifest(&dir);
+    let mut out = Vec::with_capacity(map.len());
+    for (h, path) in &map {
+        let cp = dir.join(h);
+        if let Ok(meta) = fs::metadata(&cp) {
+            let mtime_ms = match meta.modified() {
+                Ok(t) => system_time_to_millis(t),
+                Err(_) => 0,
+            };
+            out.push(RecoveryEntry {
+                path: path.clone(),
+                mtime_ms,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+/// Read the recovery snapshot content for `path`. Empty string if missing.
+#[tauri::command]
+pub fn read_recovery(app: AppHandle, path: String) -> Result<String, String> {
+    let dir = recovery_dir(&app)?;
+    let h = path_hash(&path);
+    let cp = dir.join(&h);
+    fs::read_to_string(&cp).or_else(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Ok(String::new())
+        } else {
+            Err(e.to_string())
+        }
+    })
+}
+
+/// Remove the recovery snapshot for `path`. Called after a successful save or
+/// when the user discards a recovered buffer.
+#[tauri::command]
+pub fn clear_recovery(app: AppHandle, path: String) -> Result<(), String> {
+    let dir = recovery_dir(&app)?;
+    let h = path_hash(&path);
+    let cp = dir.join(&h);
+    let _ = fs::remove_file(&cp);
+    let mut map = read_manifest(&dir);
+    if map.remove(&h).is_some() {
+        write_manifest(&dir, &map)?;
+    }
+    Ok(())
+}
+
+/// Remove ALL recovery snapshots. Called on a clean exit / explicit clear.
+#[tauri::command]
+pub fn clear_all_recovery(app: AppHandle) -> Result<(), String> {
+    let dir = recovery_dir(&app)?;
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(())
 }

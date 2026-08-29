@@ -12,6 +12,7 @@ import {
   selectMatches,
   openSearchPanel,
   closeSearchPanel,
+  SearchCursor,
 } from "@codemirror/search";
 import { state, getActiveTab } from "./state";
 import { $, escapeHtml, toast } from "./ui";
@@ -194,15 +195,11 @@ function getReplacement(): string {
 
 function countMatches(view: import("@codemirror/view").EditorView, term: string): number {
   if (!term) return 0;
-  const doc = view.state.doc.toString();
+  // Use SearchCursor over the doc Text instead of doc.toString() + indexOf —
+  // avoids a full-doc string copy on every keystroke in the search panel.
+  const cursor = new SearchCursor(view.state.doc, term);
   let count = 0;
-  let i = 0;
-  while (i <= doc.length) {
-    const idx = doc.indexOf(term, i);
-    if (idx < 0) break;
-    count++;
-    i = idx + term.length;
-  }
+  while (cursor.next()) count++;
   return count;
 }
 

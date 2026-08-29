@@ -91,9 +91,11 @@ export function updateFormatButtons(groupId?: 0 | 1): void {
     const showPreview = tab ? /\.(md|markdown)$/i.test(tab.name) : false;
     const fmt = document.getElementById(groupElId("btnFormat", gi));
     const fmtJ = document.getElementById(groupElId("btnFormatJson", gi));
+    const minJ = document.getElementById(groupElId("btnMinifyJson", gi));
     const pv = document.getElementById(groupElId("btnPreviewFloat", gi));
     if (fmt) fmt.style.display = showFmt ? "block" : "none";
     if (fmtJ) fmtJ.style.display = showJson ? "block" : "none";
+    if (minJ) minJ.style.display = showJson ? "block" : "none";
     if (pv) pv.style.display = showPreview ? "block" : "none";
   }
   // Keep preview button labels in sync with the global preview state.
@@ -142,10 +144,74 @@ export function syncPreviewPane(): void {
   if (!state.previewVisible) return;
   const pane = $(groupElId("previewPane", state.activeGroup));
   if (!pane) return;
-  if (isMarkdownFile()) renderMarkdownPreview();
-  else pane.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">预览仅支持 Markdown 文件</div>';
-  pane.style.display = "block";
+  if (isMarkdownFile()) {
+    renderMarkdownPreview();
+  } else {
+    // 非 Markdown：隐藏 TOC，内容区显示提示。
+    const { content: mdContent, toc } = ensurePreviewLayout(pane);
+    toc.style.display = "none";
+    mdContent.innerHTML = '<div style="padding:40px;text-align:center;color:#666;">预览仅支持 Markdown 文件</div>';
+  }
+  // pane 永远用 flex：.md-content flex:1 占满 + 可滚动，.md-toc 由 buildToc
+  // 控制显隐（无标题或非 md 时 display:none，content 自动占满）。
+  // 之前用 display:block 会导致 .md-content 的 flex:1 失效，高度变成 auto，
+  // 内容被 pane 的 overflow:hidden 裁剪且无法滚动。
+  pane.style.display = "flex";
   updatePreviewButton();
+}
+
+/** Ensure the preview pane has the .md-content + .md-toc child structure.
+ *  Creates them once (idempotent) so re-renders just update innerHTML. */
+function ensurePreviewLayout(pane: HTMLElement): { content: HTMLElement; toc: HTMLElement } {
+  let content = pane.querySelector<HTMLElement>(".md-content");
+  let toc = pane.querySelector<HTMLElement>(".md-toc");
+  if (!content || !toc) {
+    pane.innerHTML = "";
+    if (!content) {
+      content = document.createElement("div");
+      content.className = "md-content";
+      pane.appendChild(content);
+    }
+    if (!toc) {
+      toc = document.createElement("div");
+      toc.className = "md-toc";
+      pane.appendChild(toc);
+    }
+  }
+  return { content, toc };
+}
+
+/** Build the right-side TOC from headings. Each heading gets an id so TOC
+ *  items can scrollIntoView it. Indent by heading level. */
+function buildToc(container: HTMLElement, tocEl: HTMLElement): void {
+  const headings = container.querySelectorAll("h1, h2, h3, h4, h5, h6");
+  tocEl.innerHTML = "";
+  if (headings.length === 0) {
+    tocEl.style.display = "none";
+    return;
+  }
+  tocEl.style.display = "";
+  const title = document.createElement("div");
+  title.className = "md-toc-title";
+  title.textContent = "大纲";
+  tocEl.appendChild(title);
+  headings.forEach((h, i) => {
+    const level = parseInt(h.tagName[1], 10);
+    const id = "md-heading-" + i;
+    (h as HTMLElement).id = id;
+    const item = document.createElement("div");
+    item.className = "md-toc-item";
+    item.style.paddingLeft = ((level - 1) * 12) + "px";
+    item.textContent = h.textContent || "";
+    item.title = h.textContent || "";
+    item.onclick = () => {
+      const target = document.getElementById(id);
+      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      tocEl.querySelectorAll(".md-toc-item").forEach((el) => el.classList.remove("active"));
+      item.classList.add("active");
+    };
+    tocEl.appendChild(item);
+  });
 }
 
 function renderMarkdownPreview(): void {
@@ -155,13 +221,23 @@ function renderMarkdownPreview(): void {
   if (!view) return;
   const content = view.state.doc.toString();
   ensureMarked();
+  const { content: mdContent, toc } = ensurePreviewLayout(pane);
   try {
     // marked v18 dropped the `highlight` option, so render plain HTML then
     // highlight each <pre><code> block with hljs.highlightElement (robust).
     const html = marked.parse(content) as string;
-    pane.innerHTML = html;
-    pane.querySelectorAll("pre code").forEach((el) => {
+    mdContent.innerHTML = html;
+    // Build TOC from headings (adds ids for scroll-to). Must run BEFORE
+    // addHeadingFold, which rewrites heading innerHTML but preserves the id.
+    buildToc(mdContent, toc);
+    // On very large markdown docs, hljs.highlightElement on every code block
+    // can block the main thread for hundreds of ms. Cap to the first 200
+    // blocks; the rest render as plain (still readable) code.
+    const HIGHLIGHT_LIMIT = 200;
+    let highlighted = 0;
+    mdContent.querySelectorAll("pre code").forEach((el) => {
       const codeEl = el as HTMLElement;
+      if (highlighted >= HIGHLIGHT_LIMIT) return;
       // marked emits class="language-xxx"; use it to pick the language.
       const langClass = Array.from(codeEl.classList).find((c) => c.startsWith("language-"));
       const lang = langClass ? langClass.slice("language-".length) : "";
@@ -176,11 +252,13 @@ function renderMarkdownPreview(): void {
       } catch {
         /* leave as-is */
       }
+      highlighted++;
     });
-    addCodeCopyButtons(pane);
-    addHeadingFold(pane);
+    addCodeCopyButtons(mdContent);
+    addHeadingFold(mdContent);
   } catch {
-    pane.innerHTML = '<p style="color:#f44;">渲染失败</p>';
+    mdContent.innerHTML = '<p style="color:#f44;">渲染失败</p>';
+    toc.innerHTML = "";
   }
 }
 

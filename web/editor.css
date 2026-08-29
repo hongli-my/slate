@@ -217,12 +217,33 @@
         /* 预览面板（覆盖编辑区，不分栏） */
         .preview-pane {
             display: none;
-            position: absolute; inset: 0; overflow-y: auto;
+            position: absolute; inset: 0; overflow: hidden;
             background: #4b4b4b; z-index: 15;
-            padding: 12px 20px;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
             font-size: 13.5px; line-height: 1.55; color: #ccc;
         }
+        /* Markdown 预览：左侧内容 + 右侧 TOC 大纲。pane 永远 display:flex
+           （由 JS inline 控制 visible/hidden），.md-content 永远 flex:1 + 可滚动。 */
+        .md-content { flex: 1; overflow-y: auto; padding: 12px 20px; min-width: 0; }
+        .md-toc {
+            width: 220px; flex-shrink: 0; overflow-y: auto;
+            border-left: 1px solid #555; background: #444;
+            padding: 12px 10px; font-size: 12px; line-height: 1.5;
+        }
+        /* 无 TOC 时（非 md 文件或无标题）buildToc 设 display:none，content 自动占满 */
+        }
+        .md-toc-title {
+            font-size: 10px; font-weight: 700; text-transform: uppercase;
+            color: #8b919a; letter-spacing: .8px; margin-bottom: 8px;
+            padding: 0 4px;
+        }
+        .md-toc-item {
+            cursor: pointer; color: #aaa; padding: 2px 4px; border-radius: 3px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            transition: background .12s ease, color .12s ease;
+        }
+        .md-toc-item:hover { background: #5a5a5a; color: #fff; }
+        .md-toc-item.active { color: #8ab4f8; }
         .preview-pane::-webkit-scrollbar { width: 8px; }
         .preview-pane::-webkit-scrollbar-track { background: #4b4b4b; }
         .preview-pane::-webkit-scrollbar-thumb { background: #777; border-radius: 4px; }
@@ -456,3 +477,41 @@
         }
         #sessionToast button:hover { background: #5a6fd6; }
         #sessionToast button:active { transform: scale(0.96); }
+
+        /* ===== Virtualized file tree (filetree.ts) ===== */
+        /* Rows are absolutely positioned inside .tree-content; the scroller is
+           .file-tree itself. position:relative is required for the abs rows. */
+        .file-tree { position: relative; contain: layout style; }
+        .tree-content { position: relative; width: 100%; }
+        .tree-vrow {
+            position: absolute; left: 0; right: 0; height: 24px; line-height: 24px;
+            display: flex; align-items: center; cursor: pointer; user-select: none;
+            white-space: nowrap; overflow: hidden; color: #2d3138; font-size: 13px;
+            box-sizing: border-box;
+        }
+        .tree-vrow:hover { background: #dadee3; }
+        .tree-vrow.selected {
+            background: #d4d9df; color: #1a73e8;
+            box-shadow: inset 3px 0 0 0 #1a73e8;
+        }
+        .tree-vrow .icon { margin-right: 6px; font-size: 14px; flex-shrink: 0; }
+        .tree-vrow .tree-arrow { width: 10px; margin-right: 2px; color: #8b919a; flex-shrink: 0; font-size: 10px; }
+        .tree-vrow .tree-arrow.collapsed::before { content: '\25B6'; }
+        .tree-vrow .tree-arrow.expanded::before { content: '\25BC'; }
+        .tree-header {
+            position: absolute; left: 0; right: 0; height: 24px; line-height: 24px;
+            padding: 0 10px; box-sizing: border-box;
+            color: #8b919a; font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: .8px; cursor: default;
+            white-space: nowrap; overflow: hidden;
+        }
+
+        /* ===== Layout isolation (perf) ===== */
+        /* contain:layout isolates the editor pane's layout from the sidebar /
+           tabs so sidebar scrolls and tab-bar changes don't trigger a full
+           content reflow. Not `paint` — that would clip CM6's autocomplete
+           tooltip that overflows the pane. */
+        .editor-pane { contain: layout style; }
+
+        /* Long list items in goto / search panels: skip rendering off-screen rows. */
+        .float-panel .fp-list .fp-item { content-visibility: auto; contain-intrinsic-size: 0 26px; }

@@ -1,4 +1,5 @@
 mod chat_pane;
+mod file_watcher;
 mod fs_ops;
 mod otel;
 mod pi_bridge;
@@ -63,6 +64,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(pi_bridge::SidecarState::default())
+        .manage(file_watcher::WatchState::default())
         .on_window_event(|window, event| {
             chat_pane::on_window_event(window, event);
         })
@@ -78,6 +80,15 @@ pub fn run() {
             fs_ops::file_stat,
             fs_ops::read_text_file_detect,
             fs_ops::search_in_files,
+            fs_ops::scan_dir_tree,
+            fs_ops::save_recovery,
+            fs_ops::load_recovery_list,
+            fs_ops::read_recovery,
+            fs_ops::clear_recovery,
+            fs_ops::clear_all_recovery,
+            file_watcher::watch_track,
+            file_watcher::watch_untrack,
+            file_watcher::watch_clear,
             pi_bridge::start_bridge,
             pi_bridge::stop_bridge,
             pi_bridge::restart_bridge,
@@ -136,6 +147,8 @@ pub fn run() {
                     log::error!("failed to start pi-bridge on startup: {e}");
                 }
             });
+            // 启动文件变更轮询线程（外部改文件 → 自动 reload / 提示冲突）
+            file_watcher::spawn_watcher(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -246,6 +246,7 @@
                         <div class="editor-pane" id="editorPane">
                             <button class="editor-format-btn" id="btnFormat" onclick="formatSQL()">&#9998; 格式化 SQL</button>
                             <button class="editor-format-btn" id="btnFormatJson" onclick="formatJSON()">&#9998; 格式化 JSON</button>
+                            <button class="editor-format-btn" id="btnMinifyJson" onclick="minifyJSON()">&#8651; 紧凑</button>
                             <button class="editor-preview-btn" id="btnPreviewFloat" onclick="togglePreview()">&#128065; 预览</button>
                             <div class="empty-state" id="emptyState">
                                 <div class="big-icon">&#128221;</div>
@@ -266,6 +267,7 @@
                         <div class="tabs-bar" id="tabsBar1"></div>
                         <div class="editor-pane" id="editorPane1">
                             <button class="editor-format-btn" id="btnFormat1" onclick="formatSQL()">&#9998; 格式化 SQL</button>
+                            <button class="editor-format-btn" id="btnMinifyJson1" onclick="minifyJSON()">&#8651; 紧凑</button>
                             <button class="editor-format-btn" id="btnFormatJson1" onclick="formatJSON()">&#9998; 格式化 JSON</button>
                             <button class="editor-preview-btn" id="btnPreviewFloat1" onclick="togglePreview()">&#128065; 预览</button>
                             <div class="empty-state" id="emptyState1">
@@ -280,6 +282,7 @@
                 <div class="status-bar" id="statusBar">
                     <span id="stFile">未打开文件</span>
                     <span id="stPos">行 1, 列 1</span>
+                    <span id="stJson" title="JSON 光标路径 / 校验状态" style="color:#8ab4f8;"></span>
                     <span id="stLang">-</span>
                     <span id="stEol" onclick="toggleEol()" title="点击切换 LF / CRLF" style="cursor:pointer;">LF</span>
                     <span>UTF-8</span>

@@ -37,6 +37,12 @@ export interface ReadResult {
   text: string;
   encoding: string;
   hadErrors: boolean;
+  /** File exceeded the read size cap and was truncated. */
+  truncated: boolean;
+  /** Decoded content looked like binary (low printable ratio). */
+  isBinary: boolean;
+  /** Original file size in bytes. */
+  size: number;
 }
 export interface FileStat {
   size: number;
@@ -119,11 +125,17 @@ export async function pathJoin(...parts: string[]): Promise<string> {
   return parts.join("/").replace(/\/+/g, "/");
 }
 
-// ---- File tree scan with skip-set + symlink guard (FIX #19) ----
+// ---- File tree scan (one-shot Rust IPC) ----
+// The old implementation issued one `readDir` IPC per directory (N round-trips
+// for N dirs). It is now a single `scan_dir_tree` call that walks the tree in
+// Rust and returns a flat list. SKIP_DIRS / SUPPORTED_EXTENSIONS are kept here
+// only for JS-side callers that still reference them; the Rust scan has its
+// own copy kept in sync.
 const SKIP_DIRS = new Set([
   "node_modules", "target", "dist", "build", ".next", ".venv", "venv",
   "__pycache__", ".git", ".svn", ".hg", ".idea", ".vscode", "out", "coverage",
 ]);
+void SKIP_DIRS;
 
 export const SUPPORTED_EXTENSIONS = new Set([
   "md", "txt", "markdown", "json", "xml", "html", "htm", "css", "js", "ts", "jsx", "tsx", "vue", "svelte",
@@ -139,34 +151,27 @@ export function isSupportedFile(name: string): boolean {
   return SUPPORTED_EXTENSIONS.has(ext) || lower === "makefile" || lower === "dockerfile";
 }
 
-/** Recursively scan dir into a flat list of supported files. Symlink-safe. */
+export interface ScanEntry {
+  name: string;
+  path: string;
+  absPath: string;
+}
+
+/** One-shot recursive scan via a single Rust IPC call. */
+export async function scanDirTree(dirPath: string): Promise<ScanEntry[]> {
+  return safeInvoke<ScanEntry[]>("scan_dir_tree", { dir: dirPath });
+}
+
+/** Recursively scan dir into a flat list of supported files. Symlink-safe.
+ *  Signature kept for compatibility; now a single IPC round-trip. */
 export async function scanDir(
   dirPath: string,
-  basePath: string,
-  out: { name: string; path: string; absPath: string }[],
-  seenInodes?: Set<string>
+  _basePath: string,
+  out: { name: string; path: string; absPath: string }[]
 ): Promise<void> {
-  const seen = seenInodes ?? new Set<string>();
-  let entries: FsDirEntry[] = [];
-  try {
-    entries = await readDir(dirPath);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const relPath = basePath ? basePath + "/" + entry.name : entry.name;
-    const fullPath = await pathJoin(dirPath, entry.name);
-    // Symlink loop guard: skip entries whose real path we've already visited.
-    if (seen.has(fullPath)) continue;
-    if (entry.isDirectory) {
-      if (SKIP_DIRS.has(entry.name)) continue;
-      seen.add(fullPath);
-      await scanDir(fullPath, relPath, out, seen);
-    } else if (entry.isFile && isSupportedFile(entry.name)) {
-      out.push({ name: entry.name, path: relPath, absPath: fullPath });
-    }
-  }
+  const entries = await scanDirTree(dirPath);
+  out.length = 0;
+  for (const e of entries) out.push({ name: e.name, path: e.path, absPath: e.absPath });
 }
 
 export async function removeFile(path: string): Promise<void> {
@@ -227,6 +232,38 @@ export async function confirmDialog(message: string, title = "Slate"): Promise<b
     // Fallback to window.confirm only as last resort (shouldn't happen).
     return window.confirm(message);
   }
+}
+
+// ---- Crash recovery (unsaved-buffer snapshots in Rust app_data_dir) ----
+export interface RecoveryEntry {
+  path: string;
+  mtimeMs: number;
+}
+export function saveRecovery(path: string, content: string): Promise<void> {
+  return safeInvoke<void>("save_recovery", { path, content });
+}
+export function loadRecoveryList(): Promise<RecoveryEntry[]> {
+  return safeInvoke<RecoveryEntry[]>("load_recovery_list");
+}
+export function readRecovery(path: string): Promise<string> {
+  return safeInvoke<string>("read_recovery", { path });
+}
+export function clearRecovery(path: string): Promise<void> {
+  return safeInvoke<void>("clear_recovery", { path });
+}
+export function clearAllRecovery(): Promise<void> {
+  return safeInvoke<void>("clear_all_recovery");
+}
+
+// ---- External file-change watcher ----
+export function watchTrack(path: string): Promise<void> {
+  return safeInvoke<void>("watch_track", { path });
+}
+export function watchUntrack(path: string): Promise<void> {
+  return safeInvoke<void>("watch_untrack", { path });
+}
+export function watchClear(): Promise<void> {
+  return safeInvoke<void>("watch_clear");
 }
 
 export { basename };

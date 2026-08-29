@@ -31,22 +31,45 @@ const SYMBOL_PATTERNS = [
   /^\s*(?:static\s+)?(?:void|int|char|float|double|long|bool|boolean|string|String|auto|const|unsigned|signed|size_t|return)\s+(\w+)\s*\(/,
 ];
 
-// FIX #6: cache keyed by tab id; invalidated when doc version changes.
+// FIX #6: cache keyed by tab id; invalidated when the doc reference changes.
+// CM6's Text is immutable — every edit produces a new object, so a reference
+// equality (===) check is a perfect invalidation signal (no version number
+// needed, and never collides the way the old doc.length key did).
 const symbolCache = new Map<
   number,
-  { version: number; symbols: Symbol[] }
+  { doc: { length: number; lines: number; line: (i: number) => { text: string } }; symbols: Symbol[] }
 >();
 
-function extractSymbols(content: string): Symbol[] {
-  const lines = String(content || "").split("\n");
+function extractSymbols(doc: { lines: number; line: (i: number) => { text: string } }): Symbol[] {
+  // Iterate via doc.line(i) instead of content.split("\n") — avoids building
+  // a full-string copy + array of every line on every (re)scan.
   const symbols: Symbol[] = [];
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = 1; i <= doc.lines; i++) {
+    const text = doc.line(i).text;
     for (const p of SYMBOL_PATTERNS) {
-      const m = lines[i].match(p);
+      const m = text.match(p);
       if (m && m[1]) {
-        symbols.push({ name: m[1], line: i + 1 });
+        symbols.push({ name: m[1], line: i });
         break;
       }
+    }
+  }
+  return symbols;
+}
+
+// Markdown 标题提取（Slate 核心场景：Markdown 大纲）。Goto 的 @ 符号跳转
+// 原本只认代码符号（function/class），.md 文件 @ 跳转是空的——这对“Markdown
+// 展示”定位是明显缺失。这里按 ATX 标题（# ~ ######）提取，缩进表示层级。
+const MD_HEADING_RE = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+function extractMarkdownHeadings(doc: { lines: number; line: (i: number) => { text: string } }): Symbol[] {
+  const symbols: Symbol[] = [];
+  for (let i = 1; i <= doc.lines; i++) {
+    const text = doc.line(i).text;
+    const m = text.match(MD_HEADING_RE);
+    if (m) {
+      const level = m[1].length;
+      const title = m[2];
+      symbols.push({ name: "\u3000".repeat(level - 1) + title, line: i });
     }
   }
   return symbols;
@@ -56,11 +79,13 @@ function currentFileSymbols(): Symbol[] {
   const view = state.view;
   const tab = getActiveTab();
   if (!view || !tab) return [];
-  const version = view.state.doc.length; // cheap proxy; full version via view.state.version
+  // Invalidate on any doc change via reference equality (see symbolCache).
+  const doc = view.state.doc;
   const cached = symbolCache.get(tab.id);
-  if (cached && cached.version === version) return cached.symbols;
-  const symbols = extractSymbols(view.state.doc.toString());
-  symbolCache.set(tab.id, { version, symbols });
+  if (cached && cached.doc === doc) return cached.symbols;
+  // Markdown 文件用标题大纲；其他文件用代码符号。
+  const symbols = /\.md$/i.test(tab.name) ? extractMarkdownHeadings(doc) : extractSymbols(doc);
+  symbolCache.set(tab.id, { doc, symbols });
   return symbols;
 }
 

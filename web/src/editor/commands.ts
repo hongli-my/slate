@@ -78,19 +78,44 @@ export function formatJSON(): void {
     const parsed = JSON.parse(raw);
     const formatted = JSON.stringify(parsed, null, 4);
     replaceWholeDoc(view, formatted);
-    if (btn) {
-      btn.textContent = "\u2713 已格式化";
-      btn.classList.add("done");
-      setTimeout(() => {
-        btn.textContent = "\u270E 格式化 JSON";
-        btn.classList.remove("done");
-      }, 1500);
-    }
+    _flashBtn(btn, "\u2713 已格式化");
     toast("JSON 格式化完成");
   } catch (e) {
     console.error("JSON 格式化失败:", e);
     toast("格式化失败: " + (e as Error).message);
   }
+}
+
+/** 紧凑 JSON：去掉所有缩进和换行（Slate 定位：JSON 展示/传输）。 */
+export function minifyJSON(): void {
+  const view = state.view;
+  if (!view) return;
+  const tab = getActiveTab();
+  if (!tab || !/\.json$/i.test(tab.name)) return;
+  const btn = document.getElementById(groupElId("btnMinifyJson", state.activeGroup));
+  try {
+    const raw = view.state.doc.toString();
+    const parsed = JSON.parse(raw);
+    const minified = JSON.stringify(parsed);
+    replaceWholeDoc(view, minified);
+    _flashBtn(btn, "\u2713 已紧凑");
+    toast("JSON 已紧凑");
+  } catch (e) {
+    console.error("JSON 紧凑失败:", e);
+    toast("紧凑失败: " + (e as Error).message);
+  }
+}
+
+/** 按钮闪烁反馈：显示成功文字 1.5s 后恢复。 */
+function _flashBtn(btn: HTMLElement | null, doneText: string): void {
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = doneText;
+  btn.classList.add("done");
+  setTimeout(() => {
+    btn.textContent = orig;
+    btn.classList.remove("done");
+  }, 1500);
 }
 
 /** Replace the whole document in ONE dispatch (preserves history entry).

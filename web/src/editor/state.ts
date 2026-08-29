@@ -48,6 +48,8 @@ export interface Tab {
   mtimeMs: number | null;
   /** language label cache */
   lang: string;
+  /** Read-only flag — set for binary / over-size files so the user can't edit garbage. */
+  readOnly?: boolean;
 }
 
 /** An independent editor group (pane). group[0] is always mounted; group[1]
