@@ -16,7 +16,8 @@ import { formatSQL, formatJSON, minifyJSON, toggleEol, toggleTheme } from "./com
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { toggleSplitView, setupSplitDivider } from "./split";
 import { toggleMinimap } from "./minimap";
-import { saveRecovery, readTextFile } from "./io";
+import { saveRecovery, readTextFile, readCalendar, readLog } from "./io";
+import { showCalendar, calEventClick, calPrevMonth, calNextMonth, calGoToday, calSelectDate, calSwitchView, calJumpDate } from "./calendar";
 import { setupEditorContextMenu } from "./contextmenu";
 import { restoreSession } from "./session";
 import { recordMacroUpdate } from "./macros";
@@ -237,6 +238,30 @@ function setupGroupActivation(): void {
 }
 
 // ---- Export functions to window for index.html onclick handlers ----
+/** 测试入口：读 macOS 日历（EventKit）并 toast 展示未来 7 天事件数。 */
+export async function testCalendar(): Promise<void> {
+  try {
+    const data = await readCalendar(7);
+    const evs = data.events;
+    const rems = data.reminders;
+    if (!evs.length && !rems.length) {
+      toast("📅 未来 7 天无日历事件 / 提醒事项");
+      return;
+    }
+    const today = evs.filter((e) => e.start.startsWith(new Date().toISOString().slice(0, 10)));
+    const lines = [
+      `📅 未来 7 天：${evs.length} 个事件 · ${rems.length} 条提醒`,
+      ...today.slice(0, 3).map((e) => `  · ${e.start.slice(11, 16)} ${e.title}`),
+      ...rems.slice(0, 2).map((r) => `  ☐ ${r.title}`),
+    ];
+    toast(lines.join("\n"));
+    console.log("[cal-bridge] 日历数据:", data);
+  } catch (e) {
+    toast("📅 读取日历失败: " + (e as Error).message);
+    console.error("[cal-bridge] 失败:", e);
+  }
+}
+
 export function exposeGlobals(): void {
   const w = window as unknown as Record<string, unknown>;
   w.doOpenFolder = doOpenFolder;
@@ -250,6 +275,18 @@ export function exposeGlobals(): void {
   w.minifyJSON = minifyJSON;
   w.toggleEol = toggleEol;
   w.toggleTheme = toggleTheme;
+  // 调试：读 macOS 日历（EventKit）。用法：await readCalendar(7)
+  w.readCalendar = readCalendar;
+  w.calEventClick = calEventClick;
+  w.showCalendar = showCalendar;
+  w.calPrevMonth = calPrevMonth;
+  w.calNextMonth = calNextMonth;
+  w.calGoToday = calGoToday;
+  w.calSelectDate = calSelectDate;
+  w.calSwitchView = calSwitchView;
+  w.calJumpDate = calJumpDate;
+  // 测试入口：状态栏 📅 按钮 → 读 macOS 日历并 toast 展示
+  w.testCalendar = testCalendar;
   w.toggleSplitView = toggleSplitView;
   w.toggleMinimap = toggleMinimap;
   // Expose for debugging.

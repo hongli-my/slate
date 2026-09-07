@@ -3518,20 +3518,20 @@ var init_style_mod = __esm({
         function splitSelector(selector) {
           return /^@/.test(selector) ? [selector] : selector.split(/,\s*/);
         }
-        function render(selectors, spec2, target, isKeyframes) {
+        function render2(selectors, spec2, target, isKeyframes) {
           let local = [], isAt = /^@(\w+)\b/.exec(selectors[0]), keyframes = isAt && isAt[1] == "keyframes";
           if (isAt && spec2 == null) return target.push(selectors[0] + ";");
           for (let prop in spec2) {
             let value = spec2[prop];
             if (/&/.test(prop)) {
-              render(
+              render2(
                 prop.split(/,\s*/).map((part) => selectors.map((sel) => part.replace(/&/, sel))).reduce((a2, b2) => a2.concat(b2)),
                 value,
                 target
               );
             } else if (value && typeof value == "object") {
               if (!isAt) throw new RangeError("The value of a property (" + prop + ") should be a primitive value.");
-              render(splitSelector(prop), value, local, keyframes);
+              render2(splitSelector(prop), value, local, keyframes);
             } else if (value != null) {
               local.push(prop.replace(/_.*/, "").replace(/[A-Z]/g, (l3) => "-" + l3.toLowerCase()) + ": " + value + ";");
             }
@@ -3540,7 +3540,7 @@ var init_style_mod = __esm({
             target.push((finish && !isAt && !isKeyframes ? selectors.map(finish) : selectors).join(", ") + " {" + local.join(" ") + "}");
           }
         }
-        for (let prop in spec) render(splitSelector(prop), spec[prop], this.rules);
+        for (let prop in spec) render2(splitSelector(prop), spec[prop], this.rules);
       }
       // :: () → string
       // Returns a string containing the module's CSS rules.
@@ -7487,8 +7487,8 @@ var init_dist2 = __esm({
       }
     };
     TileBuilder = class {
-      constructor(cache5, root, blockWrappers2) {
-        this.cache = cache5;
+      constructor(cache6, root, blockWrappers2) {
+        this.cache = cache6;
         this.root = root;
         this.blockWrappers = blockWrappers2;
         this.curLine = null;
@@ -12578,12 +12578,12 @@ var init_dist2 = __esm({
         this.fresh = fresh;
         this.order = order;
       }
-      static update(cache5, changes) {
-        if (changes.empty && !cache5.some((c3) => c3.fresh))
-          return cache5;
-        let result = [], lastDir = cache5.length ? cache5[cache5.length - 1].dir : Direction.LTR;
-        for (let i2 = Math.max(0, cache5.length - 10); i2 < cache5.length; i2++) {
-          let entry = cache5[i2];
+      static update(cache6, changes) {
+        if (changes.empty && !cache6.some((c3) => c3.fresh))
+          return cache6;
+        let result = [], lastDir = cache6.length ? cache6[cache6.length - 1].dir : Direction.LTR;
+        for (let i2 = Math.max(0, cache6.length - 10); i2 < cache6.length; i2++) {
+          let entry = cache6[i2];
           if (entry.dir == lastDir && !changes.touchesRange(entry.from, entry.to))
             result.push(new _CachedOrder(changes.mapPos(entry.from, 1), changes.mapPos(entry.to, -1), entry.dir, entry.isolates, false, entry.order));
         }
@@ -15700,10 +15700,10 @@ var init_dist3 = __esm({
       get node() {
         if (!this.buffer)
           return this._tree;
-        let cache5 = this.bufferNode, result = null, depth = 0;
-        if (cache5 && cache5.context == this.buffer) {
+        let cache6 = this.bufferNode, result = null, depth = 0;
+        if (cache6 && cache6.context == this.buffer) {
           scan: for (let index = this.index, d = this.stack.length; d >= 0; ) {
-            for (let c3 = cache5; c3; c3 = c3._parent)
+            for (let c3 = cache6; c3; c3 = c3._parent)
               if (c3.index == index) {
                 if (index == this.index)
                   return c3;
@@ -17993,9 +17993,9 @@ var init_dist5 = __esm({
       }
       work(deadline) {
         this.working = null;
-        let now = Date.now();
-        if (this.chunkEnd < now && (this.chunkEnd < 0 || this.view.hasFocus)) {
-          this.chunkEnd = now + 3e4;
+        let now2 = Date.now();
+        if (this.chunkEnd < now2 && (this.chunkEnd < 0 || this.view.hasFocus)) {
+          this.chunkEnd = now2 + 3e4;
           this.chunkBudget = 3e3;
         }
         if (this.chunkBudget <= 0)
@@ -18011,7 +18011,7 @@ var init_dist5 = __esm({
         let done = field.context.work(() => {
           return isInputPending && isInputPending() || Date.now() > endTime;
         }, vpTo + (viewportFirst ? 0 : 1e5));
-        this.chunkBudget -= Date.now() - now;
+        this.chunkBudget -= Date.now() - now2;
         if (done || this.chunkBudget <= 0) {
           field.context.takeTree();
           this.view.dispatch({ effects: Language.setState.of(new LanguageState(field.context)) });
@@ -38069,6 +38069,10 @@ function watchTrack(path) {
 function watchUntrack(path) {
   return safeInvoke("watch_untrack", { path });
 }
+async function readCalendar(days = 7) {
+  const json3 = await safeInvoke("read_calendar", { days });
+  return JSON.parse(json3);
+}
 var init_io = __esm({
   "web/src/editor/io.ts"() {
     init_core();
@@ -50331,15 +50335,15 @@ var init_dist36 = __esm({
       }
       update(update) {
         const prev = update.startState.facet(Config).enabled;
-        const now = update.state.facet(Config).enabled;
-        if (prev && !now) {
+        const now2 = update.state.facet(Config).enabled;
+        if (prev && !now2) {
           this.remove();
           return;
         }
-        if (!prev && now) {
+        if (!prev && now2) {
           this.create(update.view);
         }
-        if (now) {
+        if (now2) {
           this.computeShowOverlay();
           if (update.geometryChanged) {
             this.computeHeight();
@@ -50920,19 +50924,19 @@ var init_dist36 = __esm({
       }
       themeChanged() {
         const previous = this._themeClasses;
-        const now = new Set(this.view.dom.classList.values());
-        this._themeClasses = now;
+        const now2 = new Set(this.view.dom.classList.values());
+        this._themeClasses = now2;
         if (!previous) {
           return true;
         }
         previous.delete("cm-focused");
-        now.delete("cm-focused");
-        if (previous.size !== now.size) {
+        now2.delete("cm-focused");
+        if (previous.size !== now2.size) {
           return true;
         }
         let containsAll = true;
         previous.forEach((theme2) => {
-          if (!now.has(theme2)) {
+          if (!now2.has(theme2)) {
             containsAll = false;
           }
         });
@@ -51005,15 +51009,15 @@ var init_dist36 = __esm({
       }
       update(update) {
         const prev = update.startState.facet(showMinimap);
-        const now = update.state.facet(showMinimap);
-        if (prev && !now) {
+        const now2 = update.state.facet(showMinimap);
+        if (prev && !now2) {
           this.remove();
           return;
         }
-        if (!prev && now) {
+        if (!prev && now2) {
           this.create(update.view);
         }
-        if (now) {
+        if (now2) {
           this.text.update(update);
           this.selection.update(update);
           this.diagnostic.update(update);
@@ -51865,14 +51869,14 @@ var require_nearley = __commonJS({
           var lastLineDigits = String(this.line).length;
           message += " at line " + this.line + " col " + col + ":\n\n";
           message += lines.map(function(line, i2) {
-            return pad(this.line - lines.length + i2 + 1, lastLineDigits) + " " + line;
+            return pad2(this.line - lines.length + i2 + 1, lastLineDigits) + " " + line;
           }, this).join("\n");
-          message += "\n" + pad("", lastLineDigits + col) + "^\n";
+          message += "\n" + pad2("", lastLineDigits + col) + "^\n";
           return message;
         } else {
           return message + " at index " + (this.index - 1);
         }
-        function pad(n, length) {
+        function pad2(n, length) {
           var s = String(n);
           return Array(length - s.length + 1).join(" ") + s;
         }
@@ -73056,7 +73060,7 @@ function showGotoPanel() {
     }
     return starts.concat(contains3).slice(0, 100);
   }
-  function render() {
+  function render2() {
     const list2 = document.getElementById("gotoList");
     if (!list2) return;
     list2.innerHTML = "";
@@ -73129,7 +73133,7 @@ function showGotoPanel() {
   const input = document.getElementById("gotoInput");
   input.addEventListener("input", () => {
     activeIdx = 0;
-    render();
+    render2();
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -73151,7 +73155,7 @@ function showGotoPanel() {
     input.value = "@" + enclosingFn;
     input.setSelectionRange(1, input.value.length);
   }
-  render();
+  render2();
 }
 function closeGotoPanel() {
   if (gotoPanel) {
@@ -73500,6 +73504,303 @@ init_split();
 init_minimap();
 init_io();
 
+// web/src/editor/calendar.ts
+init_io();
+init_ui();
+var cache5 = null;
+var loadedAt = 0;
+var selectedDate = todayStr();
+var now = /* @__PURE__ */ new Date();
+var viewYear = now.getFullYear();
+var viewMonth = now.getMonth();
+async function showCalendar() {
+  const page = document.getElementById("calendarPage");
+  if (!page) return;
+  const fresh = Date.now() - loadedAt < 3e4 && cache5;
+  if (fresh) {
+    render(cache5);
+    return;
+  }
+  page.innerHTML = '<div class="cp-loading">\u6B63\u5728\u8BFB\u53D6 macOS \u65E5\u5386\u2026</div>';
+  try {
+    cache5 = await readCalendar(60);
+    loadedAt = Date.now();
+    render(cache5);
+  } catch (e) {
+    page.innerHTML = '<div class="cp-loading">\u8BFB\u53D6\u65E5\u5386\u5931\u8D25<br><span style="font-size:13px;color:#888;">' + (e.message || String(e)) + "<br>\u8BF7\u5728\u7CFB\u7EDF\u8BBE\u7F6E\u4E2D\u6388\u6743 Slate \u8BBF\u95EE\u65E5\u5386</span></div>";
+  }
+}
+function calPrevMonth() {
+  viewMonth--;
+  if (viewMonth < 0) {
+    viewMonth = 11;
+    viewYear--;
+  }
+  if (cache5) render(cache5);
+}
+function calNextMonth() {
+  viewMonth++;
+  if (viewMonth > 11) {
+    viewMonth = 0;
+    viewYear++;
+  }
+  if (cache5) render(cache5);
+}
+function calGoToday() {
+  const t2 = /* @__PURE__ */ new Date();
+  selectedDate = todayStr();
+  viewYear = t2.getFullYear();
+  viewMonth = t2.getMonth();
+  if (cache5) render(cache5);
+}
+function calSwitchView(view) {
+  if (view === "month") return;
+  toast(view === "day" ? "\u65E5\u89C6\u56FE\u5F85\u5B9E\u73B0" : "\u5468\u89C6\u56FE\u5F85\u5B9E\u73B0", 2e3);
+}
+function calSelectDate(date) {
+  selectedDate = date;
+  if (cache5) render(cache5);
+}
+function calJumpDate(date) {
+  selectedDate = date;
+  const parts = date.split("-");
+  viewYear = parseInt(parts[0], 10);
+  viewMonth = parseInt(parts[1], 10) - 1;
+  if (cache5) render(cache5);
+}
+function calEventClick(title, start, end, calendar, location) {
+  let detail = title;
+  if (start && end) detail += `
+${start.slice(5, 16)} \u2192 ${end.slice(11, 16)}`;
+  if (location) detail += `
+\u{1F4CD} ${location}`;
+  detail += `
+${calendar} \xB7 \u53EA\u8BFB\uFF0C\u7F16\u8F91\u8BF7\u5728 macOS \u65E5\u5386\u8FDB\u884C`;
+  toast(detail, 3e3);
+}
+function render(data2) {
+  const page = document.getElementById("calendarPage");
+  if (!page) return;
+  const events = data2.events ?? [];
+  const reminders = data2.reminders ?? [];
+  const eventDays = /* @__PURE__ */ new Set();
+  const byDay = /* @__PURE__ */ new Map();
+  for (const ev of events) {
+    const day = ev.start.slice(0, 10);
+    eventDays.add(day);
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day).push(ev);
+  }
+  const remindersByDay = /* @__PURE__ */ new Map();
+  for (const r2 of reminders) {
+    if (!r2.due) continue;
+    const day = r2.due.slice(0, 10);
+    eventDays.add(day);
+    if (!remindersByDay.has(day)) remindersByDay.set(day, []);
+    remindersByDay.get(day).push(r2);
+  }
+  let html2 = `<div class="cp-body"><div class="cp-main">`;
+  html2 += `<div class="cp-header">
+    <div class="cp-title">${viewYear}\u5E74${viewMonth + 1}\u6708</div>
+    <div class="cp-nav">
+      <button onclick="calPrevMonth()">\u2039</button>
+      <button class="cp-today-btn" onclick="calGoToday()">\u4ECA\u5929</button>
+      <button onclick="calNextMonth()">\u203A</button>
+    </div>
+    <div class="cp-view-switch">
+      <button onclick="calSwitchView('day')">\u65E5</button>
+      <button onclick="calSwitchView('week')">\u5468</button>
+      <button class="active" onclick="calSwitchView('month')">\u6708</button>
+    </div>
+  </div>`;
+  html2 += `<div class="cp-weekdays">`;
+  ["\u65E5", "\u4E00", "\u4E8C", "\u4E09", "\u56DB", "\u4E94", "\u516D"].forEach((w, i2) => {
+    html2 += `<span class="${i2 === 0 || i2 === 6 ? "wkd" : ""}">${w}</span>`;
+  });
+  html2 += `</div>`;
+  const firstDay = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const today = todayStr();
+  const prevDays = new Date(viewYear, viewMonth, 0).getDate();
+  const cells = [];
+  for (let i2 = firstDay - 1; i2 >= 0; i2--) {
+    const d = prevDays - i2;
+    const prevMonth = viewMonth === 0 ? 11 : viewMonth - 1;
+    const prevYear = viewMonth === 0 ? viewYear - 1 : viewYear;
+    const dateStr = `${prevYear}-${pad(prevMonth + 1)}-${pad(d)}`;
+    cells.push(renderCell(dateStr, d, true, byDay, remindersByDay, today));
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${viewYear}-${pad(viewMonth + 1)}-${pad(d)}`;
+    cells.push(renderCell(dateStr, d, false, byDay, remindersByDay, today));
+  }
+  const totalCells = Math.ceil((firstDay + daysInMonth) / 7) * 7;
+  let nextD = 1;
+  while (cells.length < totalCells) {
+    const nextMonth = viewMonth === 11 ? 0 : viewMonth + 1;
+    const nextYear = viewMonth === 11 ? viewYear + 1 : viewYear;
+    const dateStr = `${nextYear}-${pad(nextMonth + 1)}-${pad(nextD)}`;
+    cells.push(renderCell(dateStr, nextD, true, byDay, remindersByDay, today));
+    nextD++;
+  }
+  html2 += `<div class="cp-grid">${cells.join("")}</div>`;
+  const selEvents = byDay.get(selectedDate)?.sort((a2, b2) => a2.start.localeCompare(b2.start)) ?? [];
+  const selReminders = remindersByDay.get(selectedDate) ?? [];
+  html2 += `<div class="cp-detail">
+    <div class="cpd-title">${dateLabel(selectedDate)}</div>
+    <div class="cpd-list">`;
+  if (!selEvents.length && !selReminders.length) {
+    html2 += `<div class="cpd-empty">\u5F53\u5929\u65E0\u65E5\u7A0B</div>`;
+  }
+  for (const ev of selEvents) {
+    const state2 = eventState(ev);
+    const time = ev.allDay ? "\u5168\u5929" : ev.start.slice(11, 16);
+    const c3 = softColors(ev.color || "#6b8ee8");
+    html2 += `
+      <div class="cpd-item ${state2}" onclick="calEventClick('${escAttr(ev.title)}', '${escAttr(ev.start)}', '${escAttr(ev.end)}', '${escAttr(ev.calendar)}', '${escAttr(ev.location || "")}')">
+        <span class="cpd-bar" style="background:${c3.fg}"></span>
+        <span class="cpd-time">${time}</span>
+        <span class="cpd-title-text">${escHtml(ev.title)}</span>
+        ${state2 === "ongoing" ? '<span class="cpd-ongoing">\u8FDB\u884C\u4E2D</span>' : ""}
+        ${ev.location ? `<span class="cpd-loc">\u{1F4CD} ${escHtml(ev.location)}</span>` : ""}
+      </div>`;
+  }
+  for (const r2 of selReminders) {
+    html2 += `
+      <div class="cpd-item reminder" onclick="calEventClick('${escAttr(r2.title)}', '', '', '${escAttr(r2.calendar)}', '')">
+        <span class="cpd-bar" style="background:#c9a35a"></span>
+        <span class="cpd-time">\u2610</span>
+        <span class="cpd-title-text">${escHtml(r2.title)}</span>
+      </div>`;
+  }
+  html2 += `</div></div>`;
+  html2 += `</div>`;
+  html2 += renderSidePanel(data2);
+  html2 += `</div>`;
+  page.innerHTML = html2;
+}
+function renderSidePanel(data2) {
+  let html2 = `<div class="cp-side">`;
+  html2 += renderMiniMonth();
+  html2 += renderLists(data2);
+  html2 += `</div>`;
+  return html2;
+}
+function renderMiniMonth() {
+  const nextM = viewMonth + 1;
+  const nextY = nextM > 11 ? viewYear + 1 : viewYear;
+  const nm = nextM > 11 ? 0 : nextM;
+  const firstDay = new Date(nextY, nm, 1).getDay();
+  const daysInMonth = new Date(nextY, nm + 1, 0).getDate();
+  const today = todayStr();
+  let html2 = `<div class="cs-mini">
+    <div class="cs-mini-title">${nextY}\u5E74${nm + 1}\u6708</div>
+    <div class="cs-mini-week">${["\u65E5", "\u4E00", "\u4E8C", "\u4E09", "\u56DB", "\u4E94", "\u516D"].map((w) => `<span>${w}</span>`).join("")}</div>
+    <div class="cs-mini-days">`;
+  for (let i2 = 0; i2 < firstDay; i2++) html2 += `<span class="empty"></span>`;
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${nextY}-${pad(nm + 1)}-${pad(d)}`;
+    const cls = dateStr === today ? "mini-today" : "";
+    html2 += `<span class="${cls}" onclick="calJumpDate('${dateStr}')">${d}</span>`;
+  }
+  html2 += `</div></div>`;
+  return html2;
+}
+function renderLists(data2) {
+  const lists = data2.lists ?? [];
+  let html2 = `<div class="cs-lists">
+    <div class="cs-lists-title">\u6E05\u5355</div>`;
+  if (!lists.length) {
+    html2 += `<div class="cs-lists-empty">\u65E0\u6E05\u5355</div>`;
+  }
+  for (const l3 of lists) {
+    const c3 = softColors(l3.color || "#6b8ee8");
+    html2 += `<div class="cs-list">
+      <div class="cs-list-head">
+        <span class="cs-list-dot" style="background:${c3.fg}"></span>
+        <span class="cs-list-name">${escHtml(l3.title)}</span>
+        <span class="cs-list-count">${l3.items.length}</span>
+      </div>`;
+    for (const item of l3.items.slice(0, 10)) {
+      html2 += `<div class="cs-list-item"><span class="cs-check">\u2610</span>${escHtml(item)}</div>`;
+    }
+    if (l3.items.length > 10) {
+      html2 += `<div class="cs-list-more">+${l3.items.length - 10} \u66F4\u591A</div>`;
+    }
+    html2 += `</div>`;
+  }
+  html2 += `</div>`;
+  return html2;
+}
+function renderCell(dateStr, dayNum, otherMonth, byDay, remindersByDay, today) {
+  const cls = [
+    "cp-cell",
+    otherMonth ? "other-month" : "",
+    dateStr === today ? "today" : "",
+    dateStr === selectedDate ? "selected" : ""
+  ].join(" ");
+  const events = byDay.get(dateStr)?.sort((a2, b2) => a2.start.localeCompare(b2.start)) ?? [];
+  const reminders = remindersByDay.get(dateStr) ?? [];
+  let inner = `<div class="cp-daynum">${dayNum}</div>`;
+  const shown = [...events.slice(0, 3)];
+  for (const ev of shown) {
+    const time = ev.allDay ? "" : `<span class="cp-ev-time">${ev.start.slice(11, 16)} </span>`;
+    const c3 = softColors(ev.color || "#6b8ee8");
+    inner += `<div class="cp-event" style="background:${c3.bg};color:${c3.fg}" onclick="calEventClick('${escAttr(ev.title)}', '${escAttr(ev.start)}', '${escAttr(ev.end)}', '${escAttr(ev.calendar)}', '${escAttr(ev.location || "")}')">${time}${escHtml(ev.title)}</div>`;
+  }
+  for (const r2 of reminders.slice(0, 2)) {
+    inner += `<div class="cp-event" style="background:#f5e9c9;color:#8a6d3b" onclick="calEventClick('${escAttr(r2.title)}', '', '', '${escAttr(r2.calendar)}', '')">\u2610 ${escHtml(r2.title)}</div>`;
+  }
+  const total = events.length + reminders.length;
+  const shownCount = shown.length + Math.min(reminders.length, 2);
+  if (total > shownCount) {
+    inner += `<div class="cp-more">\u66F4\u591A${total - shownCount}\u9879</div>`;
+  }
+  return `<div class="${cls}" onclick="calSelectDate('${dateStr}')">${inner}</div>`;
+}
+function softColors(hex) {
+  const r2 = parseInt(hex.slice(1, 3), 16) || 107;
+  const g = parseInt(hex.slice(3, 5), 16) || 142;
+  const b2 = parseInt(hex.slice(5, 7), 16) || 232;
+  const br = Math.round(r2 + (255 - r2) * 0.65);
+  const bg = Math.round(g + (255 - g) * 0.65);
+  const bb = Math.round(b2 + (255 - b2) * 0.65);
+  const tr = Math.round(r2 * 0.38);
+  const tg = Math.round(g * 0.38);
+  const tb = Math.round(b2 * 0.38);
+  return { bg: `rgb(${br},${bg},${bb})`, fg: `rgb(${tr},${tg},${tb})` };
+}
+function eventState(ev) {
+  const n = /* @__PURE__ */ new Date();
+  const start = new Date(ev.start.replace(" ", "T"));
+  const end = new Date(ev.end.replace(" ", "T"));
+  if (n >= start && n <= end) return "ongoing";
+  if (end < n) return "past";
+  return "future";
+}
+function todayStr() {
+  const d = /* @__PURE__ */ new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+function dateLabel(day) {
+  const d = /* @__PURE__ */ new Date(day + "T00:00:00");
+  const weekdays = ["\u5468\u65E5", "\u5468\u4E00", "\u5468\u4E8C", "\u5468\u4E09", "\u5468\u56DB", "\u5468\u4E94", "\u5468\u516D"];
+  const wd = weekdays[d.getDay()];
+  const md = `${d.getMonth() + 1}\u6708${d.getDate()}\u65E5`;
+  const today = todayStr();
+  if (day === today) return `\u4ECA\u5929 \xB7 ${md} ${wd}`;
+  return `${md} ${wd}`;
+}
+function escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function escAttr(s) {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, "&quot;").replace(/\n/g, " ");
+}
+
 // web/src/editor/contextmenu.ts
 init_state();
 init_split();
@@ -73762,6 +74063,28 @@ function setupGroupActivation() {
     }
   }, true);
 }
+async function testCalendar() {
+  try {
+    const data2 = await readCalendar(7);
+    const evs = data2.events;
+    const rems = data2.reminders;
+    if (!evs.length && !rems.length) {
+      toast("\u{1F4C5} \u672A\u6765 7 \u5929\u65E0\u65E5\u5386\u4E8B\u4EF6 / \u63D0\u9192\u4E8B\u9879");
+      return;
+    }
+    const today = evs.filter((e) => e.start.startsWith((/* @__PURE__ */ new Date()).toISOString().slice(0, 10)));
+    const lines = [
+      `\u{1F4C5} \u672A\u6765 7 \u5929\uFF1A${evs.length} \u4E2A\u4E8B\u4EF6 \xB7 ${rems.length} \u6761\u63D0\u9192`,
+      ...today.slice(0, 3).map((e) => `  \xB7 ${e.start.slice(11, 16)} ${e.title}`),
+      ...rems.slice(0, 2).map((r2) => `  \u2610 ${r2.title}`)
+    ];
+    toast(lines.join("\n"));
+    console.log("[cal-bridge] \u65E5\u5386\u6570\u636E:", data2);
+  } catch (e) {
+    toast("\u{1F4C5} \u8BFB\u53D6\u65E5\u5386\u5931\u8D25: " + e.message);
+    console.error("[cal-bridge] \u5931\u8D25:", e);
+  }
+}
 function exposeGlobals() {
   const w = window;
   w.doOpenFolder = doOpenFolder;
@@ -73775,6 +74098,16 @@ function exposeGlobals() {
   w.minifyJSON = minifyJSON;
   w.toggleEol = toggleEol;
   w.toggleTheme = toggleTheme;
+  w.readCalendar = readCalendar;
+  w.calEventClick = calEventClick;
+  w.showCalendar = showCalendar;
+  w.calPrevMonth = calPrevMonth;
+  w.calNextMonth = calNextMonth;
+  w.calGoToday = calGoToday;
+  w.calSelectDate = calSelectDate;
+  w.calSwitchView = calSwitchView;
+  w.calJumpDate = calJumpDate;
+  w.testCalendar = testCalendar;
   w.toggleSplitView = toggleSplitView;
   w.toggleMinimap = toggleMinimap;
   w.__slate = state;

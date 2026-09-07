@@ -1,3 +1,4 @@
+mod cal;
 mod chat_pane;
 mod file_watcher;
 mod fs_ops;
@@ -89,6 +90,7 @@ pub fn run() {
             file_watcher::watch_track,
             file_watcher::watch_untrack,
             file_watcher::watch_clear,
+            cal::read_calendar,
             pi_bridge::start_bridge,
             pi_bridge::stop_bridge,
             pi_bridge::restart_bridge,

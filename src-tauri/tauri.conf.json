@@ -42,7 +42,7 @@
     "android": {
       "debugApplicationIdSuffix": ".debug"
     },
-    "externalBin": ["binaries/pi-bridge"],
+    "externalBin": ["binaries/pi-bridge", "binaries/cal-bridge"],
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "hardenedRuntime": true,

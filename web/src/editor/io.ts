@@ -266,4 +266,38 @@ export function watchClear(): Promise<void> {
   return safeInvoke<void>("watch_clear");
 }
 
+// ---- macOS 日历（EventKit via cal-bridge） ----
+export interface CalEvent {
+  title: string;
+  start: string;
+  end: string;
+  calendar: string;
+  location: string | null;
+  allDay: boolean;
+  color?: string;
+}
+export interface CalReminder {
+  title: string;
+  calendar: string;
+  due: string | null;
+  done: boolean;
+  color?: string;
+}
+/** 提醒事项清单（reminder 类型日历）+ 其未完成任务。 */
+export interface CalList {
+  title: string;
+  color?: string;
+  items: string[];
+}
+export interface CalendarData {
+  events: CalEvent[];
+  reminders: CalReminder[];
+  lists: CalList[];
+}
+/** 读取未来 `days` 天的日历事件 + 未完成提醒事项（只读，数据源是 macOS 系统）。 */
+export async function readCalendar(days = 7): Promise<CalendarData> {
+  const json = await safeInvoke<string>("read_calendar", { days });
+  return JSON.parse(json) as CalendarData;
+}
+
 export { basename };

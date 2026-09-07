@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slate — 笔记 · 记录</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bg-sidebar: #161616;
+    --bg-hover: #2a2a2a;
+    --bg-active: #2f3337;
+    --bg-code: #121212;
+    --bg-code-inline: #2d2d2d;
+    --bg-wikilink: #26334d;
+    --bg-chip: #2a3a55;
+    --border: #333333;
+    --border-soft: #282828;
+    --text: #d4d4d4;
+    --text-dim: #8a8a8a;
+    --text-faint: #5f5f5f;
+    --accent: #8ab4f8;
+    --accent-strong: #5b8dd9;
+    --link: #7aa2f7;
+    --heading: #e8e8e8;
+    --titlebar-h: 44px;
+    --statusbar-h: 26px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.6;
+    overflow: hidden; -webkit-font-smoothing: antialiased;
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ============ 顶部 ============ */
+  .titlebar {
+    height: var(--titlebar-h); display: flex; align-items: center; gap: 12px;
+    padding: 0 14px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border);
+    flex-shrink: 0; -webkit-app-region: drag;
+  }
+  .brand { font-weight: 700; font-size: 15px; color: var(--heading); display: flex; align-items: center; gap: 8px; }
+  .brand .logo {
+    width: 22px; height: 22px; border-radius: 5px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #fff; font-weight: 800;
+  }
+  .search-center { flex: 1; display: flex; justify-content: center; -webkit-app-region: no-drag; }
+  .search-input {
+    width: 340px; max-width: 45vw; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 14px; color: var(--text); font-size: 13px; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .search-input:focus { border-color: var(--accent-strong); box-shadow: 0 0 0 2px rgba(91,141,217,.2); }
+  .search-input::placeholder { color: var(--text-faint); }
+  .titlebar-actions { display: flex; gap: 8px; align-items: center; -webkit-app-region: no-drag; }
+  .btn {
+    background: var(--accent-strong); color: #fff; border: none; border-radius: 6px;
+    padding: 5px 14px; font-size: 13px; cursor: pointer; font-weight: 500; transition: background .12s;
+  }
+  .btn:hover { background: #4d7fce; }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .btn.ghost:hover { background: var(--bg-hover); }
+  .btn.ghost.active { background: var(--bg-active); border-color: var(--accent-strong); color: var(--accent); }
+
+  /* ============ 主体 ============ */
+  .main { flex: 1; display: flex; min-height: 0; }
+
+  /* 左侧栏 */
+  .sidebar { width: 280px; background: var(--bg-sidebar); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  .sidebar-tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .sidebar-tabs .tab {
+    flex: 1; text-align: center; padding: 9px 4px; font-size: 12px; color: var(--text-dim);
+    cursor: pointer; border-bottom: 2px solid transparent; user-select: none;
+    transition: color .12s, border-color .12s;
+  }
+  .sidebar-tabs .tab:hover { color: var(--text); }
+  .sidebar-tabs .tab.active { color: var(--accent); border-bottom-color: var(--accent-strong); }
+  .sidebar-content { flex: 1; overflow-y: auto; padding: 6px; }
+  .sidebar-content::-webkit-scrollbar { width: 8px; }
+  .sidebar-content::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 4px; }
+
+  .new-note-row { padding: 6px 8px 10px; }
+  .new-note-btn {
+    width: 100%; padding: 7px; border-radius: 6px; border: 1px dashed var(--border);
+    background: transparent; color: var(--accent); font-size: 13px; cursor: pointer;
+    transition: background .12s, border-color .12s;
+  }
+  .new-note-btn:hover { background: var(--bg-hover); border-color: var(--accent-strong); }
+
+  .time-group { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .8px; padding: 10px 8px 4px; font-weight: 700; }
+  .note-row {
+    display: flex; flex-direction: column; padding: 6px 8px; border-radius: 6px;
+    cursor: pointer; transition: background .1s; border: 1px solid transparent;
+  }
+  .note-row:hover { background: var(--bg-hover); }
+  .note-row.active { background: var(--bg-active); border-color: rgba(91,141,217,.4); }
+  .note-row .nr-title { font-size: 13px; color: var(--text); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note-row .nr-meta { font-size: 11px; color: var(--text-faint); display: flex; gap: 6px; align-items: center; margin-top: 1px; }
+  .note-row .nr-snippet { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  .note-row .nr-tag { color: var(--accent-strong); }
+
+  /* ============ 日程视图 ============ */
+  .cal-day { font-size: 12px; color: var(--heading); font-weight: 600; padding: 12px 8px 4px; display: flex; align-items: center; gap: 8px; }
+  .cal-day .cd-date { color: var(--text-faint); font-weight: 400; }
+  .cal-day .cd-today { background: var(--accent-strong); color: #fff; border-radius: 4px; padding: 0 6px; font-size: 11px; font-weight: 600; }
+  .cal-event {
+    display: flex; gap: 10px; padding: 7px 8px; border-radius: 6px; cursor: pointer;
+    transition: background .1s; align-items: flex-start;
+  }
+  .cal-event:hover { background: var(--bg-hover); }
+  .cal-event .ce-time {
+    flex-shrink: 0; width: 40px; text-align: right; font-size: 12px; color: var(--text-dim);
+    font-variant-numeric: tabular-nums; padding-top: 1px;
+  }
+  .cal-event .ce-dot {
+    flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; margin-top: 7px;
+  }
+  .cal-event .ce-body { flex: 1; min-width: 0; }
+  .cal-event .ce-title { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cal-event .ce-cal { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+  .cal-event.reminder .ce-time { color: var(--text-faint); }
+  .cal-event.reminder .ce-dot { border-radius: 3px; }
+  .cal-sync-note {
+    margin: 10px 8px; padding: 8px 10px; border-radius: 6px;
+    background: rgba(91,141,217,.08); border: 1px solid rgba(91,141,217,.25);
+    font-size: 11.5px; color: var(--text-dim); line-height: 1.5;
+  }
+  .cal-sync-note strong { color: var(--accent); font-weight: 600; }
+
+  /* 标签 */
+  .tag-row {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px;
+    cursor: pointer; font-size: 13px; color: var(--text); transition: background .1s;
+  }
+  .tag-row:hover { background: var(--bg-hover); }
+  .tag-row.active { background: var(--bg-active); }
+  .tag-row .count { margin-left: auto; font-size: 11px; color: var(--text-faint); }
+
+  /* 搜索 */
+  .search-result {
+    padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+    transition: background .1s; border: 1px solid transparent;
+  }
+  .search-result:hover { background: var(--bg-hover); }
+  .search-result.active { background: var(--bg-active); border-color: var(--accent-strong); }
+  .search-result .sr-title { font-size: 13px; color: var(--text); font-weight: 500; }
+  .search-result .sr-snippet { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .search-result mark { background: #5a4a1a; color: #f0d060; border-radius: 2px; padding: 0 2px; }
+
+  /* ============ 中间编辑区 ============ */
+  .editor-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--bg); }
+  .editor-inner { flex: 1; display: flex; flex-direction: column; overflow-y: auto; padding: 20px 48px 40px; }
+  .editor-inner::-webkit-scrollbar { width: 10px; }
+  .editor-inner::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 5px; }
+
+  .title-input {
+    width: 100%; background: transparent; border: none; outline: none;
+    font-size: 26px; font-weight: 700; color: var(--heading); padding: 4px 0; margin-bottom: 10px;
+  }
+  .title-input::placeholder { color: var(--text-faint); }
+  .meta-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border-soft);
+  }
+  .meta-row .chip { background: var(--bg-chip); color: #b8cff5; font-size: 11px; padding: 2px 10px; border-radius: 10px; cursor: pointer; user-select: none; }
+  .meta-row .chip::before { content: "#"; opacity: .6; margin-right: 2px; }
+  .meta-row .time { color: var(--text-faint); font-size: 12px; }
+  .meta-row .save-state { color: var(--text-faint); font-size: 12px; transition: color .3s; }
+  .meta-row .save-state.saving { color: var(--text-dim); }
+  .meta-row .save-state.saved { color: #7cb87c; }
+
+  .body-input {
+    flex: 1; width: 100%; background: transparent; border: none; outline: none; resize: none;
+    color: var(--text); font-size: 15px; line-height: 1.75; font-family: inherit; min-height: 300px;
+  }
+  .body-input::placeholder { color: var(--text-faint); }
+
+  /* 渲染视图（预览） */
+  .md { display: none; }
+  .md h1, .md h2, .md h3, .md h4 { color: var(--heading); margin: 1.3em 0 .5em; font-weight: 600; line-height: 1.3; }
+  .md h1 { font-size: 1.6em; border-bottom: 1px solid var(--border-soft); padding-bottom: .3em; }
+  .md h2 { font-size: 1.35em; border-bottom: 1px solid var(--border-soft); padding-bottom: .25em; }
+  .md h3 { font-size: 1.15em; }
+  .md p { margin: .6em 0; }
+  .md a { color: var(--link); text-decoration: none; }
+  .md strong { color: #e8e8e8; }
+  .md ul, .md ol { padding-left: 1.6em; margin: .5em 0; }
+  .md li { margin: .25em 0; }
+  .md li::marker { color: var(--text-faint); }
+  .md blockquote { border-left: 3px solid var(--accent-strong); padding: 4px 16px; margin: .8em 0; color: var(--text-dim); background: rgba(91,141,217,.06); border-radius: 0 4px 4px 0; }
+  .md hr { border: none; border-top: 1px solid var(--border); margin: 1.5em 0; }
+  .md code.inline { background: var(--bg-code-inline); color: #e0b8a0; padding: 1px 6px; border-radius: 4px; font-size: .9em; font-family: "SF Mono", "Menlo", monospace; }
+  .md pre { background: var(--bg-code); border: 1px solid var(--border-soft); border-radius: 8px; padding: 14px 16px; margin: .9em 0; overflow-x: auto; font-size: 13px; }
+  .md pre code { font-family: "SF Mono", "Menlo", monospace; color: #c8c8c8; }
+  .md table { border-collapse: collapse; margin: .9em 0; width: 100%; font-size: 13px; }
+  .md th { background: var(--bg-sidebar); color: var(--heading); text-align: left; padding: 8px 12px; border: 1px solid var(--border); }
+  .md td { padding: 7px 12px; border: 1px solid var(--border); }
+  .md input[type="checkbox"] { margin-right: 8px; accent-color: var(--accent-strong); }
+  .md li.task-done { color: var(--text-faint); text-decoration: line-through; }
+  .wikilink { color: var(--link); background: var(--bg-wikilink); padding: 0 4px; border-radius: 4px; cursor: pointer; font-size: .92em; }
+  .wikilink:hover { background: #33466a; }
+  .wikilink.broken { color: #e0a0a0; background: #3a2525; }
+
+  /* ============ 状态栏 ============ */
+  .statusbar {
+    height: var(--statusbar-h); background: var(--bg-sidebar); border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; padding: 0 16px;
+    font-size: 11.5px; color: var(--text-dim); flex-shrink: 0;
+  }
+  .statusbar .sb-right { margin-left: auto; display: flex; gap: 16px; }
+
+  .toast {
+    position: fixed; bottom: 46px; left: 50%; transform: translateX(-50%);
+    background: #333; color: #e8e8e8; padding: 8px 20px; border-radius: 6px; font-size: 13px;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 200;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 顶部 -->
+  <header class="titlebar">
+    <div class="brand"><span class="logo">S</span> Slate <span style="color:var(--text-faint);font-weight:400;font-size:12px;">· 笔记</span></div>
+    <div class="search-center">
+      <input class="search-input" id="globalSearch" placeholder="搜索笔记…  (⌘K)" oninput="onSearch(this.value)">
+    </div>
+    <div class="titlebar-actions">
+      <button class="btn ghost" id="previewToggle" onclick="togglePreview()" title="预览渲染效果">👁 预览</button>
+      <button class="btn" onclick="newNote()">＋ 新建</button>
+    </div>
+  </header>
+
+  <!-- 主体 -->
+  <div class="main">
+    <!-- 左侧栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-tabs">
+        <div class="tab active" data-tab="notes" onclick="switchTab('notes')">📄 笔记</div>
+        <div class="tab" data-tab="calendar" onclick="switchTab('calendar')">🗓 日程</div>
+        <div class="tab" data-tab="tags" onclick="switchTab('tags')">🏷 标签</div>
+      </div>
+      <div class="sidebar-content" id="sidebarContent"></div>
+    </aside>
+
+    <!-- 中间编辑区 -->
+    <main class="editor-pane">
+      <div class="editor-inner" id="editorInner">
+        <input class="title-input" id="titleInput" placeholder="无标题" oninput="onTitleInput()">
+        <div class="meta-row">
+          <span class="time" id="noteTime"></span>
+          <span class="save-state saved" id="saveState">已保存</span>
+          <span id="noteTags" style="display:flex;gap:6px;flex-wrap:wrap;"></span>
+        </div>
+        <textarea class="body-input" id="bodyInput" placeholder="开始记录…  （支持 Markdown：**粗体**、- 列表、- [ ] 待办、[[链接]]）" oninput="onBodyInput()"></textarea>
+        <div class="md" id="previewView"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 状态栏 -->
+  <footer class="statusbar">
+    <span id="sbWords">0 字</span>
+    <span id="sbNoteCount">0 条笔记</span>
+    <div class="sb-right">
+      <span id="sbSave">已保存</span>
+      <span>本地 · 纯 Markdown</span>
+    </div>
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ================================================================
+   Slate 笔记原型
+   核心：快速记录（打开即写 + 自动保存）
+   日程：从 macOS 日历/提醒事项读取（EventKit，只读，零存储）
+   知识库：标签 + [[链接]] 顺带，低调
+   ================================================================ */
+
+const NOTES = [
+  { id:"n1", title:"今日待办", date:"今天 09:15", group:"今天", tags:["待办"],
+    body:`- [ ] 把 Slate 原型给团队看\n- [x] 整理会议纪要\n- [ ] 回复产品评审邮件\n\n## 顺手记\n\n下午想到：笔记工具的核心不是「整理」，是「别丢掉」。记录要零摩擦。` },
+  { id:"n2", title:"产品讨论会纪要", date:"今天 14:02", group:"今天", tags:["会议"],
+    body:`**时间**：14:00  **参会**：产品 + 前端\n\n## 结论\n\n1. 定位明确为「笔记记录工具」，不是知识库\n2. 打开即写，自动保存\n3. 待办不自建存储，读 macOS 日历\n\n## 待办\n\n- [ ] 出新的交互稿\n- [ ] 确认日程读取方案` },
+  { id:"n3", title:"读书摘抄", date:"昨天 21:30", group:"昨天", tags:["读书"],
+    body:`> 我们对自己认为熟知的事物确信不疑，无法知道自己其实一无所知。\n\n——《思考，快与慢》\n\n关于 [[系统 1 与系统 2]]：直觉先到，理性后到。记录要快，因为直觉转瞬即逝。` },
+  { id:"n4", title:"灵感：关于链接", date:"昨天 10:12", group:"昨天", tags:["灵感"],
+    body:`笔记工具要不要做 [[双向链接]]？\n\n想清楚了：**顺带做**。写了能用、能点，但不把它当卖点。卖点是「快」。\n\n对比 [[Bear]] 的做法：标签为主，链接靠后。` },
+  { id:"n5", title:"周末计划", date:"3 天前", group:"本周", tags:["待办"],
+    body:`- [x] 跑步 5 公里\n- [ ] 读完《卡片盒笔记法》前 3 章\n- [ ] 整理这周的笔记` },
+  { id:"n6", title:"Slate 设计笔记", date:"上周", group:"更早", tags:["Slate"],
+    body:`## 技术栈\n\nTauri + Rust + WKWebView + CodeMirror 6\n\n## 数据\n\n纯 \`.md\` 文件，本地存储。搜索用 SQLite FTS5。\n\n## 原则\n\n- 源文件是真理，索引可重建\n- 打开即写，零摩擦` }
+];
+
+/* 日程数据（原型模拟；真实实现从 EventKit 读） */
+const CAL_DATA = [
+  { day:"今天", dayLabel:"今天", isToday:true, events:[
+    { type:"event", time:"09:00", title:"晨会", cal:"工作", color:"#5b8dd9" },
+    { type:"event", time:"14:00", title:"产品评审", cal:"工作", color:"#5b8dd9" },
+    { type:"reminder", time:"", title:"回复产品邮件", cal:"提醒事项", color:"#e0a050" },
+    { type:"reminder", time:"", title:"交周报", cal:"提醒事项", color:"#e0a050" },
+  ]},
+  { day:"明天", dayLabel:"明天", isToday:false, events:[
+    { type:"event", time:"10:00", title:"健身", cal:"个人", color:"#7cb87c" },
+    { type:"event", time:"15:30", title:"和设计师对齐交互稿", cal:"工作", color:"#5b8dd9" },
+    { type:"reminder", time:"", title:"预约牙医", cal:"提醒事项", color:"#e0a050" },
+  ]},
+];
+
+/* ============ 状态 ============ */
+let currentId = "n2";
+let tab = "notes";      // notes | calendar | tags
+let previewOn = false;
+let activeTagFilter = null;
+let saveTimer = null;
+function cur() { return NOTES.find(n => n.id === currentId); }
+
+/* ============ 侧栏渲染 ============ */
+function renderSidebar() {
+  const el = document.getElementById("sidebarContent");
+  if (tab === "notes") {
+    let html = `<div class="new-note-row"><button class="new-note-btn" onclick="newNote()">＋ 新建笔记</button></div>`;
+    ["今天","昨天","本周","更早"].forEach(g => {
+      const items = NOTES.filter(n => n.group === g);
+      if (!items.length) return;
+      html += `<div class="time-group">${g}</div>`;
+      items.forEach(n => html += noteRow(n));
+    });
+    el.innerHTML = html;
+  } else if (tab === "calendar") {
+    el.innerHTML = renderCalendar();
+  } else {
+    const tagMap = {};
+    NOTES.forEach(n => n.tags.forEach(t => tagMap[t] = (tagMap[t]||0)+1));
+    let html = `<div class="time-group">所有标签</div>`;
+    html += `<div class="tag-row ${!activeTagFilter?"active":""}" onclick="filterTag(null)"><span>全部</span><span class="count">${NOTES.length}</span></div>`;
+    Object.entries(tagMap).sort((a,b)=>b[1]-a[1]).forEach(([t,c]) => {
+      html += `<div class="tag-row ${activeTagFilter===t?"active":""}" onclick="filterTag('${t}')"><span style="color:var(--accent-strong)">#</span>${t}<span class="count">${c}</span></div>`;
+    });
+    el.innerHTML = html;
+  }
+}
+
+function renderCalendar() {
+  let html = `<div class="cal-sync-note"><strong>只读 · 数据来自 macOS 日历</strong><br>事件 + 提醒事项由 EventKit 读取，不在 Slate 内存储</div>`;
+  CAL_DATA.forEach(d => {
+    html += `<div class="cal-day">${d.dayLabel} <span class="cd-date">${d.dayLabel==="今天" ? "8月29日" : "8月30日"}</span> ${d.isToday ? '<span class="cd-today">今天</span>' : ""}</div>`;
+    d.events.forEach(ev => {
+      const isRem = ev.type === "reminder";
+      html += `<div class="cal-event ${isRem?"reminder":""}" onclick="clickCalEvent('${ev.title}')">
+        <div class="ce-time">${ev.time || "☐"}</div>
+        <div class="ce-dot" style="background:${ev.color}"></div>
+        <div class="ce-body">
+          <div class="ce-title">${ev.title}</div>
+          <div class="ce-cal">${ev.cal}</div>
+        </div>
+      </div>`;
+    });
+  });
+  return html;
+}
+
+function noteRow(n) {
+  const active = n.id === currentId ? "active" : "";
+  const snippet = n.body.replace(/[#*`\[\]>\-]/g,"").split("\n").find(l => l.trim()).slice(0,28) || "";
+  const tags = n.tags.map(t => `<span class="nr-tag">#${t}</span>`).join(" ");
+  return `<div class="note-row ${active}" onclick="openNote('${n.id}')">
+    <div class="nr-title">${n.title || "无标题"}</div>
+    <div class="nr-snippet">${escapeHtml(snippet)}</div>
+    <div class="nr-meta">${n.date} ${tags ? "· "+tags : ""}</div>
+  </div>`;
+}
+
+/* ============ 编辑器 ============ */
+function renderEditor() {
+  const n = cur();
+  document.getElementById("titleInput").value = n.title;
+  document.getElementById("bodyInput").value = n.body;
+  document.getElementById("noteTime").textContent = n.date;
+  document.getElementById("noteTags").innerHTML = n.tags.map(t => `<span class="chip" onclick="filterTag('${t}')">${t}</span>`).join("");
+  updatePreview();
+  updateStatus();
+}
+function updatePreview() {
+  const n = cur();
+  const preview = document.getElementById("previewView");
+  const bodyInput = document.getElementById("bodyInput");
+  const titleInput = document.getElementById("titleInput");
+  if (previewOn) {
+    preview.style.display = "";
+    bodyInput.style.display = "none";
+    titleInput.style.display = "none";
+    preview.innerHTML = `<h1>${n.title || "无标题"}</h1>` + renderMarkdown(n.body);
+  } else {
+    preview.style.display = "none";
+    bodyInput.style.display = "";
+    titleInput.style.display = "";
+  }
+}
+function updateStatus() {
+  const n = cur();
+  document.getElementById("sbWords").textContent = n.body.replace(/\s/g,"").length + " 字";
+  document.getElementById("sbNoteCount").textContent = NOTES.length + " 条笔记";
+}
+
+/* ============ 自动保存 ============ */
+function markSaving() {
+  const el = document.getElementById("saveState");
+  el.className = "save-state saving"; el.textContent = "保存中…";
+  document.getElementById("sbSave").textContent = "保存中…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(markSaved, 600);
+}
+function markSaved() {
+  document.getElementById("saveState").className = "save-state saved";
+  document.getElementById("saveState").textContent = "已保存";
+  document.getElementById("sbSave").textContent = "已保存";
+}
+
+/* ============ 交互 ============ */
+function openNote(id) {
+  currentId = id;
+  document.getElementById("globalSearch").value = "";
+  renderSidebar();
+  renderEditor();
+}
+function newNote() {
+  const n = { id:"n"+Date.now(), title:"", date:"刚刚", group:"今天", tags:[], body:"" };
+  NOTES.unshift(n);
+  currentId = n.id;
+  renderSidebar(); renderEditor();
+  document.getElementById("titleInput").focus();
+  showToast("已新建笔记，开始记录吧");
+}
+function filterTag(tag) {
+  activeTagFilter = tag;
+  tab = "tags";
+  document.querySelectorAll(".sidebar-tabs .tab").forEach(t => t.classList.toggle("active", t.dataset.tab === "tags"));
+  renderSidebar();
+  showToast(tag ? "已筛选 #" + tag : "显示全部");
+}
+function switchTab(t) {
+  tab = t;
+  document.querySelectorAll(".sidebar-tabs .tab").forEach(x => x.classList.toggle("active", x.dataset.tab === t));
+  renderSidebar();
+}
+function onSearch(q) {
+  const el = document.getElementById("sidebarContent");
+  if (!q.trim()) { renderSidebar(); return; }
+  const lq = q.toLowerCase();
+  const results = NOTES.filter(n => n.title.toLowerCase().includes(lq) || n.body.toLowerCase().includes(lq) || n.tags.some(t=>t.toLowerCase().includes(lq)));
+  let html = `<div class="time-group">搜索结果 ${results.length} 条</div>`;
+  results.forEach(n => {
+    const idx = n.body.toLowerCase().indexOf(lq);
+    const snippet = idx >= 0 ? makeSnippet(n.body, idx, q.length) : n.body.slice(0,50);
+    html += `<div class="search-result ${n.id===currentId?"active":""}" onclick="openNote('${n.id}')"><div class="sr-title">${n.title||"无标题"}</div><div class="sr-snippet">${snippet}</div></div>`;
+  });
+  el.innerHTML = html || '<div class="time-group">无匹配</div>';
+}
+function makeSnippet(body, idx, len) {
+  const s = Math.max(0, idx-24), e = Math.min(body.length, idx+len+30);
+  return (s>0?"…":"") + escapeHtml(body.slice(s,idx)) + `<mark>${escapeHtml(body.slice(idx,idx+len))}</mark>` + escapeHtml(body.slice(idx+len,e)) + (e<body.length?"…":"");
+}
+function onTitleInput() {
+  cur().title = document.getElementById("titleInput").value;
+  markSaving(); renderSidebar();
+}
+function onBodyInput() {
+  cur().body = document.getElementById("bodyInput").value;
+  markSaving(); updateStatus();
+  if (previewOn) updatePreview();
+}
+function togglePreview() {
+  previewOn = !previewOn;
+  document.getElementById("previewToggle").textContent = previewOn ? "✏ 编辑" : "👁 预览";
+  document.getElementById("previewToggle").classList.toggle("active", previewOn);
+  updatePreview();
+  showToast(previewOn ? "预览渲染效果" : "回到编辑");
+}
+function clickCalEvent(title) {
+  showToast("「" + title + "」— 只读展示，编辑请在 macOS 日历/提醒事项中进行");
+}
+function clickWikilink(target, ev) {
+  ev.stopPropagation();
+  const note = NOTES.find(n => n.title === target || n.title.includes(target));
+  if (note) { openNote(note.id); showToast("跳转：" + note.title); }
+  else showToast("「" + target + "」不存在（可新建）");
+}
+
+/* ============ Markdown 渲染 ============ */
+function inlineMd(s) {
+  let r = s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  r = r.replace(/`([^`]+)`/g, '<code class="inline">$1</code>');
+  r = r.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m,t,a) => {
+    const note = NOTES.find(n => n.title === t || n.title.includes(t));
+    const cls = note ? "wikilink" : "wikilink broken";
+    return `<span class="${cls}" onclick="clickWikilink('${t}', event)">${a||t}</span>`;
+  });
+  r = r.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  r = r.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  r = r.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  return r;
+}
+function renderMarkdown(md) {
+  const lines = md.split("\n"); let html = ""; let i = 0; let inCode = false, buf = [];
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim().startsWith("```")) {
+      if (!inCode) { inCode = true; buf = []; } else { html += `<pre><code>${escapeHtml(buf.join("\n"))}</code></pre>`; inCode = false; }
+      i++; continue;
+    }
+    if (inCode) { buf.push(line); i++; continue; }
+    const t = line.trim();
+    if (!t) { i++; continue; }
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { html += `<h${h[1].length}>${inlineMd(h[2])}</h${h[1].length}>`; i++; continue; }
+    if (/^(-{3,}|\*{3,})$/.test(t)) { html += "<hr>"; i++; continue; }
+    if (t.startsWith(">")) { html += `<blockquote>${inlineMd(t.replace(/^>\s?/,""))}</blockquote>`; i++; continue; }
+    const task = t.match(/^[-*]\s+\[([ xX])\]\s+(.*)$/);
+    if (task) { const d = task[1].toLowerCase()==="x"; html += `<ul><li class="${d?"task-done":""}"><input type="checkbox" ${d?"checked":""} disabled>${inlineMd(task[2])}</li></ul>`; i++; continue; }
+    if (/^[-*]\s+/.test(t)) { html += "<ul>"; while (i<lines.length && /^[-*]\s+/.test(lines[i].trim())) { html += `<li>${inlineMd(lines[i].trim().replace(/^[-*]\s+/,""))}</li>`; i++; } html += "</ul>"; continue; }
+    if (/^\d+\.\s+/.test(t)) { html += "<ol>"; while (i<lines.length && /^\d+\.\s+/.test(lines[i].trim())) { html += `<li>${inlineMd(lines[i].trim().replace(/^\d+\.\s+/,""))}</li>`; i++; } html += "</ol>"; continue; }
+    html += `<p>${inlineMd(t)}</p>`; i++;
+  }
+  if (inCode) html += `<pre><code>${escapeHtml(buf.join("\n"))}</code></pre>`;
+  return html;
+}
+function escapeHtml(s) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("show"), 1800);
+}
+
+/* ============ 快捷键 ============ */
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey||e.ctrlKey) && e.key === "k") { e.preventDefault(); document.getElementById("globalSearch").focus(); }
+  if ((e.metaKey||e.ctrlKey) && e.key === "n") { e.preventDefault(); newNote(); }
+  if ((e.metaKey||e.ctrlKey) && e.key === "p") { e.preventDefault(); togglePreview(); }
+  if ((e.metaKey||e.ctrlKey) && e.key === "2") { e.preventDefault(); switchTab("calendar"); }
+});
+
+/* ============ 启动 ============ */
+renderSidebar();
+renderEditor();
+showToast("Slate 笔记原型 · ⌘N 新建 · ⌘2 日程 · ⌘P 预览");
+</script>
+</body>
+</html>
