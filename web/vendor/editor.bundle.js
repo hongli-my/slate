@@ -49122,6 +49122,17 @@ function togglePreview() {
   }
   updatePreviewButton();
 }
+function exitPreview() {
+  if (!state.previewVisible) return;
+  state.previewVisible = false;
+  for (const gi of [0, 1]) {
+    const p = $(groupElId("previewPane", gi));
+    if (p) p.style.display = "none";
+  }
+  const mm = document.getElementById("minimap");
+  if (mm && state.minimapOn) mm.classList.add("visible");
+  updatePreviewButton();
+}
 var markedConfigured, mdTimer;
 var init_preview = __esm({
   "web/src/editor/preview.ts"() {
@@ -51290,6 +51301,9 @@ function switchToTab(id3, groupId = state.activeGroup) {
   updateStatusBar();
   updateEolLabel();
   updateFormatButtons();
+  if (state.previewVisible && !/\.(md|markdown)$/i.test(tab3.name)) {
+    exitPreview();
+  }
   refreshPreviewIfVisible();
   refreshMinimap();
   if (/\.json$/i.test(tab3.name) && view.state.doc.lines > 500 && !foldedTabs.has(tab3)) {
@@ -73356,7 +73370,7 @@ function countMatches(view, term) {
   if (!term) return 0;
   const cursor = new SearchCursor(view.state.doc, term);
   let count2 = 0;
-  while (cursor.next()) count2++;
+  while (!cursor.next().done) count2++;
   return count2;
 }
 function updateCounter(n) {

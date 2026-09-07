@@ -11,7 +11,7 @@ import { languageLabel } from "./languages";
 import { saveCurrentFile } from "./files";
 import { updateStatusBar, updateEolLabel } from "./statusbar";
 import { renderTree, updateTreeSelection } from "./filetree";
-import { updateFormatButtons, refreshPreviewIfVisible, togglePreview } from "./preview";
+import { updateFormatButtons, refreshPreviewIfVisible, togglePreview, exitPreview } from "./preview";
 import { saveSession } from "./session";
 
 // 记录已自动折叠过的大 JSON tab，避免每次切 tab 重复折叠。
@@ -132,6 +132,11 @@ export function switchToTab(id: number, groupId: 0 | 1 = state.activeGroup): voi
   updateStatusBar();
   updateEolLabel();
   updateFormatButtons();
+  // 切到非 markdown 文件：自动退出预览模式，否则预览 pane 会遮挡编辑器，
+  // 用户打开 json/sql 等文件时只看到“预览仅支持 Markdown”而非文件内容。
+  if (state.previewVisible && !/\.(md|markdown)$/i.test(tab.name)) {
+    exitPreview();
+  }
   refreshPreviewIfVisible();
   refreshMinimap();
   // 大 JSON 自动折叠顶层 value（Slate 定位：JSON 查看）。仅首次打开该 tab 时

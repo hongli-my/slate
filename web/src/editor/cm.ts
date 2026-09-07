@@ -49,7 +49,7 @@ import {
   autocompletion,
   completionKeymap,
 } from "@codemirror/autocomplete";
-import { search, searchKeymap, setSearchQuery, SearchQuery } from "@codemirror/search";
+import { search, searchKeymap, setSearchQuery, SearchQuery, SearchCursor } from "@codemirror/search";
 import { EditorView as EV } from "@codemirror/view";
 
 import { state, setActiveGroup } from "./state";
@@ -92,7 +92,9 @@ export function clearOccurrences(view: EditorView): void {
  *  doesn't keep painting matches across the document after an operation that
  *  replaces the whole doc (e.g. format / EOL toggle). */
 export function clearSearchHighlights(view: EditorView): void {
-  view.dispatch({ effects: setSearchQuery.of(null) });
+  // 必须是有效 SearchQuery（空串），不能传 null：setSearchQuery 的 handler
+  // 会 dereference effect.value，null.create 会抛 TypeError。
+  view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "" })) });
 }
 
 let occTimer: ReturnType<typeof setTimeout> | null = null;
@@ -141,16 +143,11 @@ function highlightOccurrences(view: EditorView): void {
   let wordFrom = selFrom;
   let wordTo = selTo;
   if (selFrom !== selTo) {
-    const s = doc.sliceString(selFrom, selTo);
-    if (s.length === 0 || s.length > 40 || s.includes("\n")) {
-      // FIX: empty result (e.g., from a reversed-from mapping) is treated as
-      // "no usable word" — clear highlights instead of inifinte-loop padding.
-      clearOccurrences(view);
-      return;
-    }
-    word = s;
-    wordFrom = selFrom;
-    wordTo = selTo;
+    // 用户正在选择文本（很可能准备复制）。此时不做任何 occurrence 高亮：
+    // Decoration.mark 会改变 DOM（在选中的词外包一层 span），导致浏览器原生
+    // 选区错乱 —— 表现为“复制只复制了一半”。直接清除并返回，保持 DOM 稳定。
+    clearOccurrences(view);
+    return;
   } else {
     // Word at cursor (Sublime-style).
     const line = doc.lineAt(sel.head);
@@ -169,27 +166,19 @@ function highlightOccurrences(view: EditorView): void {
     }
   }
 
-  // Collect all matches in one pass, then a single dispatch.
+  // Collect matches via SearchCursor — no full-doc toString() + indexOf scan
+  // (that was O(n) string copy per keystroke and janked on large files).
   const ranges: OccRange[] = [];
-  const text = doc.toString();
-  let i = 0;
+  const cursor = new SearchCursor(doc, word);
   let count = 0;
-  while (i <= text.length) {
-    const idx = text.indexOf(word, i);
-    if (idx < 0) break;
+  while (!cursor.next().done && count < MAX_OCC) {
+    const m = cursor.value;
     // Skip the cursor's own occurrence (matches CM5 behavior).
-    if (!(idx === wordFrom && idx + word.length === wordTo)) {
-      ranges.push({ from: idx, to: idx + word.length });
-      if (++count >= MAX_OCC) break;
-    }
-    i = idx + word.length;
+    if (m.from === wordFrom && m.to === wordTo) continue;
+    ranges.push({ from: m.from, to: m.to });
+    count++;
   }
-  // FIX: defensively filter out any empty/zero-width ranges so we never
-  // throw "Mark decorations may not be empty" inside the field update.
-  const safeRanges = ranges.length === ranges.filter((r) => r.from !== r.to).length
-    ? ranges
-    : ranges.filter((r) => r.from !== r.to);
-  view.dispatch({ effects: setOccurrences.of(safeRanges) });
+  view.dispatch({ effects: setOccurrences.of(ranges) });
 }
 
 // ---- Compartments ----

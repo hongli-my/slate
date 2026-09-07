@@ -199,7 +199,7 @@ function countMatches(view: import("@codemirror/view").EditorView, term: string)
   // avoids a full-doc string copy on every keystroke in the search panel.
   const cursor = new SearchCursor(view.state.doc, term);
   let count = 0;
-  while (cursor.next()) count++;
+  while (!cursor.next().done) count++;
   return count;
 }
 

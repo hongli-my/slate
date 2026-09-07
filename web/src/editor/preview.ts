@@ -367,6 +367,19 @@ export function togglePreview(): void {
   updatePreviewButton();
 }
 
+/** 退出预览模式（切到非 markdown 文件时自动调用，避免预览 pane 遮挡编辑器）。 */
+export function exitPreview(): void {
+  if (!state.previewVisible) return;
+  state.previewVisible = false;
+  for (const gi of [0, 1] as const) {
+    const p = $(groupElId("previewPane", gi));
+    if (p) p.style.display = "none";
+  }
+  const mm = document.getElementById("minimap");
+  if (mm && state.minimapOn) mm.classList.add("visible");
+  updatePreviewButton();
+}
+
 /** Exported to allow paste-image handler to trigger preview refresh. */
 export function _refreshMd(): void {
   if (state.previewVisible && isMarkdownFile()) scheduleMdRender();

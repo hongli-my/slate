@@ -16,7 +16,7 @@ import { formatSQL, formatJSON, minifyJSON, toggleEol, toggleTheme } from "./com
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { toggleSplitView, setupSplitDivider } from "./split";
 import { toggleMinimap } from "./minimap";
-import { saveRecovery, readTextFile, readCalendar, readLog } from "./io";
+import { saveRecovery, readTextFile, readCalendar } from "./io";
 import { showCalendar, calEventClick, calPrevMonth, calNextMonth, calGoToday, calSelectDate, calSwitchView, calJumpDate } from "./calendar";
 import { setupEditorContextMenu } from "./contextmenu";
 import { restoreSession } from "./session";
