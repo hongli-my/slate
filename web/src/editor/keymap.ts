@@ -3,6 +3,7 @@
 // Ported from editor.js setupShortcuts + the menu bridge.
 
 import { state } from "./state";
+import { selectAll } from "@codemirror/commands";
 import { saveCurrentFile, doOpenFolder, doOpenFiles, doNewFile, deleteCurrentFile } from "./files";
 import { closeTab } from "./tabs";
 import { togglePreview } from "./preview";
@@ -108,6 +109,13 @@ export function setupShortcuts(): void {
       else if (a === "new-file") doNewFile();
       else if (a === "delete") void deleteCurrentFile();
       else if (a === "preview") togglePreview();
+      else if (a === "select-all") {
+        // Cmd/Ctrl+A：在 CodeMirror 状态层全选（原生 DOM 全选只选中部分内容）。
+        // 聚焦的编辑视图存在 → 状态全选；否则（焦点在其它 UI）走原生全选。
+        const v = state.groups.map((g) => g.view).find((view) => view && view.hasFocus);
+        if (v) selectAll(v);
+        else document.execCommand("selectAll");
+      }
     }).catch(() => {
       /* ignore */
     });

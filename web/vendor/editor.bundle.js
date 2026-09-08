@@ -52139,6 +52139,7 @@ init_cm();
 
 // web/src/editor/keymap.ts
 init_state();
+init_dist6();
 init_files();
 init_tabs();
 init_preview();
@@ -73503,6 +73504,11 @@ function setupShortcuts() {
       else if (a2 === "new-file") doNewFile();
       else if (a2 === "delete") void deleteCurrentFile();
       else if (a2 === "preview") togglePreview();
+      else if (a2 === "select-all") {
+        const v2 = state.groups.map((g) => g.view).find((view) => view && view.hasFocus);
+        if (v2) selectAll(v2);
+        else document.execCommand("selectAll");
+      }
     }).catch(() => {
     });
   }

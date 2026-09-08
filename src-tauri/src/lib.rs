@@ -38,7 +38,9 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
         &PredefinedMenuItem::cut(app, None)?,
         &PredefinedMenuItem::copy(app, None)?,
         &PredefinedMenuItem::paste(app, None)?,
-        &PredefinedMenuItem::select_all(app, None)?,
+        // 自定义 select-all（不用 Predefined）：Cmd+A 需在 CodeMirror 状态层
+        // 全选（Predefined 走 WKWebView 原生 DOM 全选，只选中部分内容）。
+        &MenuItem::with_id(app, "select-all", "全选", true, Some("CmdOrCtrl+A"))?,
     ])?;
 
     // 视图切换菜单项：加速键走原生菜单系统，子 webview（对话）聚焦时也能生效，
@@ -126,6 +128,27 @@ pub fn run() {
                 "reload" => {
                     if let Some(win) = app.get_webview_window("main") {
                         let _ = win.eval("location.reload()");
+                    }
+                }
+                "select-all" => {
+                    // 聚焦窗口特判：编辑器（main）由前端在 CodeMirror 状态层全选；
+                    // 其它子 webview（对话等）保持原生 DOM 全选行为。
+                    let mut handled = false;
+                    for (label, win) in app.webview_windows() {
+                        if win.is_focused().unwrap_or(false) {
+                            if label == "main" {
+                                let _ = win.emit("menu-action", "select-all");
+                            } else {
+                                let _ = win.eval("document.execCommand('selectAll')");
+                            }
+                            handled = true;
+                            break;
+                        }
+                    }
+                    if !handled {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.emit("menu-action", "select-all");
+                        }
                     }
                 }
                 // 其余菜单项转发给前端
