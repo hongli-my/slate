@@ -14652,7 +14652,6 @@ $$` : `${n}$$`;
       // { sid -> MessageCache }
       activeStreams: {},
       // { sid -> StreamState }
-      showTools: true,
       providers: [],
       currentProvider: "",
       // ---- Project support ----
@@ -15349,7 +15348,10 @@ $$` : `${n}$$`;
         cache.isStale = true;
       }
       if (state.focusedSessionId === sid && state.viewMode === "chat") {
-        H4.finalizeStreamingTurn(sid);
+        if (H4._clearRenderTimer) H4._clearRenderTimer(sid);
+        if (H4._stopLiveTimer) H4._stopLiveTimer();
+        if (H4.clearStreamingMdCache) H4.clearStreamingMdCache();
+        H4.renderCurrentChat();
       }
       backgroundReFetch(sid);
     }
@@ -15379,12 +15381,21 @@ $$` : `${n}$$`;
           return;
         }
         if (offset > 0 && freshMsgs.length > 0 && freshMsgs.length < cache.messages.length) {
+          var boundaryUser = cache.messages[offset];
+          if (boundaryUser && boundaryUser.role === "user" && boundaryUser._localId) {
+            for (var _bi = 0; _bi < freshMsgs.length; _bi++) {
+              if (freshMsgs[_bi].role === "user" && freshMsgs[_bi].content === boundaryUser.content) {
+                freshMsgs[_bi]._localId = boundaryUser._localId;
+                break;
+              }
+            }
+          }
           cache.messages = cache.messages.slice(0, offset).concat(freshMsgs);
           cache.version++;
           cache.isStale = false;
           cache.loadedAt = Date.now();
           if (state.focusedSessionId === sid && state.viewMode === "chat") {
-            H4.refreshLastTurn(sid);
+            H4.renderCurrentChat();
           }
         } else if (freshMsgs.length >= cache.messages.length) {
           cache.messages = freshMsgs;
@@ -15392,7 +15403,7 @@ $$` : `${n}$$`;
           cache.isStale = false;
           cache.loadedAt = Date.now();
           if (state.focusedSessionId === sid && state.viewMode === "chat") {
-            H4.refreshLastTurn(sid);
+            H4.renderCurrentChat();
           }
         }
       } catch (e) {
@@ -15786,37 +15797,8 @@ $$` : `${n}$$`;
           if (btn2) btn2.style.display = "";
         }
       });
-      root.querySelectorAll(".thinking-block:not(.thinking-expanded):not(.thinking-collapsed) .thinking-body").forEach(function(el) {
-        el.scrollTop = el.scrollHeight;
-      });
-      root.querySelectorAll(".tool-result:not(.tool-result-expanded):not(.tool-result-collapsed) .tool-result-body").forEach(function(el) {
-        el.scrollTop = el.scrollHeight;
-      });
       scheduleIdleHighlight(root);
     };
-    function renderStreamingText(text2) {
-      if (!text2) return "";
-      var escaped = esc(text2);
-      var parts = escaped.split(/(```[\s\S]*?```)/g);
-      var html2 = "";
-      for (var i = 0; i < parts.length; i++) {
-        var part = parts[i];
-        if (part.startsWith("```") && part.endsWith("```")) {
-          var inner = part.slice(3, -3);
-          var nlIdx = inner.indexOf("\n");
-          var lang = "";
-          var code = inner;
-          if (nlIdx >= 0) {
-            lang = inner.substring(0, nlIdx).trim();
-            code = inner.substring(nlIdx + 1);
-          }
-          html2 += '<pre class="code-block streaming-code"><code>' + code + "</code></pre>";
-        } else {
-          html2 += part.replace(/\n/g, "<br>");
-        }
-      }
-      return html2;
-    }
     var _mdStreamCache = {};
     function splitMdBlocks(text2) {
       var blocks = [];
@@ -16000,7 +15982,6 @@ $$` : `${n}$$`;
       return html2;
     }
     window.Hermes.renderMarkdown = renderMarkdown;
-    window.Hermes.renderStreamingText = renderStreamingText;
     window.Hermes.renderStreamingMarkdown = renderStreamingMarkdown;
     window.Hermes.renderStreamingMarkdownSplit = renderStreamingMarkdownSplit;
     window.Hermes.clearStreamingMdCache = clearStreamingMdCache;
@@ -16262,6 +16243,313 @@ $$` : `${n}$$`;
     };
   })(typeof window !== "undefined" ? window : void 0);
 
+  // web/chat/js/view-model.js
+  window.Hermes = window.Hermes || {};
+  (function() {
+    "use strict";
+    function uid() {
+      return "l" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+    }
+    function msgText(content) {
+      if (!content) return "";
+      if (typeof content === "string") return content;
+      if (Array.isArray(content)) {
+        return content.filter(function(b3) {
+          return b3 && b3.type === "text";
+        }).map(function(b3) {
+          return b3.text || "";
+        }).join("");
+      }
+      try {
+        return JSON.stringify(content);
+      } catch (e) {
+        return String(content);
+      }
+    }
+    function hashStr(str) {
+      var h2 = 2166136261;
+      for (var i = 0; i < str.length; i++) {
+        h2 ^= str.charCodeAt(i);
+        h2 = h2 * 16777619 >>> 0;
+      }
+      return h2.toString(36);
+    }
+    function extractAssistantParts(a) {
+      var text2 = "", reasoning = "", toolCalls = [];
+      if (Array.isArray(a.content)) {
+        var tParts = [], rParts = [];
+        a.content.forEach(function(b3) {
+          if (!b3 || typeof b3 !== "object") return;
+          if (b3.type === "text" && b3.text) tParts.push(b3.text);
+          else if (b3.type === "thinking" && (b3.thinking != null || b3.text)) rParts.push(b3.thinking != null ? b3.thinking : b3.text);
+          else if (b3.type === "toolCall") toolCalls.push({ name: b3.name, arguments: b3.arguments, id: b3.id });
+        });
+        text2 = tParts.join("");
+        reasoning = rParts.join("");
+      } else if (typeof a.content === "string") {
+        text2 = a.content;
+        reasoning = a.reasoning || "";
+        if (a.tool_calls) {
+          try {
+            var raw = typeof a.tool_calls === "string" ? JSON.parse(a.tool_calls) : a.tool_calls;
+            toolCalls = (raw || []).map(function(tc) {
+              return { name: tc.function ? tc.function.name : void 0, arguments: tc.function ? tc.function.arguments : void 0, id: tc.id || tc.call_id };
+            });
+          } catch (e) {
+            toolCalls = [];
+          }
+        }
+        if (!toolCalls.length && a._toolSteps && a._toolSteps.length > 0) {
+          toolCalls = a._toolSteps.map(function(ts) {
+            return { name: ts.name, arguments: ts.args, id: ts.toolCallId };
+          });
+        }
+      }
+      return { text: text2, reasoning, toolCalls };
+    }
+    function isStreamRemnant(a) {
+      if (!a || a.role !== "assistant" || a._streaming) return false;
+      if (typeof a.content !== "string") return false;
+      return !!a._aborted || !!a._error || Array.isArray(a._toolSteps) && a._toolSteps.length > 0;
+    }
+    var _escMap = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    function escHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, function(c3) {
+        return _escMap[c3];
+      });
+    }
+    function compactionCardHtml(summary) {
+      var safe = escHtml(summary || "");
+      return '<div class="compaction-result"><div class="compaction-head">\u2702\uFE0F \u4E0A\u4E0B\u6587\u5DF2\u538B\u7F29</div>' + (safe ? '<details class="compaction-summary"><summary>\u67E5\u770B\u538B\u7F29\u6458\u8981</summary><div class="compaction-summary-body">' + safe + "</div></details>" : "") + "</div>";
+    }
+    function buildTurns(messages) {
+      const turns = [];
+      var usedOtherKeys = {};
+      var i = 0;
+      var turnOrdinal = 0;
+      if (!messages) return turns;
+      function nextOtherKey(m3, contentText) {
+        var base = m3._localId || m3.id;
+        if (base) return String(base);
+        var src = String(contentText || "");
+        var key = "o" + hashStr((m3.role || "msg") + ":" + src.slice(0, 24));
+        if (usedOtherKeys[key] != null) {
+          var n = ++usedOtherKeys[key];
+          key = key + "-" + n;
+        } else {
+          usedOtherKeys[key] = 0;
+        }
+        return key;
+      }
+      while (i < messages.length) {
+        const m3 = messages[i];
+        if (m3.role === "user") {
+          var _userContent = typeof m3.content === "string" ? m3.content : msgText(m3.content);
+          const userCopy = Object.assign({}, m3, { content: _userContent });
+          var ukey = userCopy._localId || userCopy.id || "t" + turnOrdinal;
+          turnOrdinal++;
+          const turn = { key: String(ukey), type: "user", user: userCopy, steps: [] };
+          i++;
+          while (i < messages.length && messages[i].role !== "user") {
+            const a = messages[i];
+            if (a.role === "assistant" && a._streaming) {
+              turn.steps.push({ streaming: a });
+              i++;
+            } else if (a.role === "assistant" && isStreamRemnant(a)) {
+              var dec = decomposeStreaming(a);
+              for (var di = 0; di < dec.steps.length; di++) turn.steps.push(dec.steps[di]);
+              i++;
+            } else if (a.role === "assistant") {
+              var parts = extractAssistantParts(a);
+              var normA = Object.assign({}, a, { content: parts.text, reasoning: parts.reasoning });
+              if (parts.toolCalls.length > 0) {
+                const step = { assistant: normA, toolCalls: parts.toolCalls, toolResults: [], hasMore: true };
+                i++;
+                while (i < messages.length && (messages[i].role === "toolResult" || messages[i].role === "tool")) {
+                  step.toolResults.push(messages[i]);
+                  i++;
+                }
+                if (i < messages.length && messages[i].role === "assistant") {
+                  var nextParts = extractAssistantParts(messages[i]);
+                  if (nextParts.toolCalls.length > 0) {
+                    turn.steps.push(step);
+                    continue;
+                  }
+                }
+                turn.steps.push(step);
+              } else {
+                turn.steps.push({ assistant: normA, toolCalls: null, toolResults: [], hasMore: false });
+                i++;
+              }
+            } else if (a.role === "system") {
+              turn.steps.push({ system: a });
+              i++;
+            } else {
+              turn.steps.push({ orphan: a });
+              i++;
+            }
+          }
+          turns.push(turn);
+        } else if (m3.role === "system" && m3._compactionHtml) {
+          turns.push({ key: nextOtherKey(m3, m3._compactionHtml), type: "other", message: m3 });
+          turnOrdinal++;
+          i++;
+          while (i < messages.length && messages[i].role !== "user") i++;
+        } else if (m3.role === "compactionSummary") {
+          var _key = nextOtherKey(m3, m3.summary || msgText(m3.content));
+          turnOrdinal++;
+          turns.push({
+            key: _key,
+            type: "other",
+            message: { role: "system", _compactionHtml: compactionCardHtml(m3.summary || ""), _isCompaction: true }
+          });
+          i++;
+          while (i < messages.length && messages[i].role !== "user") i++;
+        } else {
+          turns.push({ key: nextOtherKey(m3, msgText(m3.content)), type: "other", message: m3 });
+          turnOrdinal++;
+          i++;
+        }
+      }
+      return turns;
+    }
+    function decomposeStreaming(sm) {
+      var flags = {
+        hasContent: !!(sm.content && sm.content.trim()),
+        hasReasoning: !!(sm.reasoning && sm.reasoning.trim()),
+        usage: sm._usage || null,
+        aborted: !!sm._aborted,
+        runningSet: {},
+        toolTimes: {}
+      };
+      var steps = [];
+      if (sm._toolSteps && sm._toolSteps.length > 0) {
+        var toolCalls = sm._toolSteps.map(function(ts, idx) {
+          return { name: ts.name || "unknown", arguments: ts.args, id: ts.toolCallId || "call_stream_" + idx };
+        });
+        var toolResults = [];
+        sm._toolSteps.forEach(function(ts, idx) {
+          var tcId = ts.toolCallId || "call_stream_" + idx;
+          if (ts.result !== void 0 && ts.result !== null && ts.result !== "") {
+            toolResults.push({
+              role: "toolResult",
+              toolCallId: tcId,
+              content: typeof ts.result === "string" ? ts.result : JSON.stringify(ts.result),
+              isError: !!ts.error
+            });
+          }
+          if (ts.running) flags.runningSet[tcId] = true;
+          flags.toolTimes[tcId] = {
+            startTime: ts.startTime || null,
+            endTime: ts.endTime || null,
+            running: !!ts.running
+          };
+        });
+        steps.push({
+          assistant: { reasoning: sm.reasoning || "", content: "", timestamp: sm.timestamp },
+          toolCalls,
+          toolResults,
+          hasMore: flags.hasContent
+        });
+      }
+      if (flags.hasContent) {
+        var finalReasoning = sm._toolSteps && sm._toolSteps.length > 0 ? "" : sm.reasoning || "";
+        steps.push({
+          assistant: { content: sm.content, reasoning: finalReasoning, timestamp: sm.timestamp },
+          toolCalls: null,
+          toolResults: [],
+          hasMore: false
+        });
+      } else if (!sm._toolSteps || sm._toolSteps.length === 0) {
+        if (flags.hasReasoning) {
+          steps.push({
+            assistant: { reasoning: sm.reasoning, content: "", timestamp: sm.timestamp },
+            toolCalls: null,
+            toolResults: [],
+            hasMore: false,
+            _reasoningActive: true
+          });
+        }
+      }
+      return { steps, flags };
+    }
+    function contentMarker(text2) {
+      var s = String(text2 == null ? "" : text2);
+      return s.length + ":" + s.slice(0, 12);
+    }
+    function stepSig(step) {
+      if (!step) return "?";
+      var out = [];
+      if (step.streaming) {
+        var sm = step.streaming;
+        out.push("S");
+        out.push(contentMarker(sm.content));
+        out.push(contentMarker(sm.reasoning));
+        out.push("ab=" + (sm._aborted ? 1 : 0));
+        out.push("ap=" + (sm._approval && !sm._approvalResolved ? 1 : 0));
+        out.push("us=" + (sm._usage ? (sm._usage.total_tokens || 0) + ":" + (sm._usage.prompt_tokens || 0) : "-"));
+        var tss = sm._toolSteps || [];
+        out.push("ts=" + tss.length);
+        tss.forEach(function(ts) {
+          out.push((ts.toolCallId || "") + "|" + (ts.name || "") + "|r" + (ts.running ? 1 : 0) + "|e" + (ts.error ? 1 : 0) + "|" + contentMarker(ts.result));
+        });
+        return out.join("~");
+      }
+      if (step.assistant) {
+        var a = step.assistant;
+        out.push("A");
+        out.push(contentMarker(a.content));
+        out.push(contentMarker(a.reasoning));
+        out.push("hm=" + (step.hasMore ? 1 : 0));
+        if (step._reasoningActive) out.push("ra=1");
+        var tcs = step.toolCalls || [];
+        out.push("tc=" + tcs.length);
+        tcs.forEach(function(tc) {
+          out.push((tc.id || tc.toolCallId || "") + "|" + (tc.name || ""));
+        });
+        var trs = step.toolResults || [];
+        out.push("tr=" + trs.length);
+        trs.forEach(function(tr) {
+          out.push((tr.toolCallId || tr.tool_call_id || "") + "|e" + (tr.isError ? 1 : 0) + "|" + contentMarker(msgText(tr.content)));
+        });
+        return out.join("~");
+      }
+      if (step.system) {
+        out.push("SY:" + contentMarker(step.system.content) + ":" + (step.system._compactionHtml ? "html" : "-") + ":" + (step.system._isCompaction ? "comp" : "-"));
+        return out.join("~");
+      }
+      if (step.orphan) {
+        out.push("O:" + contentMarker(msgText(step.orphan.content)));
+        return out.join("~");
+      }
+      return "?";
+    }
+    function turnSig(turn) {
+      var parts = [];
+      parts.push("type=" + turn.type);
+      if (turn.type === "user") {
+        parts.push("u=" + contentMarker(turn.user.content));
+        parts.push("n=" + (turn.steps || []).length);
+        (turn.steps || []).forEach(function(s) {
+          parts.push(stepSig(s));
+        });
+      } else {
+        parts.push("m=" + contentMarker(msgText(turn.message.content)));
+        parts.push("c=" + (turn.message._compactionHtml ? "1" : "0") + (turn.message._isCompaction ? ":c" : ""));
+      }
+      return parts.join("|");
+    }
+    window.Hermes.uid = uid;
+    window.Hermes.msgText = msgText;
+    window.Hermes.hashStr = hashStr;
+    window.Hermes.buildTurns = buildTurns;
+    window.Hermes.turnSig = turnSig;
+    window.Hermes.decomposeStreaming = decomposeStreaming;
+    window.Hermes.isStreamRemnant = isStreamRemnant;
+    window.Hermes.compactionCardHtml = compactionCardHtml;
+    window.Hermes.extractAssistantParts = extractAssistantParts;
+  })();
+
   // web/chat/js/session.js
   window.Hermes = window.Hermes || {};
   (function() {
@@ -16275,18 +16563,7 @@ $$` : `${n}$$`;
     const truncate = window.Hermes.truncate;
     const api = window.Hermes.api;
     function _extractContentText(content) {
-      if (!content) return "";
-      if (typeof content === "string") return content;
-      if (Array.isArray(content)) return content.filter(function(b3) {
-        return b3 && b3.type === "text";
-      }).map(function(b3) {
-        return b3.text || "";
-      }).join("");
-      try {
-        return JSON.stringify(content);
-      } catch (e) {
-        return String(content);
-      }
+      return window.Hermes.msgText(content);
     }
     function parseToolResult(content) {
       var text2 = _extractContentText(content);
@@ -16397,13 +16674,13 @@ $$` : `${n}$$`;
         }
       }
       var errMark = !running && toolResult && statusClass === "ow-fail" ? '<span class="ow-tl-err">\u2717</span>' : "";
-      const item = `<div class="ow-tl-item ${tlClass}" data-action="toggle-ow-tl">
+      const item = `<div class="ow-tl-item ${tlClass}" data-action="toggle-ow-tl" data-call-id="${esc(tcId || "")}">
         <span class="ow-tl-name">${esc(name)}</span>
         ${argsPreview ? '<span class="ow-tl-args">' + argsPreview + "</span>" : ""}
         ${durBadge}${errMark}
         <span class="ow-tl-stat">${statusIcon}</span>
       </div>`;
-      const panel = `<div class="ow-ep">
+      const panel = `<div class="ow-ep" data-call-id="${esc(tcId || "")}">
         <div class="ow-ep-h"><span style="color:${statusClass === "ow-done" ? "var(--accent2)" : statusClass === "ow-fail" ? "var(--danger)" : "var(--text-weaker)"}">${running ? "\u23F3" : statusIcon}</span><span class="ow-ep-name">${esc(name)}</span>${argsPreview ? '<span class="ow-ep-meta">' + argsPreview + "</span>" : ""}${durBadge}</div>
         ${args ? '<div class="ow-pill-args-full">' + args + "</div>" : ""}
         ${panelBody}
@@ -16467,123 +16744,8 @@ $$` : `${n}$$`;
       }).join("");
       return '<div class="turn-margin">' + inner + "</div>";
     }
-    function renderThinkingBlock(reasoning, isActive, noToggle) {
-      if (!reasoning || !reasoning.trim()) return "";
-      if (noToggle) {
-        return `<div class="thinking-block"><div class="thinking-body">${window.Hermes.renderMarkdown(reasoning)}</div></div>`;
-      }
-      const initState = isActive ? "" : " thinking-collapsed";
-      return `
-      <div class="thinking-block${initState}">
-        <div class="thinking-header" data-action="toggle-thinking">
-          <span class="thinking-icon">\u{1F4AD}</span>
-          <span class="thinking-label">\u601D\u8003\u8FC7\u7A0B</span>
-          <span class="thinking-toggle"></span>
-        </div>
-        <div class="thinking-body">${window.Hermes.renderMarkdown(reasoning)}</div>
-      </div>`;
-    }
-    function extractAssistantParts(a) {
-      var text2 = "", reasoning = "", toolCalls = [];
-      if (Array.isArray(a.content)) {
-        var tParts = [], rParts = [];
-        a.content.forEach(function(b3) {
-          if (!b3 || typeof b3 !== "object") return;
-          if (b3.type === "text" && b3.text) tParts.push(b3.text);
-          else if (b3.type === "thinking" && b3.text) rParts.push(b3.text);
-          else if (b3.type === "toolCall") toolCalls.push({ name: b3.name, arguments: b3.arguments, id: b3.id });
-        });
-        text2 = tParts.join("");
-        reasoning = rParts.join("");
-      } else if (typeof a.content === "string") {
-        text2 = a.content;
-        reasoning = a.reasoning || "";
-        if (a.tool_calls) {
-          try {
-            var raw = typeof a.tool_calls === "string" ? JSON.parse(a.tool_calls) : a.tool_calls;
-            toolCalls = (raw || []).map(function(tc) {
-              return { name: tc.function?.name, arguments: tc.function?.arguments, id: tc.id || tc.call_id };
-            });
-          } catch (e) {
-            toolCalls = [];
-          }
-        }
-        if (!toolCalls.length && a._toolSteps && a._toolSteps.length > 0) {
-          toolCalls = a._toolSteps.map(function(ts) {
-            return { name: ts.name, arguments: ts.args, id: ts.toolCallId };
-          });
-        }
-      }
-      return { text: text2, reasoning, toolCalls };
-    }
     function groupIntoTurns(messages) {
-      const turns = [];
-      let i = 0;
-      while (i < messages.length) {
-        const m3 = messages[i];
-        if (m3.role === "user") {
-          var _userContent = typeof m3.content === "string" ? m3.content : _extractContentText(m3.content);
-          const turn = { type: "user", user: Object.assign({}, m3, { content: _userContent }), steps: [] };
-          i++;
-          while (i < messages.length && messages[i].role !== "user") {
-            const a = messages[i];
-            if (a.role === "assistant" && a._streaming) {
-              turn.steps.push({ streaming: a });
-              i++;
-            } else if (a.role === "assistant" && a._aborted) {
-              var abParts = extractAssistantParts(a);
-              turn.steps.push({ assistant: Object.assign({}, a, { content: abParts.text, reasoning: abParts.reasoning }), toolCalls: null, toolResults: [], hasMore: false });
-              i++;
-            } else if (a.role === "assistant") {
-              var parts = extractAssistantParts(a);
-              var normA = Object.assign({}, a, { content: parts.text, reasoning: parts.reasoning });
-              if (parts.toolCalls.length > 0) {
-                const step = { assistant: normA, toolCalls: parts.toolCalls, toolResults: [], hasMore: true };
-                i++;
-                while (i < messages.length && (messages[i].role === "toolResult" || messages[i].role === "tool")) {
-                  step.toolResults.push(messages[i]);
-                  i++;
-                }
-                if (i < messages.length && messages[i].role === "assistant") {
-                  var nextParts = extractAssistantParts(messages[i]);
-                  if (nextParts.toolCalls.length > 0) {
-                    turn.steps.push(step);
-                    continue;
-                  }
-                }
-                turn.steps.push(step);
-              } else {
-                turn.steps.push({ assistant: normA, toolCalls: null, toolResults: [], hasMore: false });
-                i++;
-              }
-            } else if (a.role === "system") {
-              turn.steps.push({ system: a });
-              i++;
-            } else {
-              turn.steps.push({ orphan: a });
-              i++;
-            }
-          }
-          turns.push(turn);
-        } else if (m3.role === "system" && m3._compactionHtml) {
-          turns.push({ type: "other", message: m3 });
-          i++;
-          while (i < messages.length && messages[i].role !== "user") i++;
-        } else if (m3.role === "compactionSummary") {
-          var _csHtml = '<div class="compaction-result"><div class="compaction-head">\u2702\uFE0F \u4E0A\u4E0B\u6587\u5DF2\u538B\u7F29</div>' + (m3.summary ? '<details class="compaction-summary"><summary>\u67E5\u770B\u538B\u7F29\u6458\u8981</summary><div class="compaction-summary-body">' + esc(m3.summary) + "</div></details>" : "") + "</div>";
-          turns.push({ type: "other", message: { role: "system", _compactionHtml: _csHtml, _isCompaction: true } });
-          i++;
-          while (i < messages.length && messages[i].role !== "user") i++;
-        } else {
-          turns.push({ type: "other", message: m3 });
-          i++;
-        }
-      }
-      return turns;
-    }
-    function renderStreamingStepsHTML(streamingMsg) {
-      var turn = { steps: [{ streaming: streamingMsg }] };
-      return renderTurnStepsHTML(turn);
+      return window.Hermes.buildTurns(messages);
     }
     function getToolEmoji(name) {
       if (!name) return "\u{1F6E0}";
@@ -16909,19 +17071,19 @@ $$` : `${n}$$`;
       if (turn.type === "other") {
         const m3 = turn.message;
         if (m3._compactionHtml) {
-          return `<div class="turn"><div class="step system-step compaction-step">${m3._compactionHtml}</div></div>`;
+          return `<div class="turn" data-key="${esc(String(turn.key || ""))}"><div class="step system-step compaction-step">${m3._compactionHtml}</div></div>`;
         }
-        return `<div class="msg-bubble msg-${m3.role}"><div class="msg-content">${esc(_extractContentText(m3.content) || "")}</div></div>`;
+        return `<div class="msg-bubble msg-${m3.role}" data-key="${esc(String(turn.key || ""))}"><div class="msg-content">${esc(_extractContentText(m3.content) || "")}</div></div>`;
       }
       const userId = turn.user.id || "";
       const userTime = turn.user.timestamp_fmt || fmtTime(turn.user.timestamp);
       const isStreamingTurn = turn.steps.some((s) => s.streaming);
-      let html2 = `<div class="turn" data-msg-id="${esc(String(userId))}"${isStreamingTurn ? ' data-streaming="true"' : ""}>
+      let html2 = `<div class="turn" data-msg-id="${esc(String(userId))}" data-key="${esc(String(turn.key || ""))}"${isStreamingTurn ? ' data-streaming="true"' : ""}>
       <div class="turn-user">
         <div class="turn-user-content">${window.Hermes.renderMarkdown(turn.user.content || "")}</div>
         <div class="turn-avatar user-avatar">U</div>
       </div>
-      <div class="turn-time turn-time-user">${esc(userTime)}<span class="turn-actions"><button class="turn-edit-btn" data-msg-id="${esc(String(userId))}" title="\u7F16\u8F91\u91CD\u53D1">\u270E</button></span></div>`;
+      <div class="turn-time turn-time-user">${esc(userTime)}</div>`;
       if (turn.steps.length > 0) {
         html2 += `<div class="turn-agent">
         <div class="turn-avatar agent-avatar">H</div>
@@ -16937,46 +17099,9 @@ $$` : `${n}$$`;
       return html2;
     }
     function renderMessages(messages, container) {
-      const turns = groupIntoTurns(messages);
-      let html2 = "";
-      turns.forEach((turn) => {
-        html2 += renderSingleTurnHTML(turn);
-      });
-      const expandStates = {};
-      container.querySelectorAll(".turn").forEach((turnEl) => {
-        const msgId = turnEl.dataset.msgId;
-        if (!msgId) return;
-        const answer = turnEl.querySelector(".step-answer");
-        if (answer && !answer.classList.contains("collapsed")) {
-          expandStates[msgId + ":answer"] = true;
-        }
-        const tc = turnEl.querySelector(".tools-collapse");
-        if (tc && !tc.classList.contains("tools-collapsed")) {
-          expandStates[msgId + ":tools"] = true;
-        }
-      });
-      container.innerHTML = html2;
-      window.Hermes.initCollapsible(container);
-      Object.keys(expandStates).forEach((key) => {
-        const msgId = key.replace(/:(answer|tools)$/, "");
-        const type = key.match(/:(answer|tools)$/)?.[1];
-        const turnEl = container.querySelector(`.turn[data-msg-id="${msgId}"]`);
-        if (!turnEl) return;
-        if (type === "answer") {
-          const answer = turnEl.querySelector(".step-answer");
-          if (answer) answer.classList.remove("collapsed");
-          const btn = turnEl.querySelector(".collapse-btn");
-          if (btn) {
-            btn.classList.add("expanded");
-            const lbl = btn.querySelector(".label");
-            if (lbl) lbl.textContent = "\u6536\u8D77";
-          }
-        }
-        if (type === "tools") {
-          const tc = turnEl.querySelector(".tools-collapse");
-          if (tc) tc.classList.remove("tools-collapsed");
-        }
-      });
+      if (!container) return;
+      var sid = window.Hermes.state && window.Hermes.state.focusedSessionId || null;
+      window.Hermes.renderFull(container, messages, sid);
     }
     var _confirmDlg = null;
     function asyncConfirm(message, title) {
@@ -17041,7 +17166,7 @@ $$` : `${n}$$`;
       if (_ctxMenu) return _ctxMenu;
       _ctxMenu = document.createElement("div");
       _ctxMenu.className = "ctx-menu";
-      _ctxMenu.innerHTML = '<div class="ctx-menu-item" data-ctx="copy-text">\u{1F4CB} \u590D\u5236\u6587\u672C</div><div class="ctx-menu-item" data-ctx="edit-resend">\u270E \u7F16\u8F91\u91CD\u53D1</div><div class="ctx-menu-item" data-ctx="export-turn">\u{1F4E4} \u5BFC\u51FA\u6B64\u8F6E</div><div class="ctx-menu-sep"></div><div class="ctx-menu-item ctx-menu-danger" data-ctx="delete-turn">\u{1F5D1} \u5220\u9664\u6B64\u8F6E\u5BF9\u8BDD</div>';
+      _ctxMenu.innerHTML = '<div class="ctx-menu-item" data-ctx="copy-text">\u{1F4CB} \u590D\u5236\u6587\u672C</div><div class="ctx-menu-item" data-ctx="export-turn">\u{1F4E4} \u5BFC\u51FA\u6B64\u8F6E</div><div class="ctx-menu-sep"></div><div class="ctx-menu-item ctx-menu-danger" data-ctx="delete-turn">\u{1F5D1} \u5220\u9664\u6B64\u8F6E\u5BF9\u8BDD</div>';
       document.body.appendChild(_ctxMenu);
       _ctxMenu.addEventListener("click", function(e) {
         const item = e.target.closest("[data-ctx]");
@@ -17055,8 +17180,6 @@ $$` : `${n}$$`;
           deleteMessageRound(msgId);
         } else if (action === "copy-text") {
           _copyTurnText(turnEl);
-        } else if (action === "edit-resend") {
-          _editResendTurn(turnEl, msgId);
         } else if (action === "export-turn") {
           _exportSingleTurn(turnEl, msgId);
         }
@@ -17075,18 +17198,6 @@ $$` : `${n}$$`;
       }).catch(function() {
         window.Hermes.toast("\u590D\u5236\u5931\u8D25", true);
       });
-    }
-    function _editResendTurn(turnEl, msgId) {
-      if (!turnEl) return;
-      var userEl = turnEl.querySelector(".turn-user-content");
-      var text2 = userEl ? userEl.innerText || userEl.textContent : "";
-      var dom = window.Hermes.dom;
-      if (dom && dom.chatInput) {
-        dom.chatInput.value = text2;
-        dom.chatInput.focus();
-        dom.chatInput.style.height = "auto";
-        dom.chatInput.style.height = Math.min(dom.chatInput.scrollHeight, 200) + "px";
-      }
     }
     function _exportSingleTurn(turnEl, msgId) {
       if (!turnEl) return;
@@ -17410,12 +17521,10 @@ ${step.assistant.content}
     window.Hermes.searchSessions = searchSessions;
     window.Hermes.selectSession = selectSession;
     window.Hermes.renderMessages = renderMessages;
-    window.Hermes.renderStreamingStepsHTML = renderStreamingStepsHTML;
     window.Hermes.groupIntoTurns = groupIntoTurns;
     window.Hermes.renderTurnStepsHTML = renderTurnStepsHTML;
     window.Hermes.renderSingleTurnHTML = renderSingleTurnHTML;
     window.Hermes.renderToolCard = renderToolCard;
-    window.Hermes.renderThinkingBlock = renderThinkingBlock;
     window.Hermes.renderThinkingMargin = renderThinkingMargin;
     window.Hermes.initSessionListEvents = initSessionListEvents;
     window.Hermes.deleteSession = deleteSession;
@@ -17427,19 +17536,17 @@ ${step.assistant.content}
     window.Hermes.getToolEmoji = getToolEmoji;
   })();
 
-  // web/chat/js/chat.js
+  // web/chat/js/render.js
   window.Hermes = window.Hermes || {};
   (function() {
     "use strict";
-    const H4 = window.Hermes;
-    const $3 = window.Hermes.$;
-    const $$ = window.Hermes.$$;
-    const esc = window.Hermes.esc;
-    const api = window.Hermes.api;
+    var H4 = window.Hermes;
     function _morph(el, html2) {
       if (window.morphdom) {
         try {
-          window.morphdom(el, html2, {
+          var tmp = document.createElement("div");
+          tmp.innerHTML = html2;
+          window.morphdom(el, tmp, {
             childrenOnly: true,
             onBeforeElUpdated: function(fromEl, toEl) {
               if (fromEl.isEqualNode(toEl)) return false;
@@ -17452,6 +17559,380 @@ ${step.assistant.content}
       }
       el.innerHTML = html2;
     }
+    function _elFromHtml(html2) {
+      var tmp = document.createElement("div");
+      tmp.innerHTML = html2;
+      return tmp.firstElementChild;
+    }
+    function _streamStructSig(sm) {
+      var _ts = sm._toolSteps || [];
+      var _toolSig = _ts.map(function(s) {
+        var base = (s.running ? "r" : s.result !== void 0 ? "d" : "p") + "|" + (s.toolCallId || "") + "|" + (s.name || "");
+        return s.running ? base : base + "|" + (s.result != null ? String(s.result).length : 0);
+      }).join(",");
+      return [
+        "tc=" + _ts.length,
+        "ts=" + _toolSig,
+        "hr=" + !!(sm.reasoning && sm.reasoning.trim()),
+        "hc=" + !!(sm.content && sm.content.trim()),
+        "ap=" + !!(sm._approval && !sm._approvalResolved),
+        "sa=" + (sm._subagents ? sm._subagents.length : 0),
+        "ab=" + !!sm._aborted,
+        "er=" + !!sm._error,
+        "us=" + !!(sm._usage && (sm._usage.total_tokens || sm._usage.prompt_tokens)),
+        "qu=" + !!sm._queue
+      ].join(";");
+    }
+    function _l3Patch(turnEl, sm, lastContent, lastReasoning) {
+      var changed = false;
+      var curContent = sm.content != null ? sm.content : "";
+      var curReasoning = sm.reasoning != null ? sm.reasoning : "";
+      if (lastContent !== curContent && sm.content != null) {
+        var _finalBody = turnEl.querySelector(".step-final .step-answer");
+        if (_finalBody) {
+          var _sfSplit = H4.renderStreamingMarkdownSplit(sm.content, "sf");
+          var _stableEl = _finalBody.querySelector(".md-stable");
+          var _activeEl = _finalBody.querySelector(".md-active");
+          if (_activeEl) {
+            if (_sfSplit.stableChanged && _stableEl) _morph(_stableEl, _sfSplit.stableHtml);
+            _morph(_activeEl, _sfSplit.activeHtml);
+          } else {
+            _morph(_finalBody, _sfSplit.fullHtml);
+          }
+          changed = true;
+        }
+      }
+      if (lastReasoning !== curReasoning && sm.reasoning) {
+        var _tmBody = turnEl.querySelector(".tm-active .tm-body");
+        if (_tmBody) {
+          var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
+          var _tmStick = _tmOff < 24;
+          _morph(_tmBody, H4.renderStreamingMarkdown(sm.reasoning.trim(), "tm"));
+          _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
+          changed = true;
+        }
+      }
+      return changed;
+    }
+    function _captureTurnUI(turnEl) {
+      var openPanels = [];
+      var panels = turnEl.querySelectorAll(".ow-panels .ow-ep");
+      panels.forEach(function(p2, idx) {
+        if (p2.classList.contains("ow-show")) {
+          openPanels.push({ callId: p2.getAttribute("data-call-id") || null, index: idx });
+        }
+      });
+      var collapsedAnswers = [];
+      var answers = turnEl.querySelectorAll(".step-answer-wrap");
+      answers.forEach(function(w2, idx) {
+        var a = w2.querySelector(".step-answer.collapsible");
+        if (a && a.classList.contains("collapsed")) collapsedAnswers.push(idx);
+      });
+      var ui = { openPanels, collapsedAnswers };
+      var tl = turnEl.querySelector(".ow-tl");
+      if (tl) {
+        var tlOff = tl.scrollHeight - tl.scrollTop - tl.clientHeight;
+        ui.tl = { stick: tlOff < 24, offset: tlOff };
+      }
+      var tmb = turnEl.querySelector(".tm-body");
+      if (tmb) {
+        var tmOff = tmb.scrollHeight - tmb.scrollTop - tmb.clientHeight;
+        ui.tm = { stick: tmOff < 24, offset: tmOff };
+      }
+      return ui;
+    }
+    function _restoreTurnUI(turnEl, ui) {
+      if (!ui) return;
+      var newPanels = turnEl.querySelectorAll(".ow-panels .ow-ep");
+      ui.openPanels.forEach(function(op) {
+        var target = null;
+        if (op.callId) {
+          for (var i = 0; i < newPanels.length; i++) {
+            if (newPanels[i].getAttribute("data-call-id") === op.callId) {
+              target = newPanels[i];
+              break;
+            }
+          }
+        }
+        if (!target && op.index < newPanels.length) target = newPanels[op.index];
+        if (target) target.classList.add("ow-show");
+      });
+      var answers = turnEl.querySelectorAll(".step-answer-wrap");
+      ui.collapsedAnswers.forEach(function(idx) {
+        var w2 = answers[idx];
+        if (!w2) return;
+        var a = w2.querySelector(".step-answer.collapsible");
+        if (a) a.classList.add("collapsed");
+      });
+      if (ui.tl) {
+        var tl = turnEl.querySelector(".ow-tl");
+        if (tl) {
+          if (ui.tl.stick) tl.scrollTop = tl.scrollHeight;
+          else tl.scrollTop = Math.max(0, tl.scrollHeight - tl.clientHeight - ui.tl.offset);
+        }
+      }
+      if (ui.tm) {
+        var tmb = turnEl.querySelector(".tm-body");
+        if (tmb) {
+          if (ui.tm.stick) tmb.scrollTop = tmb.scrollHeight;
+          else tmb.scrollTop = Math.max(0, tmb.scrollHeight - tmb.clientHeight - ui.tm.offset);
+        }
+      }
+    }
+    function _syncThinkingMargin(turnEl, turn) {
+      var marginHtml = "";
+      if (H4.renderThinkingMargin) {
+        try {
+          marginHtml = H4.renderThinkingMargin(turn, true) || "";
+        } catch (e) {
+          marginHtml = "";
+        }
+      }
+      var agentBody = turnEl.querySelector(".turn-agent-body");
+      var margin = null;
+      var kids = turnEl.children;
+      for (var i = 0; i < kids.length; i++) {
+        if (kids[i].classList && kids[i].classList.contains("turn-margin")) {
+          margin = kids[i];
+          break;
+        }
+      }
+      if (marginHtml) {
+        if (!margin && agentBody) {
+          var tmp = document.createElement("div");
+          tmp.innerHTML = marginHtml;
+          var m3 = tmp.firstElementChild;
+          if (m3) agentBody.parentNode.insertBefore(m3, agentBody.nextSibling);
+        }
+      } else if (margin) {
+        margin.remove();
+      }
+    }
+    function _applyStreaming(turnEl, turn, sm) {
+      var ui = _captureTurnUI(turnEl);
+      var stepsHtml = "";
+      try {
+        stepsHtml = H4.renderTurnStepsHTML(turn) || "";
+      } catch (e) {
+        stepsHtml = "";
+      }
+      var stepsEl = turnEl.querySelector(".turn-steps");
+      if (stepsEl && stepsHtml) _morph(stepsEl, stepsHtml);
+      _syncThinkingMargin(turnEl, turn);
+      _restoreTurnUI(turnEl, ui);
+      if (!turnEl.hasAttribute("data-streaming")) turnEl.setAttribute("data-streaming", "true");
+    }
+    function _applyStatic(turnEl, turn) {
+      var ui = _captureTurnUI(turnEl);
+      var html2 = "";
+      try {
+        html2 = H4.renderSingleTurnHTML(turn) || "";
+      } catch (e) {
+        html2 = "";
+      }
+      if (html2) _morph(turnEl, html2);
+      if (turnEl.hasAttribute("data-streaming")) turnEl.removeAttribute("data-streaming");
+      _restoreTurnUI(turnEl, ui);
+      if (H4.initCollapsible) {
+        try {
+          H4.initCollapsible(turnEl);
+        } catch (e) {
+        }
+      }
+      if (H4.scheduleIdleHighlight) {
+        try {
+          H4.scheduleIdleHighlight(turnEl);
+        } catch (e) {
+        }
+      }
+    }
+    function _updateTurn(container, entry, turn) {
+      var sig = H4.turnSig(turn);
+      var streamingStep = turn.steps.find(function(s) {
+        return s.streaming;
+      });
+      var newLive = !!streamingStep;
+      if (newLive) {
+        var sm = streamingStep.streaming;
+        var struct = _streamStructSig(sm);
+        var running = (sm._toolSteps || []).some(function(ts) {
+          return ts.running;
+        });
+        if (entry.live) {
+          if (entry.struct !== struct || running) {
+            _applyStreaming(entry.el, turn, sm);
+            entry.struct = struct;
+            entry.sig = sig;
+            entry.lastContent = sm.content != null ? sm.content : "";
+            entry.lastReasoning = sm.reasoning != null ? sm.reasoning : "";
+            return true;
+          }
+          if (entry.lastContent !== (sm.content != null ? sm.content : "") || entry.lastReasoning !== (sm.reasoning != null ? sm.reasoning : "")) {
+            var changedText = _l3Patch(entry.el, sm, entry.lastContent, entry.lastReasoning);
+            if (changedText) {
+              entry.sig = sig;
+              entry.lastContent = sm.content != null ? sm.content : "";
+              entry.lastReasoning = sm.reasoning != null ? sm.reasoning : "";
+              return true;
+            }
+            entry.struct = struct;
+            entry.sig = sig;
+            return false;
+          }
+          entry.sig = sig;
+          return false;
+        }
+        _applyStreaming(entry.el, turn, sm);
+        entry.live = true;
+        entry.struct = struct;
+        entry.sig = sig;
+        entry.lastContent = sm.content != null ? sm.content : "";
+        entry.lastReasoning = sm.reasoning != null ? sm.reasoning : "";
+        return true;
+      }
+      if (entry.sig === sig) return false;
+      if (entry.live) {
+        _applyStatic(entry.el, turn);
+      } else {
+        _applyStatic(entry.el, turn);
+      }
+      entry.live = false;
+      entry.sig = sig;
+      entry.struct = null;
+      entry.lastContent = null;
+      entry.lastReasoning = null;
+      return true;
+    }
+    function renderFull(container, msgs, sid) {
+      var turns = H4.buildTurns(msgs);
+      var html2 = "";
+      turns.forEach(function(turn) {
+        try {
+          html2 += H4.renderSingleTurnHTML(turn) || "";
+        } catch (e) {
+          console.warn("[render] renderSingleTurnHTML failed", e);
+        }
+      });
+      container.innerHTML = html2;
+      var map = /* @__PURE__ */ new Map();
+      var children = container.children;
+      for (var i = 0; i < turns.length; i++) {
+        var key = turns[i].key;
+        var el = children[i];
+        var streamingStep = turns[i].steps.find(function(s) {
+          return s.streaming;
+        });
+        var entry = {
+          el,
+          sig: H4.turnSig(turns[i]),
+          live: !!streamingStep,
+          struct: streamingStep ? _streamStructSig(streamingStep.streaming) : null,
+          lastContent: streamingStep ? streamingStep.streaming.content != null ? streamingStep.streaming.content : "" : null,
+          lastReasoning: streamingStep ? streamingStep.streaming.reasoning != null ? streamingStep.streaming.reasoning : "" : null
+        };
+        map.set(key, entry);
+      }
+      if (H4.initCollapsible) {
+        try {
+          H4.initCollapsible(container);
+        } catch (e) {
+        }
+      }
+      if (H4.scheduleIdleHighlight) {
+        try {
+          H4.scheduleIdleHighlight(container);
+        } catch (e) {
+        }
+      }
+      container.__rdx = { sid: sid || null, map, seq: container.__rdx && container.__rdx.seq ? container.__rdx.seq + 1 : 1 };
+      return true;
+    }
+    function renderDiff(container, msgs, sid) {
+      var rdx = container.__rdx;
+      if (!rdx || rdx.sid !== sid) {
+        return renderFull(container, msgs, sid);
+      }
+      var turns = H4.buildTurns(msgs);
+      var oldKeys = [];
+      rdx.map.forEach(function(v3, k3) {
+        oldKeys.push(k3);
+      });
+      var newKeys = turns.map(function(t2) {
+        return t2.key;
+      });
+      var tailAppend = newKeys.length >= oldKeys.length;
+      if (tailAppend) {
+        for (var i = 0; i < oldKeys.length; i++) {
+          if (oldKeys[i] !== newKeys[i]) {
+            tailAppend = false;
+            break;
+          }
+        }
+      }
+      if (!tailAppend) {
+        return renderFull(container, msgs, sid);
+      }
+      var changed = false;
+      for (var t = 0; t < oldKeys.length; t++) {
+        var turn = turns[t];
+        var key = oldKeys[t];
+        var entry = rdx.map.get(key);
+        if (!entry) continue;
+        if (_updateTurn(container, entry, turn)) changed = true;
+      }
+      for (var a = oldKeys.length; a < newKeys.length; a++) {
+        var nTurn = turns[a];
+        var nKey = nTurn.key;
+        var htmlStr = "";
+        try {
+          htmlStr = H4.renderSingleTurnHTML(nTurn) || "";
+        } catch (e) {
+          console.warn("[render] renderSingleTurnHTML failed", e);
+          continue;
+        }
+        var nEl = _elFromHtml(htmlStr);
+        if (!nEl) continue;
+        container.appendChild(nEl);
+        var streamingStep2 = nTurn.steps.find(function(s) {
+          return s.streaming;
+        });
+        rdx.map.set(nKey, {
+          el: nEl,
+          sig: H4.turnSig(nTurn),
+          live: !!streamingStep2,
+          struct: streamingStep2 ? _streamStructSig(streamingStep2.streaming) : null,
+          lastContent: streamingStep2 ? streamingStep2.streaming.content != null ? streamingStep2.streaming.content : "" : null,
+          lastReasoning: streamingStep2 ? streamingStep2.streaming.reasoning != null ? streamingStep2.streaming.reasoning : "" : null
+        });
+        changed = true;
+      }
+      if (changed && H4.initCollapsible) {
+        try {
+          H4.initCollapsible(container);
+        } catch (e) {
+        }
+      }
+      return changed;
+    }
+    function rendererReset(container) {
+      if (container && container.__rdx) {
+        container.__rdx = null;
+      }
+    }
+    window.Hermes.renderFull = renderFull;
+    window.Hermes.renderDiff = renderDiff;
+    window.Hermes.rendererReset = rendererReset;
+  })();
+
+  // web/chat/js/chat.js
+  window.Hermes = window.Hermes || {};
+  (function() {
+    "use strict";
+    const H4 = window.Hermes;
+    const $3 = window.Hermes.$;
+    const $$ = window.Hermes.$$;
+    const esc = window.Hermes.esc;
+    const api = window.Hermes.api;
     const getMsgs = window.Hermes.getMsgs;
     const setMsgs = window.Hermes.setMsgs;
     function currentMsgs() {
@@ -17468,30 +17949,6 @@ ${step.assistant.content}
       const btnStop = document.getElementById("btn-stop");
       if (btnSend) btnSend.style.display = "none";
       if (btnStop) btnStop.style.display = "inline-flex";
-    }
-    function appendNewTurn(container, userMsg, streamingMsg) {
-      const fmtTime = window.Hermes.fmtTime;
-      const userTime = userMsg.timestamp_fmt || fmtTime(userMsg.timestamp) || fmtTime(Date.now() / 1e3);
-      const userId = userMsg.id || "";
-      const turnHtml = `
-      <div class="turn" data-msg-id="${esc(String(userId))}" data-streaming="true">
-        <div class="turn-user">
-          <div class="turn-user-content">${window.Hermes.renderMarkdown(userMsg.content || "")}</div>
-          <div class="turn-avatar user-avatar">U</div>
-        </div>
-        <div class="turn-time turn-time-user">${esc(userTime)}<span class="turn-actions"><button class="turn-edit-btn" data-msg-id="${esc(String(userId))}" title="\u7F16\u8F91\u91CD\u53D1">\u270E</button></span></div>
-        <div class="turn-agent">
-          <div class="turn-avatar agent-avatar">H</div>
-          <div class="turn-agent-body">
-            <div class="turn-steps">
-              ${window.Hermes.renderStreamingStepsHTML(streamingMsg)}
-            </div>
-          </div>
-        </div>
-      </div>`;
-      container.insertAdjacentHTML("beforeend", turnHtml);
-      window.Hermes.initCollapsible(container);
-      container.scrollTop = container.scrollHeight;
     }
     let _renderTimers = {};
     const RENDER_DEBOUNCE_MS = 50;
@@ -17534,14 +17991,7 @@ ${step.assistant.content}
     window.Hermes._startLiveTimer = _startLiveTimer;
     window.Hermes._stopLiveTimer = _stopLiveTimer;
     function _extractText(content) {
-      if (!content) return "";
-      if (typeof content === "string") return content;
-      if (Array.isArray(content)) return content.filter(function(b3) {
-        return b3.type === "text";
-      }).map(function(b3) {
-        return b3.text;
-      }).join("");
-      return String(content);
+      return window.Hermes.msgText(content);
     }
     function _clearRenderTimer(sid) {
       if (_renderTimers[sid]) {
@@ -17605,186 +18055,29 @@ ${step.assistant.content}
         if (el) el.scrollTop = el.scrollHeight;
       });
     }
-    function finalizeStreamingTurn(sid) {
-      if (!sid) return;
-      _clearRenderTimer(sid);
-      _stopLiveTimer();
-      const dom = window.Hermes.dom;
-      if (window.Hermes.state.focusedSessionId !== sid) return;
-      const turnEl = dom.chatMessages.querySelector('.turn[data-streaming="true"]');
-      if (!turnEl) return;
-      const msgs = getMsgs(sid);
-      if (!msgs) return;
-      const prevScrollTop = dom.chatMessages.scrollTop;
-      var lastAssistant = null;
-      for (var mi = msgs.length - 1; mi >= 0; mi--) {
-        if (msgs[mi].role === "assistant") {
-          lastAssistant = msgs[mi];
-          break;
-        }
-      }
-      if (!lastAssistant) return;
-      if (lastAssistant._toolSteps) {
-        lastAssistant._toolSteps.forEach(function(ts) {
-          if (ts.running) {
-            ts.running = false;
-            ts.endTime = ts.endTime || Date.now();
-          }
-        });
-      }
-      if (lastAssistant._toolSteps && lastAssistant._toolSteps.length > 0 && lastAssistant.content && lastAssistant.content.trim().length > 0) {
-        var finalMsg = {
-          role: "assistant",
-          content: lastAssistant.content,
-          reasoning: lastAssistant.reasoning || "",
-          timestamp: lastAssistant.timestamp,
-          timestamp_fmt: lastAssistant.timestamp_fmt
-        };
-        lastAssistant.content = "";
-        lastAssistant.reasoning = "";
-        var lastAssistantIdx = msgs.lastIndexOf(lastAssistant);
-        var insertIdx = lastAssistantIdx + 1;
-        while (insertIdx < msgs.length && (msgs[insertIdx].role === "toolResult" || msgs[insertIdx].role === "tool")) {
-          insertIdx++;
-        }
-        msgs.splice(insertIdx, 0, finalMsg);
-      }
-      const freshTurns = window.Hermes.groupIntoTurns(msgs);
-      if (freshTurns.length > 0) {
-        const freshTurn = freshTurns[freshTurns.length - 1];
-        var stepsHtml = window.Hermes.renderTurnStepsHTML(freshTurn);
-        var stepsEl = turnEl.querySelector(".turn-steps");
-        if (stepsEl) _morph(stepsEl, stepsHtml);
-      }
-      turnEl.removeAttribute("data-streaming");
-      window.Hermes.initCollapsible(turnEl);
-      dom.chatMessages.scrollTop = prevScrollTop;
-      if (lastAssistant) delete lastAssistant._lastSig;
-      if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
-    }
-    function refreshLastTurn(sid) {
-    }
     function renderCurrentChat() {
       const state = window.Hermes.state;
       const dom = window.Hermes.dom;
       if (state.viewMode !== "chat") return;
       const sid = state.focusedSessionId;
+      const container = dom.chatMessages;
       if (!sid) {
-        dom.chatMessages.innerHTML = "";
+        window.Hermes.rendererReset(container);
+        container.innerHTML = "";
         return;
       }
       const msgs = getMsgs(sid);
       if (!msgs) return;
-      const streamingMsg = msgs.find((m3) => m3._streaming);
-      if (streamingMsg) {
-        const streamingTurnEl = dom.chatMessages.querySelector('.turn[data-streaming="true"]');
-        if (streamingTurnEl) {
-          const stepsEl = streamingTurnEl.querySelector(".turn-steps");
-          if (stepsEl) {
-            const atBottom3 = isNearBottom(dom.chatMessages);
-            var _ts = streamingMsg._toolSteps || [];
-            var _toolSig = _ts.map(function(s) {
-              var base = (s.running ? "r" : s.result !== void 0 ? "d" : "p") + "|" + (s.toolCallId || "") + "|" + (s.name || "");
-              return s.running ? base : base + "|" + (s.result != null ? String(s.result).length : 0);
-            }).join(",");
-            var _sig = [
-              "tc=" + _ts.length,
-              "ts=" + _toolSig,
-              "hr=" + !!(streamingMsg.reasoning && streamingMsg.reasoning.trim()),
-              "hc=" + !!(streamingMsg.content && streamingMsg.content.trim()),
-              "ap=" + !!(streamingMsg._approval && !streamingMsg._approvalResolved),
-              "sa=" + (streamingMsg._subagents ? streamingMsg._subagents.length : 0),
-              "ab=" + !!streamingMsg._aborted,
-              "er=" + !!streamingMsg._error,
-              "us=" + !!(streamingMsg._usage && (streamingMsg._usage.total_tokens || streamingMsg._usage.prompt_tokens)),
-              "qu=" + !!streamingMsg._queue
-            ].join(";");
-            if (streamingMsg._lastSig === _sig) {
-              var _finalBody = stepsEl.querySelector(".step-final .step-answer");
-              if (_finalBody && streamingMsg.content != null) {
-                var _sfSplit = window.Hermes.renderStreamingMarkdownSplit(streamingMsg.content, "sf");
-                var _stableEl = _finalBody.querySelector(".md-stable");
-                var _activeEl = _finalBody.querySelector(".md-active");
-                if (_activeEl) {
-                  if (_sfSplit.stableChanged && _stableEl) _morph(_stableEl, _sfSplit.stableHtml);
-                  _morph(_activeEl, _sfSplit.activeHtml);
-                } else {
-                  _morph(_finalBody, _sfSplit.fullHtml);
-                }
-              }
-              var _tmBody = streamingTurnEl.querySelector(".tm-active .tm-body");
-              if (_tmBody && streamingMsg.reasoning) {
-                var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
-                var _tmStick = _tmOff < 24;
-                _morph(_tmBody, window.Hermes.renderStreamingMarkdown(streamingMsg.reasoning.trim(), "tm"));
-                _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
-              }
-              if (atBottom3) _pinToBottom();
-              _updateScrollBtn();
-              return;
-            }
-            streamingMsg._lastSig = _sig;
-            var openPanelIdx = [];
-            var oldPanels = stepsEl.querySelectorAll(".ow-panels .ow-ep");
-            oldPanels.forEach(function(p2, idx) {
-              if (p2.classList.contains("ow-show")) openPanelIdx.push(idx);
-            });
-            var oldTl = stepsEl.querySelector(".ow-tl");
-            var tlStickToBottom = true;
-            var tlBottomOffset = 0;
-            if (oldTl) {
-              tlBottomOffset = oldTl.scrollHeight - oldTl.scrollTop - oldTl.clientHeight;
-              tlStickToBottom = tlBottomOffset < 24;
-            }
-            stepsEl.innerHTML = window.Hermes.renderStreamingStepsHTML(streamingMsg);
-            var newPanels = stepsEl.querySelectorAll(".ow-panels .ow-ep");
-            openPanelIdx.forEach(function(idx) {
-              if (newPanels[idx]) newPanels[idx].classList.add("ow-show");
-            });
-            var tl = stepsEl.querySelector(".ow-tl");
-            if (tl) {
-              if (tlStickToBottom) {
-                tl.scrollTop = tl.scrollHeight;
-              } else {
-                tl.scrollTop = Math.max(0, tl.scrollHeight - tl.clientHeight - tlBottomOffset);
-              }
-            }
-            var marginEl = streamingTurnEl.querySelector(".turn-margin");
-            var tmOldBody = marginEl ? marginEl.querySelector(".tm-active .tm-body") : null;
-            var tmStick = true, tmOff = 0;
-            if (tmOldBody) {
-              tmOff = tmOldBody.scrollHeight - tmOldBody.scrollTop - tmOldBody.clientHeight;
-              tmStick = tmOff < 24;
-            }
-            var newMarginHtml = window.Hermes.renderThinkingMargin({ steps: [{ streaming: streamingMsg }] }, true);
-            if (newMarginHtml) {
-              if (!marginEl) {
-                var agentBody = streamingTurnEl.querySelector(".turn-agent-body");
-                if (agentBody) agentBody.insertAdjacentHTML("afterend", newMarginHtml);
-              } else if (tmOldBody) {
-                _morph(tmOldBody, window.Hermes.renderStreamingMarkdown((streamingMsg.reasoning || "").trim(), "tm"));
-              }
-            } else if (marginEl) {
-              marginEl.remove();
-            }
-            var tmNewBody = streamingTurnEl.querySelector(".tm-active .tm-body");
-            if (tmNewBody) {
-              tmNewBody.scrollTop = tmStick ? tmNewBody.scrollHeight : Math.max(0, tmNewBody.scrollHeight - tmNewBody.clientHeight - tmOff);
-            }
-            if (atBottom3) _pinToBottom();
-            _updateScrollBtn();
-            return;
-          }
-        }
-        const atBottom2 = isNearBottom(dom.chatMessages);
-        window.Hermes.renderMessages(msgs, dom.chatMessages);
-        if (atBottom2) _pinToBottom();
-        _updateScrollBtn();
-        return;
+      const atBottom = isNearBottom(container);
+      var changed = false;
+      try {
+        changed = window.Hermes.renderDiff(container, msgs, sid);
+      } catch (e) {
+        console.warn("[renderCurrentChat] renderDiff failed, fallback full render", e);
+        window.Hermes.rendererReset(container);
+        changed = window.Hermes.renderFull(container, msgs, sid);
       }
-      const atBottom = isNearBottom(dom.chatMessages);
-      window.Hermes.renderMessages(msgs, dom.chatMessages);
-      if (atBottom) _pinToBottom();
+      if (changed && atBottom) _pinToBottom();
       _updateScrollBtn();
     }
     function scheduleRender(sid, immediate) {
@@ -18004,7 +18297,7 @@ ${step.assistant.content}
     function addSystemMessage(text2, html2) {
       const state = window.Hermes.state;
       const sid = state.focusedSessionId;
-      const sysMsg = { role: "system", content: html2 || text2, _isSystemDisplay: true };
+      const sysMsg = { role: "system", content: html2 || text2, _isSystemDisplay: true, _localId: window.Hermes.uid() };
       const msgs = sid ? getMsgs(sid) : null;
       if (msgs) {
         msgs.push(sysMsg);
@@ -18101,7 +18394,7 @@ ${m3.content}
     }
     function _pushCompactionResult(msgs, reason, result, aborted, errorMessage) {
       if (aborted || errorMessage || !result) {
-        msgs.push({ role: "system", content: "\u2702\uFE0F \u4E0A\u4E0B\u6587\u538B\u7F29\u5931\u8D25\uFF1A" + (errorMessage || (aborted ? "\u5DF2\u53D6\u6D88" : "\u672A\u77E5\u539F\u56E0")), _isCompaction: true });
+        msgs.push({ role: "system", content: "\u2702\uFE0F \u4E0A\u4E0B\u6587\u538B\u7F29\u5931\u8D25\uFF1A" + (errorMessage || (aborted ? "\u5DF2\u53D6\u6D88" : "\u672A\u77E5\u539F\u56E0")), _isCompaction: true, _localId: window.Hermes.uid() });
         return;
       }
       var before = result.tokensBefore || 0;
@@ -18110,7 +18403,7 @@ ${m3.content}
       var savedPct = before > 0 ? Math.round(saved / before * 100) : 0;
       var head = "\u2702\uFE0F \u4E0A\u4E0B\u6587\u5DF2\u538B\u7F29 " + _fmtK(before) + " \u2192 " + _fmtK(after) + " tokens\uFF08\u8282\u7701 " + savedPct + "%" + (reason ? "\uFF0C" + reason : "") + "\uFF09";
       var html2 = '<div class="compaction-result"><div class="compaction-head">' + esc(head) + "</div>" + (result.summary ? '<details class="compaction-summary"><summary>\u67E5\u770B\u538B\u7F29\u6458\u8981</summary><div class="compaction-summary-body">' + esc(result.summary) + "</div></details>" : "") + "</div>";
-      msgs.push({ role: "system", content: head, _isCompaction: true, _compactionHtml: html2 });
+      msgs.push({ role: "system", content: head, _isCompaction: true, _compactionHtml: html2, _localId: window.Hermes.uid() });
     }
     async function compressChat() {
       var state = window.Hermes.state;
@@ -18224,7 +18517,7 @@ ${m3.content}
       });
       pushInputHistory(input);
       const abortController = new AbortController();
-      const userMsg = { role: "user", content: input };
+      const userMsg = { role: "user", content: input, _localId: window.Hermes.uid() };
       const msgs = getMsgs(sid);
       const preStreamCount = msgs ? msgs.length : 0;
       if (msgs) msgs.push(userMsg);
@@ -18235,7 +18528,8 @@ ${m3.content}
         _streaming: true,
         _toolSteps: [],
         _toolCallCount: 0,
-        _stepNum: 0
+        _stepNum: 0,
+        _localId: window.Hermes.uid()
       };
       if (msgs) msgs.push(streamAssistantMsg);
       const streamState = {
@@ -18247,8 +18541,10 @@ ${m3.content}
         preStreamCount
       };
       state.activeStreams[sid] = streamState;
-      appendNewTurn(dom.chatMessages, userMsg, streamAssistantMsg);
+      if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
+      scheduleRender(sid, true);
       window.Hermes.updateStreamingHints();
+      if (dom.chatMessages) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
       const messagesToSend = [{ role: "user", content: input }];
       try {
         const res = await fetch(window.Hermes.API_BASE + "/chat/stream", {
@@ -18288,7 +18584,7 @@ ${m3.content}
           if (currentMsgs2) {
             const idx = currentMsgs2.indexOf(streamAssistantMsg);
             if (idx >= 0) currentMsgs2.splice(idx, 1);
-            currentMsgs2.push({ role: "system", content: "API \u9519\u8BEF: " + errText, _isSystemDisplay: true });
+            currentMsgs2.push({ role: "system", content: "API \u9519\u8BEF: " + errText, _isSystemDisplay: true, _localId: window.Hermes.uid() });
           }
           delete state.activeStreams[sid];
           if (state.focusedSessionId === sid && state.viewMode === "chat") {
@@ -18339,10 +18635,6 @@ ${m3.content}
                   _step2.endTime = Date.now();
                   if (evt.result) _step2.result = _extractText(evt.result.content);
                   if (evt.isError) _step2.error = true;
-                }
-                var _curMsgs = getMsgs(sid);
-                if (_curMsgs && evt.result) {
-                  _curMsgs.push({ role: "toolResult", toolCallId: evt.toolCallId, content: _extractText(evt.result.content) });
                 }
                 scheduleRender(sid, false);
                 return;
@@ -18402,7 +18694,7 @@ ${m3.content}
               if (_t === "compaction_start") {
                 var _cmsgs = getMsgs(sid);
                 if (_cmsgs) {
-                  _cmsgs.push({ role: "system", content: "\u2702\uFE0F \u6B63\u5728\u538B\u7F29\u4E0A\u4E0B\u6587\u2026\uFF08" + (evt.reason || "") + "\uFF09", _isCompaction: true, _compactionPending: true });
+                  _cmsgs.push({ role: "system", content: "\u2702\uFE0F \u6B63\u5728\u538B\u7F29\u4E0A\u4E0B\u6587\u2026\uFF08" + (evt.reason || "") + "\uFF09", _isCompaction: true, _compactionPending: true, _localId: window.Hermes.uid() });
                   scheduleRender(sid, true);
                 }
                 return;
@@ -18507,7 +18799,9 @@ ${m3.content}
           delete state.activeStreams[sid];
           if (state.focusedSessionId === sid && state.viewMode === "chat") {
             if (streamAssistantMsg.content || streamAssistantMsg.reasoning) {
-              window.Hermes.finalizeStreamingTurn(sid);
+              if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
+              if (window.Hermes._stopLiveTimer) window.Hermes._stopLiveTimer();
+              renderCurrentChat();
             } else {
               var failMsg = isWatchdog ? "\u54CD\u5E94\u8D85\u65F6\uFF1A60 \u79D2\u5185\u672A\u6536\u5230\u6570\u636E\uFF0C\u8FDE\u63A5\u53EF\u80FD\u5DF2\u65AD\u5F00\u3002" : "\u8FDE\u63A5\u5931\u8D25: " + e.message;
               addSystemMessage(failMsg + "\n\n\u8BF7\u786E\u8BA4 pi-bridge \u5DF2\u542F\u52A8: cd piweb-bridge && ./start.sh");
@@ -18603,8 +18897,6 @@ ${m3.content}
     window.Hermes.renderCurrentChat = renderCurrentChat;
     window.Hermes.currentMsgs = currentMsgs;
     window.Hermes.updateChatUIState = updateChatUIState;
-    window.Hermes.finalizeStreamingTurn = finalizeStreamingTurn;
-    window.Hermes.refreshLastTurn = refreshLastTurn;
     window.Hermes.clearAllRenderTimers = clearAllRenderTimers;
     window.Hermes._clearRenderTimer = _clearRenderTimer;
     window.Hermes._updateScrollBtn = _updateScrollBtn;
@@ -19703,27 +19995,6 @@ ${m3.content}
             }
           }
         }
-      } else if (action === "toggle-tool-result") {
-        if (parent.classList.contains("tool-result-expanded")) {
-          parent.classList.remove("tool-result-expanded");
-          parent.classList.add("tool-result-collapsed");
-        } else if (parent.classList.contains("tool-result-collapsed")) {
-          parent.classList.remove("tool-result-collapsed");
-        } else {
-          parent.classList.add("tool-result-expanded");
-        }
-      } else if (action === "toggle-thinking") {
-        const block = parent;
-        if (block.classList.contains("thinking-expanded")) {
-          block.classList.remove("thinking-expanded");
-          block.classList.add("thinking-collapsed");
-        } else if (block.classList.contains("thinking-collapsed")) {
-          block.classList.remove("thinking-collapsed");
-        } else {
-          block.classList.add("thinking-expanded");
-        }
-      } else if (action === "toggle-tools-collapsed") {
-        parent.classList.toggle("tools-collapsed");
       }
     });
     function bindEvents() {
@@ -19738,25 +20009,6 @@ ${m3.content}
           if (H4._updateScrollBtn) H4._updateScrollBtn();
         }, { passive: true });
       }
-      dom.chatMessages.addEventListener("click", function(e) {
-        var btn = e.target.closest(".turn-edit-btn");
-        if (!btn) return;
-        var msgId = btn.dataset.msgId;
-        if (!msgId) return;
-        var sid = state.focusedSessionId;
-        if (!sid) return;
-        var msgs = H4.getMsgs(sid);
-        if (!msgs) return;
-        for (var i = 0; i < msgs.length; i++) {
-          if (String(msgs[i].id || "") === msgId && msgs[i].role === "user") {
-            dom.chatInput.value = msgs[i].content || "";
-            dom.chatInput.focus();
-            autoResize(dom.chatInput);
-            H4.toast("\u5DF2\u8F7D\u5165\u6D88\u606F\uFF0C\u4FEE\u6539\u540E\u53D1\u9001");
-            return;
-          }
-        }
-      });
       $3("#btn-new-chat").addEventListener("click", () => H4.createNewChat());
       $3("#btn-resume").addEventListener("click", () => {
         if (state.focusedSessionId) H4.enterSession(state.focusedSessionId, "chat");
@@ -19772,14 +20024,6 @@ ${m3.content}
             H4.enterSession(sid, "chat");
             return;
           }
-        }
-      });
-      $3("#btn-toggle-tools").addEventListener("click", function() {
-        state.showTools = !state.showTools;
-        this.classList.toggle("active", state.showTools);
-        if (state.focusedSessionId && state.viewMode !== "chat") {
-          const msgs = H4.getMsgs(state.focusedSessionId);
-          if (msgs) H4.renderMessages(msgs, dom.messageList);
         }
       });
       $3("#btn-export-session").addEventListener("click", () => {

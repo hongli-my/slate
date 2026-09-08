@@ -20,7 +20,9 @@ import "../js/session-manager.js";
 import "../js/router.js";
 import "../js/markdown.js";
 import "../js/eventsource-parser.js";
+import "../js/view-model.js"; // 纯函数 view-model（分组/分解/签名），在 session/render 之前
 import "../js/session.js";
+import "../js/render.js";       // keyed element-map reconciler（依赖 view-model + session 构建器）
 import "../js/chat.js";
 import "../js/gateway.js";
 import "../js/shortcuts.js";

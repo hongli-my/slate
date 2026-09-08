@@ -21,24 +21,6 @@ window.Hermes = window.Hermes || {};
   const esc = window.Hermes.esc;
   const api = window.Hermes.api;
 
-  // morphdom 优先替换 innerHTML：流式期保留 DOM identity，消除重排抖动与
-  // CSS animation 重启；未加载时降级为 innerHTML。childrenOnly 只 diff 子节点。
-  function _morph(el, html) {
-    if (window.morphdom) {
-      try {
-        window.morphdom(el, html, {
-          childrenOnly: true,
-          onBeforeElUpdated: function(fromEl, toEl) {
-            if (fromEl.isEqualNode(toEl)) return false;  // 跳过相同节点
-            return true;
-          }
-        });
-        return;
-      } catch(e) {}  // morphdom 失败则降级 innerHTML
-    }
-    el.innerHTML = html;
-  }
-
   // ---- 数据访问层（委托给 SessionManager）----
   const getMsgs = window.Hermes.getMsgs;
   const setMsgs = window.Hermes.setMsgs;
@@ -60,40 +42,6 @@ window.Hermes = window.Hermes || {};
     const btnStop = document.getElementById('btn-stop');
     if (btnSend) btnSend.style.display = 'none';
     if (btnStop) btnStop.style.display = 'inline-flex';
-  }
-
-  // ---- 增量追加新 turn ----
-
-  /** 追加 user bubble + streaming turn 到消息列表末尾（避免全量渲染跳动） */
-  function appendNewTurn(container, userMsg, streamingMsg) {
-    const fmtTime = window.Hermes.fmtTime;
-    const userTime = userMsg.timestamp_fmt || fmtTime(userMsg.timestamp) || fmtTime(Date.now() / 1000);
-    const userId = userMsg.id || '';
-
-    // user bubble + streaming agent turn（一个 turn 包含 user + agent）
-    const turnHtml = `
-      <div class="turn" data-msg-id="${esc(String(userId))}" data-streaming="true">
-        <div class="turn-user">
-          <div class="turn-user-content">${window.Hermes.renderMarkdown(userMsg.content || '')}</div>
-          <div class="turn-avatar user-avatar">U</div>
-        </div>
-        <div class="turn-time turn-time-user">${esc(userTime)}<span class="turn-actions"><button class="turn-edit-btn" data-msg-id="${esc(String(userId))}" title="编辑重发">✎</button></span></div>
-        <div class="turn-agent">
-          <div class="turn-avatar agent-avatar">H</div>
-          <div class="turn-agent-body">
-            <div class="turn-steps">
-              ${window.Hermes.renderStreamingStepsHTML(streamingMsg)}
-            </div>
-          </div>
-        </div>
-      </div>`;
-
-    container.insertAdjacentHTML('beforeend', turnHtml);
-    // P#3: 限定容器范围
-    window.Hermes.initCollapsible(container);
-
-    // 滚到底部（用户刚发消息，一定在底部附近）
-    container.scrollTop = container.scrollHeight;
   }
 
   // ---- 统一渲染 ----
@@ -133,12 +81,9 @@ window.Hermes = window.Hermes || {};
   window.Hermes._startLiveTimer = _startLiveTimer;
   window.Hermes._stopLiveTimer = _stopLiveTimer;
 
-  // pi: 从 content blocks 提取纯文本
+  // 从 content blocks 提取纯文本（统一委托 view-model.msgText，消除双实现 D1）
   function _extractText(content) {
-    if (!content) return '';
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) return content.filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('');
-    return String(content);
+    return window.Hermes.msgText(content);
   }
 
   /** 清除指定会话的 render timer（不触发渲染） */
@@ -217,268 +162,52 @@ window.Hermes = window.Hermes || {};
     });
   }
 
-  /**
-   * 流结束后：把 DOM 上的 streaming turn 转为最终状态（不全量渲染）
-   * - 清除残留的 debounce render timer（关键！否则 timer 触发后会全量渲染+滚屏）
-   * - 去掉 data-streaming 属性
-   * - 用 renderTurnStepsHTML 重渲染 .turn-steps 内容
-   * - 保持滚动位置不变
-   */
-  function finalizeStreamingTurn(sid) {
-    if (!sid) return;
-
-    // 1. 清除此会话残留的 debounce timer，防止其触发全量渲染+滚屏
-    _clearRenderTimer(sid);
-    // 流式结束，停止实时计时器
-    _stopLiveTimer();
-
-    const dom = window.Hermes.dom;
-    // 防御：仅当当前焦点会话匹配时才操作 DOM
-    if (window.Hermes.state.focusedSessionId !== sid) return;
-
-    const turnEl = dom.chatMessages.querySelector('.turn[data-streaming="true"]');
-    if (!turnEl) return;
-
-    const msgs = getMsgs(sid);
-    if (!msgs) return;
-
-    // 记住滚动位置
-    const prevScrollTop = dom.chatMessages.scrollTop;
-
-    // 直接从 msgs 找原 streaming msg 对象（onStreamComplete 已把 _streaming 设 false）。
-    // 不能用 groupIntoTurns 返回的 lastStep.assistant —— 那是 Object.assign 创建的
-    // 副本（normA），修改它不影响原对象，lastIndexOf 也找不到（返回 -1 → 插到数组开头）。
-    var lastAssistant = null;
-    for (var mi = msgs.length - 1; mi >= 0; mi--) {
-      if (msgs[mi].role === 'assistant') { lastAssistant = msgs[mi]; break; }
-    }
-    if (!lastAssistant) return;
-
-    // Step 1: 流式结束时，_toolSteps 里仍 running 的标记为完成（tool_execution_end 可能晚到）
-    if (lastAssistant._toolSteps) {
-      lastAssistant._toolSteps.forEach(function(ts) {
-        if (ts.running) { ts.running = false; ts.endTime = ts.endTime || Date.now(); }
-      });
-    }
-
-    // Step 1b: streaming msg 同时有 _toolSteps 和正文 content 时，把 content 拆分到
-    // 单独的 final assistant 消息。否则 renderTurnStepsHTML 会把这条消息归为
-    // toolStep，正文只被当成“📝说明”而非最终回复。
-    // backgroundReFetch 后 DB 里是分开的两条消息（pi 原生），所以正常。
-    if (lastAssistant._toolSteps && lastAssistant._toolSteps.length > 0 &&
-        lastAssistant.content && lastAssistant.content.trim().length > 0) {
-      var finalMsg = {
-        role: 'assistant',
-        content: lastAssistant.content,
-        reasoning: lastAssistant.reasoning || '',
-        timestamp: lastAssistant.timestamp,
-        timestamp_fmt: lastAssistant.timestamp_fmt
-      };
-      lastAssistant.content = '';
-      lastAssistant.reasoning = '';
-      var lastAssistantIdx = msgs.lastIndexOf(lastAssistant);
-      var insertIdx = lastAssistantIdx + 1;
-      while (insertIdx < msgs.length && (msgs[insertIdx].role === 'toolResult' || msgs[insertIdx].role === 'tool')) {
-        insertIdx++;
-      }
-      msgs.splice(insertIdx, 0, finalMsg);
-    }
-
-    // Step 2: 重新分组并渲染
-    // B2: 用 morphdom 替代 innerHTML 全替换，保留工具卡片等未变节点的 DOM identity，
-    // 消除回复结束瞬间的重排闪烁（与流式期 morphdom 策略一致）
-    const freshTurns = window.Hermes.groupIntoTurns(msgs);
-    if (freshTurns.length > 0) {
-      const freshTurn = freshTurns[freshTurns.length - 1];
-      var stepsHtml = window.Hermes.renderTurnStepsHTML(freshTurn);
-      var stepsEl = turnEl.querySelector('.turn-steps');
-      if (stepsEl) _morph(stepsEl, stepsHtml);
-    }
-
-    // 去掉 data-streaming 标记
-    turnEl.removeAttribute('data-streaming');
-
-    // 重新绑定折叠/展开
-    window.Hermes.initCollapsible(turnEl);
-
-    // 恢复滚动位置（不做任何主动滚动）
-    dom.chatMessages.scrollTop = prevScrollTop;
-
-    // 清理流式渲染状态：签名标记 + markdown 稳定段缓存，防止跨 turn 残留。
-    // 新对话的流式消息是新对象（_lastSig 自然 undefined），但缓存 'sf'/'tm'
-    // 是按 key 复用的，需显式清理避免持有上一轮的大段 HTML 字符串。
-    if (lastAssistant) delete lastAssistant._lastSig;
-    if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
-  }
+  // ----------------------------------------------------------
+  // 流结束/中止/错误的终态转换（原 finalizeStreamingTurn 已删除）
+  //
+  // 根治 R1：不再在流结束后 splice/拆分 msgs 数组，也不再 out-of-band 改 DOM。
+  // 终态转换完全由 renderer 承担：
+  //   1. 数据侧（session-manager onStreamComplete / abort / 错误路径）只置标记：
+  //      _streaming=false + 清 running + 清流式 md 缓存；
+  //   2. 残留消息由 view-model buildTurns 的 isStreamRemnant → decomposeStreaming
+  //      归一化为与 DB 持久化形态等价的 steps（工具卡片保留）；
+  //   3. renderCurrentChat → renderDiff 检测到 turn 从 live 变 static →
+  //      render.js _applyStatic 整 turn 重渲为终态（走 renderMarkdown 净化兜底，B4）。
+  // 效果：无数组结构突变、无 DOM 旁路写入、无“找不到对象”类的定位脆弱性。
+  // ----------------------------------------------------------
 
   /**
-   * backgroundReFetch 后：静默更新缓存数据，不触发 DOM 更新
-   * DOM 已在 finalizeStreamingTurn 中更新过，不需要再替换
+   * 渲染当前焦点会话（chat 模式唯一渲染入口）。
+   * 委托 renderer：会话切换/首次 → renderDiff 内部自动 renderFull；
+   * 增量帧 → 逐 turn 签名比对（L2/L3），未变 turn 零 DOM 操作。
+   * 滚动策略与旧实现一致：渲染前探底，变更且贴底才钉底。
    */
-  function refreshLastTurn(sid) {
-    // 只更新缓存数据，不触碰 DOM——避免任何滚动
-    // 下次用户切换会话再回来时会用新数据全量渲染
-  }
-
   function renderCurrentChat() {
     const state = window.Hermes.state;
     const dom = window.Hermes.dom;
     if (state.viewMode !== 'chat') return;
     const sid = state.focusedSessionId;
+    const container = dom.chatMessages;
     if (!sid) {
-      dom.chatMessages.innerHTML = '';
+      // 无焦点会话：清空容器并重置 renderer 状态，防残留上一会话的 element-map
+      window.Hermes.rendererReset(container);
+      container.innerHTML = '';
       return;
     }
     const msgs = getMsgs(sid);
     if (!msgs) return;
 
-    const streamingMsg = msgs.find(m => m._streaming);
-
-    if (streamingMsg) {
-      // ---- 流式中：尝试增量更新 ----
-      const streamingTurnEl = dom.chatMessages.querySelector('.turn[data-streaming="true"]');
-      if (streamingTurnEl) {
-        const stepsEl = streamingTurnEl.querySelector('.turn-steps');
-        if (stepsEl) {
-          const atBottom = isNearBottom(dom.chatMessages);
-
-          // ---- 结构签名对比：结构未变时走轻量增量（只更新正文/思考 body）----
-          // 最高频的 text_delta / thinking_delta 不改变结构签名，从而避免整块
-          // innerHTML 重建（重排闪烁、代码块滚动/选区丢失）。只有工具增减、
-          // 思考出现/消失、正文出现等结构性变化才全量重建。
-          var _ts = streamingMsg._toolSteps || [];
-          var _toolSig = _ts.map(function(s) {
-            // running 时不计 result 长度：partialResult 更新（tool_execution_update）
-            // 对 running 卡片 UI 无影响（renderToolCard running 态只显示 spinner+计时，
-            // 不读 result），避免 partialResult 频繁更新触发无意义全量 stepsEl 重建。
-            var base = (s.running ? 'r' : (s.result !== undefined ? 'd' : 'p')) + '|' + (s.toolCallId || '') + '|' + (s.name || '');
-            return s.running ? base : (base + '|' + (s.result != null ? String(s.result).length : 0));
-          }).join(',');
-          var _sig = [
-            'tc=' + _ts.length,
-            'ts=' + _toolSig,
-            'hr=' + !!(streamingMsg.reasoning && streamingMsg.reasoning.trim()),
-            'hc=' + !!(streamingMsg.content && streamingMsg.content.trim()),
-            'ap=' + !!(streamingMsg._approval && !streamingMsg._approvalResolved),
-            'sa=' + (streamingMsg._subagents ? streamingMsg._subagents.length : 0),
-            'ab=' + !!streamingMsg._aborted,
-            'er=' + !!streamingMsg._error,
-            'us=' + !!(streamingMsg._usage && (streamingMsg._usage.total_tokens || streamingMsg._usage.prompt_tokens)),
-            'qu=' + !!(streamingMsg._queue)
-          ].join(';');
-
-          if (streamingMsg._lastSig === _sig) {
-            // ---- 轻量路径：结构未变，只更新正文 body + 思考 body ----
-            var _finalBody = stepsEl.querySelector('.step-final .step-answer');
-            if (_finalBody && streamingMsg.content != null) {
-              // P#4: 只 patch 活跃块 DOM，稳定段保留不重建（长回复从 O(n) 降到 O(活跃块)）
-              var _sfSplit = window.Hermes.renderStreamingMarkdownSplit(streamingMsg.content, 'sf');
-              var _stableEl = _finalBody.querySelector('.md-stable');
-              var _activeEl = _finalBody.querySelector('.md-active');
-              if (_activeEl) {
-                if (_sfSplit.stableChanged && _stableEl) _morph(_stableEl, _sfSplit.stableHtml);
-                _morph(_activeEl, _sfSplit.activeHtml);
-              } else {
-                // 兼容旧 DOM（未拆分容器，如 finalize 后残留）
-                _morph(_finalBody, _sfSplit.fullHtml);
-              }
-            }
-            var _tmBody = streamingTurnEl.querySelector('.tm-active .tm-body');
-            if (_tmBody && streamingMsg.reasoning) {
-              var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
-              var _tmStick = _tmOff < 24;
-              _morph(_tmBody, window.Hermes.renderStreamingMarkdown(streamingMsg.reasoning.trim(), 'tm'));
-              _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
-            }
-            if (atBottom) _pinToBottom();
-            _updateScrollBtn();
-            return;
-          }
-          streamingMsg._lastSig = _sig;
-
-          // ---- 结构变化：全量重建 stepsEl ----
-          // 保存用户已展开的面板索引（跨越 innerHTML 替换）
-          var openPanelIdx = [];
-          var oldPanels = stepsEl.querySelectorAll('.ow-panels .ow-ep');
-          oldPanels.forEach(function(p, idx) {
-            if (p.classList.contains('ow-show')) openPanelIdx.push(idx);
-          });
-
-          // 记录时间线相对底部的偏移：贴近底部则跟随，否则保持用户浏览位置
-          // 必须在 innerHTML 重建前读取，重建后 scrollTop 会归零
-          var oldTl = stepsEl.querySelector('.ow-tl');
-          var tlStickToBottom = true;
-          var tlBottomOffset = 0;
-          if (oldTl) {
-            tlBottomOffset = oldTl.scrollHeight - oldTl.scrollTop - oldTl.clientHeight;
-            tlStickToBottom = tlBottomOffset < 24;
-          }
-          stepsEl.innerHTML = window.Hermes.renderStreamingStepsHTML(streamingMsg);
-
-          // 恢复展开的面板
-          var newPanels = stepsEl.querySelectorAll('.ow-panels .ow-ep');
-          openPanelIdx.forEach(function(idx) {
-            if (newPanels[idx]) newPanels[idx].classList.add('ow-show');
-          });
-
-          // 时间线跟随：贴近底部时钉到底展示最新 tool，否则保持用户的浏览位置
-          var tl = stepsEl.querySelector('.ow-tl');
-          if (tl) {
-            if (tlStickToBottom) {
-              tl.scrollTop = tl.scrollHeight;
-            } else {
-              tl.scrollTop = Math.max(0, tl.scrollHeight - tl.clientHeight - tlBottomOffset);
-            }
-          }
-
-          // 思考气泡更新（独立于 .turn-steps 重建：隔离工具重排闪烁）
-          // .turn-margin 在 .turn-agent-body 外侧，不会被上面的 innerHTML 重建碰到。
-          // 增量策略：首次插入完整骨架，后续只替换 .tm-body 内容（不 outerHTML 重建），
-          // 避免骨架重建导致滚动位置丢失/重排闪烁。
-          var marginEl = streamingTurnEl.querySelector('.turn-margin');
-          var tmOldBody = marginEl ? marginEl.querySelector('.tm-active .tm-body') : null;
-          var tmStick = true, tmOff = 0;
-          if (tmOldBody) {
-            tmOff = tmOldBody.scrollHeight - tmOldBody.scrollTop - tmOldBody.clientHeight;
-            tmStick = tmOff < 24;
-          }
-          var newMarginHtml = window.Hermes.renderThinkingMargin({ steps: [{ streaming: streamingMsg }] }, true);
-          if (newMarginHtml) {
-            if (!marginEl) {
-              // 首次出现思考：插入完整骨架
-              var agentBody = streamingTurnEl.querySelector('.turn-agent-body');
-              if (agentBody) agentBody.insertAdjacentHTML('afterend', newMarginHtml);
-            } else if (tmOldBody) {
-              // 骨架已存在：只更新 body 内容
-              _morph(tmOldBody, window.Hermes.renderStreamingMarkdown((streamingMsg.reasoning || '').trim(), 'tm'));
-            }
-          } else if (marginEl) {
-            // 思考结束 → 移除气泡
-            marginEl.remove();
-          }
-          // 钉底：进行中的思考流贴近底部时跟随
-          var tmNewBody = streamingTurnEl.querySelector('.tm-active .tm-body');
-          if (tmNewBody) {
-            tmNewBody.scrollTop = tmStick ? tmNewBody.scrollHeight : Math.max(0, tmNewBody.scrollHeight - tmNewBody.clientHeight - tmOff);
-          }
-
-          if (atBottom) _pinToBottom();
-          _updateScrollBtn();
-          return;
-        }
-      }
-      // 无已有 streaming DOM（首次），做全量渲染
-      const atBottom = isNearBottom(dom.chatMessages);
-      window.Hermes.renderMessages(msgs, dom.chatMessages);
-      if (atBottom) _pinToBottom();
-      _updateScrollBtn();
-      return;
+    const atBottom = isNearBottom(container);
+    var changed = false;
+    try {
+      changed = window.Hermes.renderDiff(container, msgs, sid);
+    } catch (e) {
+      // renderer 异常兜底：全量重建（宁可慢不破）
+      console.warn('[renderCurrentChat] renderDiff failed, fallback full render', e);
+      window.Hermes.rendererReset(container);
+      changed = window.Hermes.renderFull(container, msgs, sid);
     }
-
-    // ---- 非流式：全量渲染 ----
-    const atBottom = isNearBottom(dom.chatMessages);
-    window.Hermes.renderMessages(msgs, dom.chatMessages);
-    if (atBottom) _pinToBottom();
+    if (changed && atBottom) _pinToBottom();
     _updateScrollBtn();
   }
 
@@ -707,7 +436,7 @@ window.Hermes = window.Hermes || {};
   function addSystemMessage(text, html) {
     const state = window.Hermes.state;
     const sid = state.focusedSessionId;
-    const sysMsg = { role: 'system', content: html || text, _isSystemDisplay: true };
+    const sysMsg = { role: 'system', content: html || text, _isSystemDisplay: true, _localId: window.Hermes.uid() };
     const msgs = sid ? getMsgs(sid) : null;
     if (msgs) {
       msgs.push(sysMsg);
@@ -788,7 +517,7 @@ window.Hermes = window.Hermes || {};
   // 往消息流插入一条压缩结果 system 消息（供 SSE compaction_end 和手动 /compact 共用）
   function _pushCompactionResult(msgs, reason, result, aborted, errorMessage) {
     if (aborted || errorMessage || !result) {
-      msgs.push({ role: 'system', content: '✂️ 上下文压缩失败：' + (errorMessage || (aborted ? '已取消' : '未知原因')), _isCompaction: true });
+      msgs.push({ role: 'system', content: '✂️ 上下文压缩失败：' + (errorMessage || (aborted ? '已取消' : '未知原因')), _isCompaction: true, _localId: window.Hermes.uid() });
       return;
     }
     var before = result.tokensBefore || 0;
@@ -800,7 +529,7 @@ window.Hermes = window.Hermes || {};
       + '<div class="compaction-head">' + esc(head) + '</div>'
       + (result.summary ? '<details class="compaction-summary"><summary>查看压缩摘要</summary><div class="compaction-summary-body">' + esc(result.summary) + '</div></details>' : '')
       + '</div>';
-    msgs.push({ role: 'system', content: head, _isCompaction: true, _compactionHtml: html });
+    msgs.push({ role: 'system', content: head, _isCompaction: true, _compactionHtml: html, _localId: window.Hermes.uid() });
   }
 
   // 手动触发上下文压缩（/compress 命令）
@@ -941,7 +670,8 @@ window.Hermes = window.Hermes || {};
     const abortController = new AbortController();
 
     // 1. user 消息写入 sessionMessages（记录流式前的消息数，供 backgroundReFetch 增量拉取）
-    const userMsg = { role: 'user', content: input };
+    //    _localId：本地新建消息的稳定身份（DB 消息无 id 字段，renderer 依赖它做 turn key）
+    const userMsg = { role: 'user', content: input, _localId: window.Hermes.uid() };
     const msgs = getMsgs(sid);
     const preStreamCount = msgs ? msgs.length : 0;
     if (msgs) msgs.push(userMsg);
@@ -955,6 +685,7 @@ window.Hermes = window.Hermes || {};
       _toolSteps: [],
       _toolCallCount: 0,
       _stepNum: 0,
+      _localId: window.Hermes.uid(),
     };
     if (msgs) msgs.push(streamAssistantMsg);
 
@@ -969,9 +700,13 @@ window.Hermes = window.Hermes || {};
     };
     state.activeStreams[sid] = streamState;
 
-    // 4. 增量追加新 turn（避免全量 renderMessages 导致跳动）
-    appendNewTurn(dom.chatMessages, userMsg, streamAssistantMsg);
+    // 4. 渲染新 turn（renderer 按稳定 key 尾部追加，等价旧 appendNewTurn 但走单一渲染路径）
+    //    清流式 markdown 稳定段缓存，防 'sf'/'tm' 跨轮串内容
+    if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
+    scheduleRender(sid, true);
     window.Hermes.updateStreamingHints();
+    // 发送后直接钉到底（与旧 appendNewTurn 语义一致：用户刚发送，聚焦新 turn）
+    if (dom.chatMessages) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
 
     // 有 session_id 时，只发当前消息
     const messagesToSend = [{ role: 'user', content: input }];
@@ -1015,7 +750,7 @@ window.Hermes = window.Hermes || {};
         if (currentMsgs) {
           const idx = currentMsgs.indexOf(streamAssistantMsg);
           if (idx >= 0) currentMsgs.splice(idx, 1);
-          currentMsgs.push({ role: 'system', content: 'API 错误: ' + errText, _isSystemDisplay: true });
+          currentMsgs.push({ role: 'system', content: 'API 错误: ' + errText, _isSystemDisplay: true, _localId: window.Hermes.uid() });
         }
         delete state.activeStreams[sid];
         if (state.focusedSessionId === sid && state.viewMode === 'chat') {
@@ -1067,10 +802,9 @@ window.Hermes = window.Hermes || {};
                 if (evt.result) _step2.result = _extractText(evt.result.content);
                 if (evt.isError) _step2.error = true;
               }
-              var _curMsgs = getMsgs(sid);
-              if (_curMsgs && evt.result) {
-                _curMsgs.push({ role: 'toolResult', toolCallId: evt.toolCallId, content: _extractText(evt.result.content) });
-              }
+              // H1: 不再向 msgs 数组 push toolResult —— 结果保留在 _toolSteps[].result，
+              // 渲染层从残留消息统一派生（decomposeStreaming），reFetch 后由 DB 提供真实
+              // toolResult。避免同一结果双源（双写）导致重复渲染/状态分裂。
               scheduleRender(sid, false);
               return;
             }
@@ -1132,7 +866,7 @@ window.Hermes = window.Hermes || {};
             if (_t === 'compaction_start') {
               var _cmsgs = getMsgs(sid);
               if (_cmsgs) {
-                _cmsgs.push({ role: 'system', content: '✂️ 正在压缩上下文…（' + (evt.reason || '') + '）', _isCompaction: true, _compactionPending: true });
+                _cmsgs.push({ role: 'system', content: '✂️ 正在压缩上下文…（' + (evt.reason || '') + '）', _isCompaction: true, _compactionPending: true, _localId: window.Hermes.uid() });
                 scheduleRender(sid, true);
               }
               return;
@@ -1251,7 +985,11 @@ window.Hermes = window.Hermes || {};
         delete state.activeStreams[sid];
         if (state.focusedSessionId === sid && state.viewMode === 'chat') {
           if (streamAssistantMsg.content || streamAssistantMsg.reasoning) {
-            window.Hermes.finalizeStreamingTurn(sid);
+            // 残留消息 → renderer 静态终态渲染（B4：终态路径走 renderMarkdown 净化，
+            // 流式窗口期未净化的 HTML 不滞留）
+            if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
+            if (window.Hermes._stopLiveTimer) window.Hermes._stopLiveTimer();
+            renderCurrentChat();
           } else {
             var failMsg = isWatchdog
               ? '响应超时：60 秒内未收到数据，连接可能已断开。'
@@ -1290,7 +1028,6 @@ window.Hermes = window.Hermes || {};
 
     // 如果当前正在看这个 session，补充 UI 更新
     if (state.focusedSessionId === effectiveSid && state.viewMode === 'chat') {
-      // finalizeStreamingTurn 已处理 initCollapsible，这里不再重复
       updateChatUIState();
       // focus 不用 scrollTo，防止触发滚动
       if (dom.chatInput) {
@@ -1363,8 +1100,6 @@ window.Hermes = window.Hermes || {};
   window.Hermes.renderCurrentChat = renderCurrentChat;
   window.Hermes.currentMsgs = currentMsgs;
   window.Hermes.updateChatUIState = updateChatUIState;
-  window.Hermes.finalizeStreamingTurn = finalizeStreamingTurn;
-  window.Hermes.refreshLastTurn = refreshLastTurn;
   window.Hermes.clearAllRenderTimers = clearAllRenderTimers;
   window.Hermes._clearRenderTimer = _clearRenderTimer;
   window.Hermes._updateScrollBtn = _updateScrollBtn;

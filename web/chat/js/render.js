@@ -1,0 +1,442 @@
+/* ============================================================
+   Hermes WebUI - Renderer Module (keyed element-map reconciler)
+
+   对话渲染层重构 P2 核心交付。替代 chat.js 旧 renderCurrentChat 的手拼
+   结构签名 + out-of-band DOM 更新，替代 session.js renderMessages 的
+   innerHTML 全量重建（保留其对外签名）。
+
+   核心思想：
+   - container.__rdx 保存本容器当前渲染快照：sid + Map<turnKey → 渲染状态>
+   - 每帧只对比签名：未变 turn 零 DOM 操作；变化 turn 按需 L2（结构）或 L3（流式正文微 patch）
+   - turn 身份 = buildTurns 的稳定 key（element-map，不依赖 morphdom keyed）
+   - UI 瞬态（展开面板/折叠回答/时间线锚点）只在 L2 重渲该 turn 时捕获与恢复
+   - 结构性大改（切会话/删除/压缩/全量加载）→ renderFull 全量重建
+   - 设计不变式：签名漏字段只导致过度重渲（损性能不损正确性）；等长内容替换等
+     "漏渲"由结构性改写路径的强制 renderFull/签名比对封死。
+
+   HTML 构建器仍由 session.js/markdown.js 提供（renderSingleTurnHTML /
+   renderTurnStepsHTML / renderThinkingMargin / initCollapsible / scheduleIdleHighlight），
+   render.js 只负责"何时、以何种粒度、把哪个 turn 的 DOM 更新成什么"。
+   ============================================================ */
+
+window.Hermes = window.Hermes || {};
+
+(function() {
+  'use strict';
+
+  var H = window.Hermes;
+
+  function _morph(el, html) {
+    if (window.morphdom) {
+      try {
+        // 重要：morphdom 对字符串只取第一个根节点（template.content.childNodes[0]），
+        // 而 .turn-steps 的 html 是双根（.ow-tools 时间线 + .step-final 正文），字符串模式
+        // 会把 .step-final 兄弟节点静默丢弃 → 流式正文不显示。改为先解析进包裹 div，
+        // 以元素对元素 morph（childrenOnly），多根/单根均安全且保留 DOM identity。
+        var tmp = document.createElement('div');
+        tmp.innerHTML = html;
+        window.morphdom(el, tmp, {
+          childrenOnly: true,
+          onBeforeElUpdated: function(fromEl, toEl) {
+            // 相同节点跳过：morph 整子树时避免无谓深比（流式高频路径关键优化）
+            if (fromEl.isEqualNode(toEl)) return false;
+            return true;
+          }
+        });
+        return;
+      } catch (e) {
+        // 降级：morph 失败时退回 innerHTML 重建
+      }
+    }
+    el.innerHTML = html;
+  }
+
+  /** 解析单根 HTML 字符串 → 真实元素（.turn / .msg-bubble） */
+  function _elFromHtml(html) {
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.firstElementChild;
+  }
+
+  // ------------------------------------------------------------
+  // 流式结构签名：只反映"结构"，不含正文文本长度/内容。
+  // 语义 = 旧 chat.js _lastSig（tc/ts/hr/hc/ap/sa/ab/er/us/qu），
+  // 但由 renderer 统一维护，且只对含 streaming step 的 turn 使用。
+  // running 工具不计 result（partialResult 更新不触发结构重渲）；
+  // 非 running 工具计 result 长度（结果出现/替换属结构变化）。
+  // ------------------------------------------------------------
+  function _streamStructSig(sm) {
+    var _ts = sm._toolSteps || [];
+    var _toolSig = _ts.map(function(s) {
+      var base = (s.running ? 'r' : (s.result !== undefined ? 'd' : 'p')) + '|' + (s.toolCallId || '') + '|' + (s.name || '');
+      return s.running ? base : (base + '|' + (s.result != null ? String(s.result).length : 0));
+    }).join(',');
+    return [
+      'tc=' + _ts.length,
+      'ts=' + _toolSig,
+      'hr=' + !!(sm.reasoning && sm.reasoning.trim()),
+      'hc=' + !!(sm.content && sm.content.trim()),
+      'ap=' + !!(sm._approval && !sm._approvalResolved),
+      'sa=' + (sm._subagents ? sm._subagents.length : 0),
+      'ab=' + !!sm._aborted,
+      'er=' + !!sm._error,
+      'us=' + !!(sm._usage && (sm._usage.total_tokens || sm._usage.prompt_tokens)),
+      'qu=' + !!(sm._queue)
+    ].join(';');
+  }
+
+  // ------------------------------------------------------------
+  // 流式 turn 的 L3 微 patch：结构未变时只更新正文活跃块与思考气泡 body。
+  // （长回复从 O(n) 降到 O(活跃块)；保留 DOM identity 消除重排闪烁）
+  // 返回是否有文本内容变化。
+  // ------------------------------------------------------------
+  function _l3Patch(turnEl, sm, lastContent, lastReasoning) {
+    var changed = false;
+    var curContent = sm.content != null ? sm.content : '';
+    var curReasoning = sm.reasoning != null ? sm.reasoning : '';
+
+    // 正文（.step-final .step-answer 内的 md-stable/md-active）
+    if (lastContent !== curContent && sm.content != null) {
+      var _finalBody = turnEl.querySelector('.step-final .step-answer');
+      if (_finalBody) {
+        var _sfSplit = H.renderStreamingMarkdownSplit(sm.content, 'sf');
+        var _stableEl = _finalBody.querySelector('.md-stable');
+        var _activeEl = _finalBody.querySelector('.md-active');
+        if (_activeEl) {
+          if (_sfSplit.stableChanged && _stableEl) _morph(_stableEl, _sfSplit.stableHtml);
+          _morph(_activeEl, _sfSplit.activeHtml);
+        } else {
+          // 兼容旧 DOM（未拆分容器，如 finalize 后残留）
+          _morph(_finalBody, _sfSplit.fullHtml);
+        }
+        changed = true;
+      }
+    }
+
+    // 思考气泡（.turn-margin 内 .tm-active .tm-body）
+    if (lastReasoning !== curReasoning && sm.reasoning) {
+      var _tmBody = turnEl.querySelector('.tm-active .tm-body');
+      if (_tmBody) {
+        var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
+        var _tmStick = _tmOff < 24;
+        _morph(_tmBody, H.renderStreamingMarkdown(sm.reasoning.trim(), 'tm'));
+        _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // ------------------------------------------------------------
+  // L2（结构变化）：重建一个 turn 的内容。
+  //   streaming（含 streaming step）→ 只重建 .turn-steps 子树 + 同步思考气泡骨架；
+  //   终态/残留 → 整体重建 .turn 子节点（renderSingleTurnHTML）。
+  // 两者都在重建前捕获、重建后恢复该 turn 的 UI 瞬态。
+  // ------------------------------------------------------------
+
+  /** 捕获 turn 内 UI 瞬态（展开面板/折叠回答/时间线锚点），供 L2 后恢复 */
+  function _captureTurnUI(turnEl) {
+    var openPanels = []; // { callId: string|null, index: number }
+    var panels = turnEl.querySelectorAll('.ow-panels .ow-ep');
+    panels.forEach(function(p, idx) {
+      if (p.classList.contains('ow-show')) {
+        openPanels.push({ callId: p.getAttribute('data-call-id') || null, index: idx });
+      }
+    });
+    var collapsedAnswers = []; // 折叠的 .step-answer-wrap 序号
+    var answers = turnEl.querySelectorAll('.step-answer-wrap');
+    answers.forEach(function(w, idx) {
+      var a = w.querySelector('.step-answer.collapsible');
+      if (a && a.classList.contains('collapsed')) collapsedAnswers.push(idx);
+    });
+    var ui = { openPanels: openPanels, collapsedAnswers: collapsedAnswers };
+
+    var tl = turnEl.querySelector('.ow-tl');
+    if (tl) {
+      var tlOff = tl.scrollHeight - tl.scrollTop - tl.clientHeight;
+      ui.tl = { stick: tlOff < 24, offset: tlOff };
+    }
+    var tmb = turnEl.querySelector('.tm-body');
+    if (tmb) {
+      var tmOff = tmb.scrollHeight - tmb.scrollTop - tmb.clientHeight;
+      ui.tm = { stick: tmOff < 24, offset: tmOff };
+    }
+    return ui;
+  }
+
+  /** 恢复 turn 内 UI 瞬态 */
+  function _restoreTurnUI(turnEl, ui) {
+    if (!ui) return;
+    var newPanels = turnEl.querySelectorAll('.ow-panels .ow-ep');
+    ui.openPanels.forEach(function(op) {
+      var target = null;
+      if (op.callId) {
+        for (var i = 0; i < newPanels.length; i++) {
+          if (newPanels[i].getAttribute('data-call-id') === op.callId) { target = newPanels[i]; break; }
+        }
+      }
+      if (!target && op.index < newPanels.length) target = newPanels[op.index];
+      if (target) target.classList.add('ow-show');
+    });
+    var answers = turnEl.querySelectorAll('.step-answer-wrap');
+    ui.collapsedAnswers.forEach(function(idx) {
+      var w = answers[idx];
+      if (!w) return;
+      var a = w.querySelector('.step-answer.collapsible');
+      if (a) a.classList.add('collapsed');
+    });
+    if (ui.tl) {
+      var tl = turnEl.querySelector('.ow-tl');
+      if (tl) {
+        if (ui.tl.stick) tl.scrollTop = tl.scrollHeight;
+        else tl.scrollTop = Math.max(0, tl.scrollHeight - tl.clientHeight - ui.tl.offset);
+      }
+    }
+    if (ui.tm) {
+      var tmb = turnEl.querySelector('.tm-body');
+      if (tmb) {
+        if (ui.tm.stick) tmb.scrollTop = tmb.scrollHeight;
+        else tmb.scrollTop = Math.max(0, tmb.scrollHeight - tmb.clientHeight - ui.tm.offset);
+      }
+    }
+  }
+
+  /** 同步思考气泡骨架（.turn-margin）：出现时插入、消失时移除、存在则保留 body 让 L3 patch） */
+  function _syncThinkingMargin(turnEl, turn) {
+    var marginHtml = '';
+    if (H.renderThinkingMargin) {
+      try { marginHtml = H.renderThinkingMargin(turn, true) || ''; } catch (e) { marginHtml = ''; }
+    }
+    var agentBody = turnEl.querySelector('.turn-agent-body');
+    var margin = null;
+    var kids = turnEl.children;
+    for (var i = 0; i < kids.length; i++) {
+      if (kids[i].classList && kids[i].classList.contains('turn-margin')) { margin = kids[i]; break; }
+    }
+    if (marginHtml) {
+      if (!margin && agentBody) {
+        var tmp = document.createElement('div');
+        tmp.innerHTML = marginHtml;
+        var m = tmp.firstElementChild;
+        if (m) agentBody.parentNode.insertBefore(m, agentBody.nextSibling);
+      }
+    } else if (margin) {
+      margin.remove();
+    }
+  }
+
+  /** 重建"流式 live"turn：morph .turn-steps + 同步思考气泡（骨架），保留用户气泡与外层属性 */
+  function _applyStreaming(turnEl, turn, sm) {
+    var ui = _captureTurnUI(turnEl);
+    var stepsHtml = '';
+    try { stepsHtml = H.renderTurnStepsHTML(turn) || ''; } catch (e) { stepsHtml = ''; }
+    var stepsEl = turnEl.querySelector('.turn-steps');
+    if (stepsEl && stepsHtml) _morph(stepsEl, stepsHtml);
+    _syncThinkingMargin(turnEl, turn);
+    _restoreTurnUI(turnEl, ui);
+    if (!turnEl.hasAttribute('data-streaming')) turnEl.setAttribute('data-streaming', 'true');
+  }
+
+  /** 重建"终态/残留"turn：整体 morph 子节点（renderSingleTurnHTML 决定 data-streaming） */
+  function _applyStatic(turnEl, turn) {
+    var ui = _captureTurnUI(turnEl);
+    var html = '';
+    try { html = H.renderSingleTurnHTML(turn) || ''; } catch (e) { html = ''; }
+    if (html) _morph(turnEl, html);
+    // 终态 turn 无 streaming step → 移除 data-streaming（renderSingleTurnHTML 不会输出它）
+    if (turnEl.hasAttribute('data-streaming')) turnEl.removeAttribute('data-streaming');
+    _restoreTurnUI(turnEl, ui);
+    if (H.initCollapsible) {
+      try { H.initCollapsible(turnEl); } catch (e) {}
+    }
+    if (H.scheduleIdleHighlight) {
+      try { H.scheduleIdleHighlight(turnEl); } catch (e) {}
+    }
+  }
+
+  // ------------------------------------------------------------
+  // 单 turn 比对与更新（供 renderDiff 使用）
+  // 返回 true = 发生了 DOM 更新
+  // ------------------------------------------------------------
+  function _updateTurn(container, entry, turn) {
+    var sig = H.turnSig(turn);
+
+    // ---- 流式 live 状态机（先于静态签名比对：running 工具即使签名不变也需每秒刷新耗时）----
+    var streamingStep = turn.steps.find(function(s) { return s.streaming; });
+    var newLive = !!streamingStep;
+    if (newLive) {
+      var sm = streamingStep.streaming;
+      var struct = _streamStructSig(sm);
+      var running = (sm._toolSteps || []).some(function(ts) { return ts.running; });
+      if (entry.live) {
+        // 上次也是 live：结构变化 or 有 running 步骤（需每秒刷新耗时秒数）→ L2；仅文本变 → L3；全等 → 不动
+        if (entry.struct !== struct || running) {
+          _applyStreaming(entry.el, turn, sm);
+          entry.struct = struct;
+          entry.sig = sig;
+          entry.lastContent = sm.content != null ? sm.content : '';
+          entry.lastReasoning = sm.reasoning != null ? sm.reasoning : '';
+          return true;
+        }
+        if (entry.lastContent !== (sm.content != null ? sm.content : '') ||
+            entry.lastReasoning !== (sm.reasoning != null ? sm.reasoning : '')) {
+          var changedText = _l3Patch(entry.el, sm, entry.lastContent, entry.lastReasoning);
+          if (changedText) {
+            entry.sig = sig;
+            entry.lastContent = sm.content != null ? sm.content : '';
+            entry.lastReasoning = sm.reasoning != null ? sm.reasoning : '';
+            return true;
+          }
+          // 文本引用有差异但 L3 找不到目标 DOM（结构缺失等）→ 保守全量
+          entry.struct = struct;
+          entry.sig = sig;
+          return false;
+        }
+        // 未变（如 live timer 空跑/重复 render）→ 不动 DOM
+        entry.sig = sig;
+        return false;
+      }
+      // 旧状态非 live → 新 live（罕见，直接按 live 渲染）
+      _applyStreaming(entry.el, turn, sm);
+      entry.live = true;
+      entry.struct = struct;
+      entry.sig = sig;
+      entry.lastContent = sm.content != null ? sm.content : '';
+      entry.lastReasoning = sm.reasoning != null ? sm.reasoning : '';
+      return true;
+    }
+
+    // ---- 终态 / 流式残留 ----
+    if (entry.sig === sig) return false;
+    if (entry.live) {
+      // live → final 过渡（流结束 finalize 的 DOM 等价物：整 turn 重渲为终态）
+      _applyStatic(entry.el, turn);
+    } else {
+      // 历史 turn 内容变化（reFetch 数据订正等）→ 整 turn 重渲
+      _applyStatic(entry.el, turn);
+    }
+    entry.live = false;
+    entry.sig = sig;
+    entry.struct = null;
+    entry.lastContent = null;
+    entry.lastReasoning = null;
+    return true;
+  }
+
+  // ------------------------------------------------------------
+  // Public API
+  // ------------------------------------------------------------
+
+  /** 全量渲染（切会话 / 首次 / 结构性大改后）。返回 true。 */
+  function renderFull(container, msgs, sid) {
+    var turns = H.buildTurns(msgs);
+    var html = '';
+    turns.forEach(function(turn) {
+      try { html += H.renderSingleTurnHTML(turn) || ''; } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); }
+    });
+    container.innerHTML = html;
+
+    var map = new Map();
+    var children = container.children;
+    for (var i = 0; i < turns.length; i++) {
+      var key = turns[i].key;
+      var el = children[i];
+      // buildTurns 与 HTML 根节点一一对应（含 data-key 由 renderSingleTurnHTML 输出）
+      var streamingStep = turns[i].steps.find(function(s) { return s.streaming; });
+      var entry = {
+        el: el,
+        sig: H.turnSig(turns[i]),
+        live: !!streamingStep,
+        struct: streamingStep ? _streamStructSig(streamingStep.streaming) : null,
+        lastContent: streamingStep ? (streamingStep.streaming.content != null ? streamingStep.streaming.content : '') : null,
+        lastReasoning: streamingStep ? (streamingStep.streaming.reasoning != null ? streamingStep.streaming.reasoning : '') : null,
+      };
+      map.set(key, entry);
+    }
+    if (H.initCollapsible) {
+      try { H.initCollapsible(container); } catch (e) {}
+    }
+    if (H.scheduleIdleHighlight) {
+      try { H.scheduleIdleHighlight(container); } catch (e) {}
+    }
+    container.__rdx = { sid: sid || null, map: map, seq: (container.__rdx && container.__rdx.seq ? container.__rdx.seq + 1 : 1) };
+    return true;
+  }
+
+  /**
+   * 增量 reconcile（流式 / reFetch merge 等逐帧调用）。
+   * - 会话切换 / key 前缀失配 / 有删除 → 自动全量回退。
+   * - 返回 true 表示发生了 DOM 更新。
+   */
+  function renderDiff(container, msgs, sid) {
+    var rdx = container.__rdx;
+    if (!rdx || rdx.sid !== sid) {
+      return renderFull(container, msgs, sid);
+    }
+    var turns = H.buildTurns(msgs);
+    var oldKeys = [];
+    rdx.map.forEach(function(v, k) { oldKeys.push(k); });
+    var newKeys = turns.map(function(t) { return t.key; });
+
+    // 只允许"尾部追加"的增量；前缀变动 / 出现删除 → 全量回退（结构大改路径）
+    var tailAppend = newKeys.length >= oldKeys.length;
+    if (tailAppend) {
+      for (var i = 0; i < oldKeys.length; i++) {
+        if (oldKeys[i] !== newKeys[i]) { tailAppend = false; break; }
+      }
+    }
+    if (!tailAppend) {
+      return renderFull(container, msgs, sid);
+    }
+
+    var changed = false;
+
+    // 1) 已存在 turn：签名比对
+    for (var t = 0; t < oldKeys.length; t++) {
+      var turn = turns[t];
+      var key = oldKeys[t];
+      var entry = rdx.map.get(key);
+      if (!entry) continue; // 不应发生（前缀一致）
+      if (_updateTurn(container, entry, turn)) changed = true;
+    }
+
+    // 2) 尾部新增 turn：追加元素
+    for (var a = oldKeys.length; a < newKeys.length; a++) {
+      var nTurn = turns[a];
+      var nKey = nTurn.key;
+      var htmlStr = '';
+      try { htmlStr = H.renderSingleTurnHTML(nTurn) || ''; } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); continue; }
+      var nEl = _elFromHtml(htmlStr);
+      if (!nEl) continue;
+      container.appendChild(nEl);
+      var streamingStep2 = nTurn.steps.find(function(s) { return s.streaming; });
+      rdx.map.set(nKey, {
+        el: nEl,
+        sig: H.turnSig(nTurn),
+        live: !!streamingStep2,
+        struct: streamingStep2 ? _streamStructSig(streamingStep2.streaming) : null,
+        lastContent: streamingStep2 ? (streamingStep2.streaming.content != null ? streamingStep2.streaming.content : '') : null,
+        lastReasoning: streamingStep2 ? (streamingStep2.streaming.reasoning != null ? streamingStep2.streaming.reasoning : '') : null,
+      });
+      changed = true;
+    }
+    if (changed && H.initCollapsible) {
+      // 新增/变化后统一处理折叠默认值（幂等）
+      try { H.initCollapsible(container); } catch (e) {}
+    }
+    return changed;
+  }
+
+  /** 清空某容器的渲染状态（容器 DOM 被外部清空时调用） */
+  function rendererReset(container) {
+    if (container && container.__rdx) {
+      container.__rdx = null;
+    }
+  }
+
+  // ---- Exports ----
+  window.Hermes.renderFull = renderFull;
+  window.Hermes.renderDiff = renderDiff;
+  window.Hermes.rendererReset = rendererReset;
+
+})();

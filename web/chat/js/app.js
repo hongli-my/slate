@@ -46,28 +46,10 @@ window.Hermes = window.Hermes || {};
           }
         }
       }
-    } else if (action === 'toggle-tool-result') {
-      if (parent.classList.contains('tool-result-expanded')) {
-        parent.classList.remove('tool-result-expanded');
-        parent.classList.add('tool-result-collapsed');
-      } else if (parent.classList.contains('tool-result-collapsed')) {
-        parent.classList.remove('tool-result-collapsed');
-      } else {
-        parent.classList.add('tool-result-expanded');
-      }
-    } else if (action === 'toggle-thinking') {
-      const block = parent;
-      if (block.classList.contains('thinking-expanded')) {
-        block.classList.remove('thinking-expanded');
-        block.classList.add('thinking-collapsed');
-      } else if (block.classList.contains('thinking-collapsed')) {
-        block.classList.remove('thinking-collapsed');
-      } else {
-        block.classList.add('thinking-expanded');
-      }
-    } else if (action === 'toggle-tools-collapsed') {
-      parent.classList.toggle('tools-collapsed');
     }
+    // toggle-tool-result / toggle-thinking / toggle-tools-collapsed 分支已随死代码
+    // （.tool-result* / .thinking-block* / .tools-collapse*）一并删除（D4/D5/D6），
+    // 不再有 HTML 产出对应 data-action。
   });
 
   // ---- Event Bindings ----
@@ -87,28 +69,6 @@ window.Hermes = window.Hermes || {};
         if (H._updateScrollBtn) H._updateScrollBtn();
       }, { passive: true });
     }
-
-    // E#15: 编辑重发 — 点击用户消息的编辑按钮
-    dom.chatMessages.addEventListener('click', function(e) {
-      var btn = e.target.closest('.turn-edit-btn');
-      if (!btn) return;
-      var msgId = btn.dataset.msgId;
-      if (!msgId) return;
-      // 找到对应的 user 消息内容
-      var sid = state.focusedSessionId;
-      if (!sid) return;
-      var msgs = H.getMsgs(sid);
-      if (!msgs) return;
-      for (var i = 0; i < msgs.length; i++) {
-        if (String(msgs[i].id || '') === msgId && msgs[i].role === 'user') {
-          dom.chatInput.value = msgs[i].content || '';
-          dom.chatInput.focus();
-          autoResize(dom.chatInput);
-          H.toast('已载入消息，修改后发送');
-          return;
-        }
-      }
-    });
 
     // New chat — 使用 createNewChat（先创建空会话）
     $('#btn-new-chat').addEventListener('click', () => H.createNewChat());
@@ -135,16 +95,6 @@ window.Hermes = window.Hermes || {};
           H.enterSession(sid, 'chat');
           return;
         }
-      }
-    });
-
-    // Toggle tools display
-    $('#btn-toggle-tools').addEventListener('click', function() {
-      state.showTools = !state.showTools;
-      this.classList.toggle('active', state.showTools);
-      if (state.focusedSessionId && state.viewMode !== 'chat') {
-        const msgs = H.getMsgs(state.focusedSessionId);
-        if (msgs) H.renderMessages(msgs, dom.messageList);
       }
     });
 

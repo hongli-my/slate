@@ -35,7 +35,6 @@ window.Hermes = window.Hermes || {};
     viewMode: 'list',          // 'list' | 'view' | 'chat'
     sessionMessages: {},        // { sid -> MessageCache }
     activeStreams: {},          // { sid -> StreamState }
-    showTools: true,
     providers: [],
     currentProvider: '',
     // ---- Project support ----

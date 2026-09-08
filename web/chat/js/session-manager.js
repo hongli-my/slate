@@ -194,9 +194,13 @@ window.Hermes = window.Hermes || {};
       cache.isStale = true;
     }
 
-    // 如果用户正在看这个会话，增量更新 streaming turn → 最终状态
+    // 如果用户正在看这个会话：清残留 render timer/实时计时器/流式 md 缓存后渲染一次，
+    // renderer 检测到 turn 由 live 变 static（残留归一化）自动重渲为终态（B4 净化兜底）
     if (state.focusedSessionId === sid && state.viewMode === 'chat') {
-      H.finalizeStreamingTurn(sid);
+      if (H._clearRenderTimer) H._clearRenderTimer(sid);
+      if (H._stopLiveTimer) H._stopLiveTimer();
+      if (H.clearStreamingMdCache) H.clearStreamingMdCache();
+      H.renderCurrentChat();
     }
 
     // 后台静默 re-fetch，让缓存与 DB 同步
@@ -248,12 +252,24 @@ window.Hermes = window.Hermes || {};
       if (offset > 0 && freshMsgs.length > 0 && freshMsgs.length < cache.messages.length) {
         // 增量拼接：后端返回的是流式新增部分（条数 < 当前缓存总条数）。
         // 保留流式前的历史 + 用 DB 原生消息替换流式期间新增部分。
+        // H3: merge 边界 key 存活 —— 把本地 user 消息的 _localId 盖回 DB 对应
+        // user 消息（DB 消息无 id），避免 turn key 从 _localId 跳成序号导致整节点替换。
+        var boundaryUser = cache.messages[offset];
+        if (boundaryUser && boundaryUser.role === 'user' && boundaryUser._localId) {
+          for (var _bi = 0; _bi < freshMsgs.length; _bi++) {
+            if (freshMsgs[_bi].role === 'user' && freshMsgs[_bi].content === boundaryUser.content) {
+              freshMsgs[_bi]._localId = boundaryUser._localId;
+              break;
+            }
+          }
+        }
         cache.messages = cache.messages.slice(0, offset).concat(freshMsgs);
         cache.version++;
         cache.isStale = false;
         cache.loadedAt = Date.now();
         if (state.focusedSessionId === sid && state.viewMode === 'chat') {
-          H.refreshLastTurn(sid);
+          // 签名门控：renderDiff 无变化（含 800ms 后数据订正无视觉差异）→ 零 DOM 操作
+          H.renderCurrentChat();
         }
       } else if (freshMsgs.length >= cache.messages.length) {
         // 全量覆盖：offset=0，或后端不支持 offset 返回了全量（freshMsgs.length
@@ -263,7 +279,7 @@ window.Hermes = window.Hermes || {};
         cache.isStale = false;
         cache.loadedAt = Date.now();
         if (state.focusedSessionId === sid && state.viewMode === 'chat') {
-          H.refreshLastTurn(sid);
+          H.renderCurrentChat();
         }
       }
     } catch(e) {

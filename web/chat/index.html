@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="./css/base.css?v=9">
 <link rel="stylesheet" href="./css/sidebar.css?v=11">
 <link rel="stylesheet" href="./css/main.css?v=6">
-<link rel="stylesheet" href="./css/chat.css?v=20">
+<link rel="stylesheet" href="./css/chat.css?v=21">
 <link rel="stylesheet" href="./css/markdown.css?v=6">
 <link rel="stylesheet" href="./css/shortcuts.css?v=5">
 <link rel="stylesheet" href="./css/admin.css?v=3">
@@ -757,7 +757,6 @@ body {
         </div>
         <div class="session-actions">
           <button id="btn-resume" class="btn-sm" title="在此会话基础上继续对话">💬 继续对话</button>
-          <button id="btn-toggle-tools" class="btn-sm" title="显示/隐藏工具调用">🔧 工具</button>
           <button id="btn-export-session" class="btn-sm" title="导出会话为 Markdown">📥 导出</button>
           <button id="btn-fork-session" class="btn-sm" title="基于当前会话历史开新会话">🔀 开新会话</button>
           <button id="btn-delete-session" class="btn-sm btn-danger" title="删除此会话">🗑 删除</button>
@@ -815,6 +814,6 @@ body {
 <!-- JS：外部库 + 业务模块已打包为 chat.bundle.js（esbuild，见 esbuild.chat.config.mjs）
      cronstrue 为 UMD 无 ESM 导出，保持独立加载。 -->
     <script src="./vendor/cronstrue.min.js?v=1"></script>
-    <script src="./chat.bundle.js?v=1"></script>
+    <script src="./chat.bundle.js?v=3"></script>
 </body>
 </html>

@@ -26,11 +26,9 @@ window.Hermes = window.Hermes || {};
 
   // ---- 解析 tool 结果 ----
   // pi 原生 ToolResultMessage.content 可能是 blocks 数组 [{type:'text',text:'...'}]
+  // （统一委托 view-model.msgText，消除双实现 D1）
   function _extractContentText(content) {
-    if (!content) return '';
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) return content.filter(function(b){return b && b.type==='text';}).map(function(b){return b.text || '';}).join('');
-    try { return JSON.stringify(content); } catch(e) { return String(content); }
+    return window.Hermes.msgText(content);
   }
 
   function parseToolResult(content) {
@@ -147,13 +145,13 @@ window.Hermes = window.Hermes || {};
     }
     var errMark = (!running && toolResult && statusClass === 'ow-fail') ? '<span class="ow-tl-err">✗</span>' : '';
 
-    const item = `<div class="ow-tl-item ${tlClass}" data-action="toggle-ow-tl">
+    const item = `<div class="ow-tl-item ${tlClass}" data-action="toggle-ow-tl" data-call-id="${esc(tcId || '')}">
         <span class="ow-tl-name">${esc(name)}</span>
         ${argsPreview ? '<span class="ow-tl-args">' + argsPreview + '</span>' : ''}
         ${durBadge}${errMark}
         <span class="ow-tl-stat">${statusIcon}</span>
       </div>`;
-    const panel = `<div class="ow-ep">
+    const panel = `<div class="ow-ep" data-call-id="${esc(tcId || '')}">
         <div class="ow-ep-h"><span style="color:${statusClass === 'ow-done' ? 'var(--accent2)' : statusClass === 'ow-fail' ? 'var(--danger)' : 'var(--text-weaker)'}">${running ? '⏳' : statusIcon}</span><span class="ow-ep-name">${esc(name)}</span>${argsPreview ? '<span class="ow-ep-meta">' + argsPreview + '</span>' : ''}${durBadge}</div>
         ${args ? '<div class="ow-pill-args-full">' + args + '</div>' : ''}
         ${panelBody}
@@ -232,147 +230,16 @@ window.Hermes = window.Hermes || {};
     return '<div class="turn-margin">' + inner + '</div>';
   }
 
-  function renderThinkingBlock(reasoning, isActive, noToggle) {
-    if (!reasoning || !reasoning.trim()) return '';
-    if (noToggle) {
-      return `<div class="thinking-block"><div class="thinking-body">${window.Hermes.renderMarkdown(reasoning)}</div></div>`;
-    }
-    const initState = isActive ? '' : ' thinking-collapsed';
-    return `
-      <div class="thinking-block${initState}">
-        <div class="thinking-header" data-action="toggle-thinking">
-          <span class="thinking-icon">💭</span>
-          <span class="thinking-label">思考过程</span>
-          <span class="thinking-toggle"></span>
-        </div>
-        <div class="thinking-body">${window.Hermes.renderMarkdown(reasoning)}</div>
-      </div>`;
-  }
+  // (renderThinkingBlock / extractAssistantParts 已删除：死代码 + Hermes 兼容残留，
+  // 分组委托给 view-model.buildTurns —— 其内同名纯函数是唯一实现，防双副本漂移)
 
-  // 从 pi 原生 AssistantMessage 的 content blocks 提取 text/thinking/toolCalls
-  // pi ToolCall block: {type:'toolCall', id, name, arguments}
-  // 兼容旧 Hermes: content:string + reasoning:string + tool_calls:[{id,function:{name,arguments}}]
-  function extractAssistantParts(a) {
-    var text = '', reasoning = '', toolCalls = [];
-    if (Array.isArray(a.content)) {
-      var tParts = [], rParts = [];
-      a.content.forEach(function(b) {
-        if (!b || typeof b !== 'object') return;
-        if (b.type === 'text' && b.text) tParts.push(b.text);
-        else if (b.type === 'thinking' && b.text) rParts.push(b.text);
-        else if (b.type === 'toolCall') toolCalls.push({ name: b.name, arguments: b.arguments, id: b.id });
-      });
-      text = tParts.join('');
-      reasoning = rParts.join('');
-    } else if (typeof a.content === 'string') {
-      text = a.content;
-      reasoning = a.reasoning || '';
-      // 旧 Hermes 兼容
-      if (a.tool_calls) {
-        try {
-          var raw = typeof a.tool_calls === 'string' ? JSON.parse(a.tool_calls) : a.tool_calls;
-          toolCalls = (raw || []).map(function(tc) {
-            return { name: tc.function?.name, arguments: tc.function?.arguments, id: tc.id || tc.call_id };
-          });
-        } catch(e) { toolCalls = []; }
-      }
-      // streaming msg 结束后（_streaming=false）的 _toolSteps 兜底
-      if (!toolCalls.length && a._toolSteps && a._toolSteps.length > 0) {
-        toolCalls = a._toolSteps.map(function(ts) {
-          return { name: ts.name, arguments: ts.args, id: ts.toolCallId };
-        });
-      }
-    }
-    return { text: text, reasoning: reasoning, toolCalls: toolCalls };
-  }
-
-  // Turn 分组
+  // Turn 分组（委托给 view-model 的纯函数实现；本文件不再重复分组逻辑，
+  // 避免"两套分组语义"漂移。行为差异仅为两处有意修正，见 view-model.js：
+  //   1) thinking 块读 .thinking 字段（旧实现读 .text 丢思考）；
+  //   2) 流式残留消息（结束/中止/出错）用 decomposeStreaming 保留工具卡片，
+  //      替代旧 _aborted 分支的 toolCalls:null（丢弃工具）。）
   function groupIntoTurns(messages) {
-    const turns = [];
-    let i = 0;
-    while (i < messages.length) {
-      const m = messages[i];
-      if (m.role === 'user') {
-        var _userContent = typeof m.content === 'string' ? m.content : _extractContentText(m.content);
-        const turn = { type: 'user', user: Object.assign({}, m, { content: _userContent }), steps: [] };
-        i++;
-        while (i < messages.length && messages[i].role !== 'user') {
-          const a = messages[i];
-          if (a.role === 'assistant' && a._streaming) {
-            turn.steps.push({ streaming: a });
-            i++;
-          } else if (a.role === 'assistant' && a._aborted) {
-            // 中止的流式消息：content/reasoning 可能已有部分内容
-            var abParts = extractAssistantParts(a);
-            turn.steps.push({ assistant: Object.assign({}, a, { content: abParts.text, reasoning: abParts.reasoning }), toolCalls: null, toolResults: [], hasMore: false });
-            i++;
-          } else if (a.role === 'assistant') {
-            // pi 原生 AssistantMessage：content 是 (Text|Thinking|ToolCall)[] blocks
-            var parts = extractAssistantParts(a);
-            var normA = Object.assign({}, a, { content: parts.text, reasoning: parts.reasoning });
-            if (parts.toolCalls.length > 0) {
-              const step = { assistant: normA, toolCalls: parts.toolCalls, toolResults: [], hasMore: true };
-              i++;
-              // pi 原生 toolResult：role === 'toolResult'（兼容旧 'tool'）
-              while (i < messages.length && (messages[i].role === 'toolResult' || messages[i].role === 'tool')) {
-                step.toolResults.push(messages[i]);
-                i++;
-              }
-              // 多轮工具调用：下一条 assistant 也有 toolCall blocks → 继续归入下一 step
-              if (i < messages.length && messages[i].role === 'assistant') {
-                var nextParts = extractAssistantParts(messages[i]);
-                if (nextParts.toolCalls.length > 0) {
-                  turn.steps.push(step);
-                  continue;
-                }
-              }
-              turn.steps.push(step);
-            } else {
-              turn.steps.push({ assistant: normA, toolCalls: null, toolResults: [], hasMore: false });
-              i++;
-            }
-          } else if (a.role === 'system') {
-            turn.steps.push({ system: a });
-            i++;
-          } else {
-            turn.steps.push({ orphan: a });
-            i++;
-          }
-        }
-        turns.push(turn);
-      } else if (m.role === 'system' && m._compactionHtml) {
-        // 压缩/分支摘要：SDK compact() 后 session.messages 头部会插入一条
-        // { role: "system", _compactionHtml }，前面可能还有 user 之前被 SDK
-        // 折叠掉的若干 assistant/tool（firstKept 之前的消息）。这些“孤儿”消息
-        // 在 user turn 之外、不应单独渲染成 .msg-bubble——既会被渲染成扁平
-        // 不换行的整块（视觉灾难），又会因无 user 包络而失去 assistant bubble。
-        // 处理：只把压缩卡片作为独立 turn 推入，跳过它后面直到下一个 user 的
-        // 所有孤儿消息（避免一次性把整段历史渲染成杂烮）。
-        turns.push({ type: 'other', message: m });
-        i++;
-        // 跳过所有非 user 的孤儿消息，直到下一个 user 才允许开新 turn
-        while (i < messages.length && messages[i].role !== 'user') i++;
-      } else if (m.role === 'compactionSummary') {
-        // pi 原生压缩摘要消息：{ role:'compactionSummary', summary:'...' }
-        var _csHtml = '<div class="compaction-result">'
-          + '<div class="compaction-head">✂️ 上下文已压缩</div>'
-          + (m.summary ? '<details class="compaction-summary"><summary>查看压缩摘要</summary><div class="compaction-summary-body">' + esc(m.summary) + '</div></details>' : '')
-          + '</div>';
-        turns.push({ type: 'other', message: { role: 'system', _compactionHtml: _csHtml, _isCompaction: true } });
-        i++;
-        while (i < messages.length && messages[i].role !== 'user') i++;
-      } else {
-        turns.push({ type: 'other', message: m });
-        i++;
-      }
-    }
-    return turns;
-  }
-
-  // 流式渲染：转换为 turn 结构，统一走 renderTurnStepsHTML
-  function renderStreamingStepsHTML(streamingMsg) {
-    var turn = { steps: [{ streaming: streamingMsg }] };
-    return renderTurnStepsHTML(turn);
+    return window.Hermes.buildTurns(messages);
   }
 
   // ---- 步骤耗时计算 ----
@@ -750,21 +617,21 @@ window.Hermes = window.Hermes || {};
       if (m._compactionHtml) {
         // 独立出现的系统步骤，不套 assistant bubble（直接用 .step.compaction-step 已有样式）
         // 避免与外层 .turn-agent-body 的 background/border/max-width 叠加产生双层气泡
-        return `<div class="turn"><div class="step system-step compaction-step">${m._compactionHtml}</div></div>`;
+        return `<div class="turn" data-key="${esc(String(turn.key || ''))}"><div class="step system-step compaction-step">${m._compactionHtml}</div></div>`;
       }
-      return `<div class="msg-bubble msg-${m.role}"><div class="msg-content">${esc(_extractContentText(m.content) || '')}</div></div>`;
+      return `<div class="msg-bubble msg-${m.role}" data-key="${esc(String(turn.key || ''))}"><div class="msg-content">${esc(_extractContentText(m.content) || '')}</div></div>`;
     }
 
     const userId = turn.user.id || '';
     const userTime = turn.user.timestamp_fmt || fmtTime(turn.user.timestamp);
     const isStreamingTurn = turn.steps.some(s => s.streaming);
 
-    let html = `<div class="turn" data-msg-id="${esc(String(userId))}"${isStreamingTurn ? ' data-streaming="true"' : ''}>
+    let html = `<div class="turn" data-msg-id="${esc(String(userId))}" data-key="${esc(String(turn.key || ''))}"${isStreamingTurn ? ' data-streaming="true"' : ''}>
       <div class="turn-user">
         <div class="turn-user-content">${window.Hermes.renderMarkdown(turn.user.content || '')}</div>
         <div class="turn-avatar user-avatar">U</div>
       </div>
-      <div class="turn-time turn-time-user">${esc(userTime)}<span class="turn-actions"><button class="turn-edit-btn" data-msg-id="${esc(String(userId))}" title="编辑重发">✎</button></span></div>`;
+      <div class="turn-time turn-time-user">${esc(userTime)}</div>`;
 
     if (turn.steps.length > 0) {
       html += `<div class="turn-agent">
@@ -781,51 +648,13 @@ window.Hermes = window.Hermes || {};
     return html;
   }
 
-  // 渲染消息列表
+  // 渲染消息列表（委托 renderer 全量渲染；保留对外签名 renderMessages(messages, container)，
+  // 删除旧的展开/折叠状态保存恢复幽灵逻辑——它查询的 .tools-collapse/.tool-result 类
+  // 早已不被任何 HTML 构建器产出，纯属无效遍历（D5））
   function renderMessages(messages, container) {
-    const turns = groupIntoTurns(messages);
-    let html = '';
-    turns.forEach((turn) => {
-      html += renderSingleTurnHTML(turn);
-    });
-
-    // 保存当前展开/折叠状态
-    const expandStates = {};
-    container.querySelectorAll('.turn').forEach(turnEl => {
-      const msgId = turnEl.dataset.msgId;
-      if (!msgId) return;
-      const answer = turnEl.querySelector('.step-answer');
-      if (answer && !answer.classList.contains('collapsed')) {
-        expandStates[msgId + ':answer'] = true;
-      }
-      const tc = turnEl.querySelector('.tools-collapse');
-      if (tc && !tc.classList.contains('tools-collapsed')) {
-        expandStates[msgId + ':tools'] = true;
-      }
-    });
-
-    container.innerHTML = html;
-
-    // P#3: 限定容器范围调用 initCollapsible
-    window.Hermes.initCollapsible(container);
-
-    // 恢复用户手动展开/折叠的状态
-    Object.keys(expandStates).forEach(key => {
-      const msgId = key.replace(/:(answer|tools)$/, '');
-      const type = key.match(/:(answer|tools)$/)?.[1];
-      const turnEl = container.querySelector(`.turn[data-msg-id="${msgId}"]`);
-      if (!turnEl) return;
-      if (type === 'answer') {
-        const answer = turnEl.querySelector('.step-answer');
-        if (answer) answer.classList.remove('collapsed');
-        const btn = turnEl.querySelector('.collapse-btn');
-        if (btn) { btn.classList.add('expanded'); const lbl = btn.querySelector('.label'); if (lbl) lbl.textContent = '收起'; }
-      }
-      if (type === 'tools') {
-        const tc = turnEl.querySelector('.tools-collapse');
-        if (tc) tc.classList.remove('tools-collapsed');
-      }
-    });
+    if (!container) return;
+    var sid = (window.Hermes.state && window.Hermes.state.focusedSessionId) || null;
+    window.Hermes.renderFull(container, messages, sid);
   }
 
   // ---- S#9: 异步确认对话框（替代 confirm()）----
@@ -910,7 +739,6 @@ window.Hermes = window.Hermes || {};
     _ctxMenu.className = 'ctx-menu';
     _ctxMenu.innerHTML =
       '<div class="ctx-menu-item" data-ctx="copy-text">📋 复制文本</div>' +
-      '<div class="ctx-menu-item" data-ctx="edit-resend">✎ 编辑重发</div>' +
       '<div class="ctx-menu-item" data-ctx="export-turn">📤 导出此轮</div>' +
       '<div class="ctx-menu-sep"></div>' +
       '<div class="ctx-menu-item ctx-menu-danger" data-ctx="delete-turn">🗑 删除此轮对话</div>';
@@ -928,8 +756,6 @@ window.Hermes = window.Hermes || {};
         deleteMessageRound(msgId);
       } else if (action === 'copy-text') {
         _copyTurnText(turnEl);
-      } else if (action === 'edit-resend') {
-        _editResendTurn(turnEl, msgId);
       } else if (action === 'export-turn') {
         _exportSingleTurn(turnEl, msgId);
       }
@@ -950,19 +776,6 @@ window.Hermes = window.Hermes || {};
     }).catch(function() {
       window.Hermes.toast('复制失败', true);
     });
-  }
-
-  function _editResendTurn(turnEl, msgId) {
-    if (!turnEl) return;
-    var userEl = turnEl.querySelector('.turn-user-content');
-    var text = userEl ? (userEl.innerText || userEl.textContent) : '';
-    var dom = window.Hermes.dom;
-    if (dom && dom.chatInput) {
-      dom.chatInput.value = text;
-      dom.chatInput.focus();
-      dom.chatInput.style.height = 'auto';
-      dom.chatInput.style.height = Math.min(dom.chatInput.scrollHeight, 200) + 'px';
-    }
   }
 
   function _exportSingleTurn(turnEl, msgId) {
@@ -1322,12 +1135,10 @@ window.Hermes = window.Hermes || {};
   window.Hermes.searchSessions = searchSessions;
   window.Hermes.selectSession = selectSession;
   window.Hermes.renderMessages = renderMessages;
-  window.Hermes.renderStreamingStepsHTML = renderStreamingStepsHTML;
   window.Hermes.groupIntoTurns = groupIntoTurns;
   window.Hermes.renderTurnStepsHTML = renderTurnStepsHTML;
   window.Hermes.renderSingleTurnHTML = renderSingleTurnHTML;
   window.Hermes.renderToolCard = renderToolCard;
-  window.Hermes.renderThinkingBlock = renderThinkingBlock;
   window.Hermes.renderThinkingMargin = renderThinkingMargin;
   window.Hermes.initSessionListEvents = initSessionListEvents;
   window.Hermes.deleteSession = deleteSession;

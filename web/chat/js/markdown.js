@@ -161,42 +161,11 @@ window.Hermes = window.Hermes || {};
         if (btn2) btn2.style.display = '';
       }
     });
-    root.querySelectorAll('.thinking-block:not(.thinking-expanded):not(.thinking-collapsed) .thinking-body').forEach(function(el) {
-      el.scrollTop = el.scrollHeight;
-    });
-    root.querySelectorAll('.tool-result:not(.tool-result-expanded):not(.tool-result-collapsed) .tool-result-body').forEach(function(el) {
-      el.scrollTop = el.scrollHeight;
-    });
+    // 已删除：.thinking-block/.tool-result 的滚动到底兜底（对应 HTML 构建器已随死代码移除）
     scheduleIdleHighlight(root);
   };
 
-  // ---- 流式轻量渲染（P#1: 流式中不做完整 marked.parse，仅转义+基础格式）----
-  function renderStreamingText(text) {
-    if (!text) return '';
-    var escaped = esc(text);
-    // 保留换行，识别代码块围栏（不高亮，仅 <pre> 包裹）
-    // 简单识别 ``` 代码块
-    var parts = escaped.split(/(```[\s\S]*?```)/g);
-    var html = '';
-    for (var i = 0; i < parts.length; i++) {
-      var part = parts[i];
-      if (part.startsWith('```') && part.endsWith('```')) {
-        var inner = part.slice(3, -3);
-        var nlIdx = inner.indexOf('\n');
-        var lang = '';
-        var code = inner;
-        if (nlIdx >= 0) {
-          lang = inner.substring(0, nlIdx).trim();
-          code = inner.substring(nlIdx + 1);
-        }
-        html += '<pre class="code-block streaming-code"><code>' + code + '</code></pre>';
-      } else {
-        html += part.replace(/\n/g, '<br>');
-      }
-    }
-    return html;
-  }
-
+  // ---- 流式轻量渲染（已删除 renderStreamingText：无调用方死代码，D4）----
   // ---- 流式 Markdown 稳定段缓存 ----
   // 按块边界切分，已闭合块只 parse/sanitize 一次并缓存，后续每次只重新解析
   // 最后一个"活跃块"。长回复从 O(n²) 降到 O(n)，避免越输出越卡。
@@ -406,7 +375,6 @@ window.Hermes = window.Hermes || {};
   }
 
   window.Hermes.renderMarkdown = renderMarkdown;
-  window.Hermes.renderStreamingText = renderStreamingText;
   window.Hermes.renderStreamingMarkdown = renderStreamingMarkdown;
   window.Hermes.renderStreamingMarkdownSplit = renderStreamingMarkdownSplit;
   window.Hermes.clearStreamingMdCache = clearStreamingMdCache;
