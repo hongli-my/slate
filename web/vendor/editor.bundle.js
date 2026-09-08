@@ -73922,6 +73922,146 @@ function setupEditorContextMenu() {
 init_session();
 init_statusbar();
 init_paste_image();
+
+// web/src/editor/copy.ts
+init_state();
+init_ui();
+var installed = false;
+function groupViews() {
+  const views = [];
+  for (const g of state.groups) {
+    if (g && g.view) views.push(g.view);
+  }
+  return views;
+}
+function focusedView() {
+  for (const v2 of groupViews()) if (v2.hasFocus) return v2;
+  return null;
+}
+function copiedRange2(view) {
+  const contents = [];
+  const ranges = [];
+  let linewise = false;
+  for (const range of view.state.selection.ranges) {
+    if (!range.empty) {
+      contents.push(view.state.sliceDoc(range.from, range.to));
+      ranges.push({ from: range.from, to: range.to });
+    }
+  }
+  if (!contents.length) {
+    let upto = -1;
+    for (const { from: from3 } of view.state.selection.ranges) {
+      const line = view.state.doc.lineAt(from3);
+      if (line.number > upto) {
+        contents.push(line.text);
+        ranges.push({ from: line.from, to: Math.min(view.state.doc.length, line.to + 1) });
+      }
+      upto = line.number;
+    }
+    linewise = true;
+  }
+  return { text: contents.join(view.state.lineBreak), ranges, linewise };
+}
+async function putClipboard(text2) {
+  try {
+    await navigator.clipboard.writeText(text2);
+    return true;
+  } catch {
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text2;
+    ta.style.cssText = "position:fixed;left:-10000px;top:10px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+function installReliableCopy() {
+  if (installed) return;
+  installed = true;
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      const isCopy = e.key.toLowerCase() === "c";
+      const isCut = e.key.toLowerCase() === "x";
+      if (!isCopy && !isCut) return;
+      const view = focusedView();
+      if (!view) return;
+      const { text: text2, ranges, linewise } = copiedRange2(view);
+      if (!text2 && !linewise) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      void (async () => {
+        const ok = await putClipboard(text2);
+        if (isCut && ranges.length && !view.state.readOnly) {
+          view.dispatch({
+            changes: ranges.map((r2) => ({ from: r2.from, to: r2.to })),
+            scrollIntoView: true,
+            userEvent: "delete.cut"
+          });
+        }
+        if (ok && text2.length > 0) {
+          toast(`\u5DF2\u590D\u5236 ${text2.length} \u5B57\u7B26`);
+        }
+      })();
+    },
+    true
+  );
+  window.addEventListener(
+    "copy",
+    (e) => {
+      const view = focusedView();
+      if (!view) return;
+      const { text: text2, linewise } = copiedRange2(view);
+      if (!text2 && !linewise) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const data2 = e.clipboardData;
+      if (data2) {
+        data2.clearData();
+        data2.setData("text/plain", text2);
+      } else {
+        void putClipboard(text2);
+      }
+    },
+    true
+  );
+  window.addEventListener(
+    "cut",
+    (e) => {
+      const view = focusedView();
+      if (!view) return;
+      const { text: text2, ranges, linewise } = copiedRange2(view);
+      if (!text2 && !linewise) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const data2 = e.clipboardData;
+      if (data2) {
+        data2.clearData();
+        data2.setData("text/plain", text2);
+      } else {
+        void putClipboard(text2);
+      }
+      if (ranges.length && !view.state.readOnly) {
+        view.dispatch({
+          changes: ranges.map((r2) => ({ from: r2.from, to: r2.to })),
+          scrollIntoView: true,
+          userEvent: "delete.cut"
+        });
+      }
+    },
+    true
+  );
+}
+
+// web/src/editor/index.ts
 init_ui();
 init_session();
 function onDocUpdate(u2) {
@@ -74016,6 +74156,7 @@ async function initEditor() {
     setupResizer();
     setupShortcuts();
     setupPasteImage(view);
+    installReliableCopy();
     setupEditorContextMenu();
     setupSplitDivider();
     setupGroupActivation();

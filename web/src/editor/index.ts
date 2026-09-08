@@ -23,6 +23,7 @@ import { restoreSession } from "./session";
 import { recordMacroUpdate } from "./macros";
 import { updateStatusBar, updateStatusCursor, updateEolLabel } from "./statusbar";
 import { setupPasteImage } from "./paste-image";
+import { installReliableCopy } from "./copy";
 import { toast, $ } from "./ui";
 
 /** Central update listener for the main EditorView. */
@@ -159,6 +160,7 @@ export async function initEditor(): Promise<void> {
     setupResizer();
     setupShortcuts();
     setupPasteImage(view);
+    installReliableCopy();
     setupEditorContextMenu();
     setupSplitDivider();
     setupGroupActivation();
