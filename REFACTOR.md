@@ -103,3 +103,39 @@ type ToolCall  = { type: "toolCall"; id: string; name: string; arguments: Record
 
 - **P4 vdom**：当前 morphdom + 结构签名虽丑但能跑，且 P2 统一 content blocks 后渲染逻辑会大幅简化，vdom 的边际收益下降。先看 P2 后的复杂度再决定。
 - **P5 Tauri IPC**：pi SDK 是 TS 库需 Bun 运行时，无法直接进 WKWebView。需先把 pi SDK 拆成"纯前端可 import"的形态，或用隐藏 webview 跑 SDK。工程量大且与 pi SDK 上游耦合，留作长期。
+
+## P4 完成记录（2026-09-08）—— 渲染层根治重构
+
+> 更新结论：P4 **未采用 preact vdom**，改为「纯函数 view-model + keyed element-map morphdom 单一渲染管线」。
+> 理由：真实 bug 根因在数据形态分裂/流结束拆消息改数组/无稳定身份/三套 DOM 写路径并存，
+> 不在缺框架；preact 反而与 thinking 气泡、时间线钉底、面板展开态等命令式 post-render 维护打架。
+
+### 架构（相对上表 P4 设想的变化）
+- **新增 `web/chat/js/view-model.js`**（纯函数，node 可单测）：`buildTurns(msgs)` 统一分组 + 稳定 key
+  （`_localId || id || 序号/hash`）；`decomposeStreaming` 把流式残留归一化为与 DB 持久化形态等价
+  的 steps；`turnSig` 廉价结构签名。**流结束不再 splice 拆消息**（根治 R1），残留消息直接渲染。
+- **新增 `web/chat/js/render.js`**：keyed element-map reconciler，`container.__rdx` 持有 turnKey→元素
+  快照；L1 全量（切会话）/ L2 单 turn 子树 morph / L3 流式正文微 patch（md-stable/md-active/tm-body）；
+  每 turn UI 瞬态（展开面板按 data-call-id、折叠、时间线锚点）只在 L2 时捕获/恢复；结构性大改
+  （删除/压缩/全量加载）自动回退全量。chat 模式与 view 模式共用该管线（renderMessages 保留签名）。
+- **SSE 不再 push toolResult**（结果只存 `_toolSteps[].result`，reFetch 后 DB 提供），消除双写。
+- 删除：`finalizeStreamingTurn`（DOM 旁路 + 拆消息）、`renderStreamingStepsHTML`、`renderThinkingBlock`、
+  `renderStreamingText`、`_lastSig` 手拼签名机、view 模式展开状态保存的幽灵逻辑、Hermes 旧协议残留、
+  🔧 工具开关与编辑重发（用户批准删除）。`_localId` 由 sendMessage/SSE 合成推送统一分配。
+- 修正隐藏 bug：pi thinking block 正文在 `.thinking` 字段，旧 `extractAssistantParts` 读 `.text`
+  导致**历史思考内容丢失**；新实现读 `.thinking ?? .text`。
+- 保留公开契约：`renderMessages(messages, container)` / `renderCurrentChat()` / `groupIntoTurns`
+  （委托 buildTurns）；CSS 类名/DOM 结构/事件委托/URL 深链/REST+SSE 协议全不变。
+
+### 关键坑（morphdom）
+**morphdom 字符串模式只取第一个根节点**（`template.content.childNodes[0]`），而 `.turn-steps` 的
+HTML 是双根（`.ow-tools` 时间线 + `.step-final` 正文）→ childrenOnly morph 时正文块被静默丢弃，
+表现为"流式回复只到最后才显示"。修复：`_morph` 先解析进包裹 `<div>` 再以元素对元素 morph
+（多根/单根均安全，保留 DOM identity）。任何继续使用 morphdom(字符串) 的子树更新都要警惕多根。
+
+### 验证
+- `scripts/chat-smoke.mjs` 58 断言（含流式残留↔持久化形态等价、压缩孤儿跳过、key 稳定性、
+  turnSig 敏感性、remnant≡persisted 签名门），`bun run scripts/chat-smoke.mjs` 全绿。
+- 15 模块装载序契约 39 导出全在、已删符号不导出。
+- 无头浏览器连真实 sidecar E2E：长文本流式逐帧出现、思考→工具→正文、中途 Stop 保留内容、
+  重历史 view 渲染（264 消息/252 工具项）无错；桌面 release 打包启动冒烟通过。
