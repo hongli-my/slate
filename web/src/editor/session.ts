@@ -12,7 +12,7 @@
 import { state, getActiveView, setActiveGroup } from "./state";
 import { switchToTab } from "./tabs";
 import { applyTheme } from "./cm";
-import { readTextFile, loadRecoveryList, readRecovery } from "./io";
+import { readTextFile, loadRecoveryList, readRecovery, clearRecovery } from "./io";
 import { syncPreviewPane } from "./preview";
 import { toast } from "./ui";
 
@@ -97,7 +97,15 @@ async function loadTabWithRecovery(
   if (t.absPath && recoveryPaths.has(t.absPath)) {
     try {
       const rec = await readRecovery(t.absPath);
-      if (rec) return { content: rec, encoding: base.encoding, mtimeMs: base.mtimeMs, recovered: true };
+      if (rec) {
+        // 快照内容与磁盘一致（忽略 EOL 差异）→ 文件已保存，不标 modified。
+        // 防止残留快照把「已保存文件」误判为「有未保存修改」。
+        const same = rec.replace(/\r\n/g, "\n") === base.content.replace(/\r\n/g, "\n");
+        if (!same) {
+          return { content: rec, encoding: base.encoding, mtimeMs: base.mtimeMs, recovered: true };
+        }
+        void clearRecovery(t.absPath); // 清理内容一致的无效残留快照
+      }
     } catch {
       /* ignore — fall back to disk */
     }

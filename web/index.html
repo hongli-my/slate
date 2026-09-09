@@ -46,16 +46,15 @@
             width: 34px; height: 34px; border: 0; background: transparent;
             border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center;
             cursor: pointer; color: var(--text-3);
-            position: relative; transition: background .2s ease, color .2s ease;
+            position: relative; transition: background .2s ease, color .2s ease, transform .12s ease;
         }
         .nav-btn svg { width: 18px; height: 18px; display: block; }
         .nav-btn:hover { background: var(--surface-2); color: var(--text-2); }
-        .nav-btn:active { background: var(--surface-3); }
+        .nav-btn:active { background: var(--surface-3); transform: scale(0.92); }
         .nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-        .nav-btn.active { color: var(--accent); }
-        .nav-btn.active::before {
-            content: ''; position: absolute; left: -6px; top: 50%; transform: translateY(-50%);
-            width: 3px; height: 18px; background: var(--accent); border-radius: 0 2px 2px 0;
+        .nav-btn.active {
+            color: var(--accent);
+            background: var(--accent-bg);
         }
         .nav-btn .tip {
             position: absolute; left: 44px; background: var(--text-1); color: #fff;
@@ -212,6 +211,25 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             <span class="tip">日历 ⌘5</span>
         </button>
+        <button class="nav-btn" data-view="graph" title="知识图谱">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="8.6" y1="10.5" x2="15.4" y2="6.5"/></svg>
+            <span class="tip">图谱 ⌘6</span>
+        </button>
+        <button class="nav-btn" data-view="mindmap" title="思维导图">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="6" height="6" rx="1"/><rect x="16" y="3" width="6" height="5" rx="1"/><rect x="16" y="16" width="6" height="5" rx="1"/><path d="M8 10.5h4v-5h4"/><path d="M8 13.5h4v5h4"/></svg>
+            <span class="tip">导图 ⌘7</span>
+        </button>
+        <div class="nav-tools" id="navTools">
+            <button class="nav-btn" id="btnTools" onclick="toggleToolsMenu()" title="工具">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                <span class="tip">工具</span>
+            </button>
+            <div class="nav-tools-menu" id="toolsMenu" hidden>
+                <button class="nav-tools-item" onclick="closeToolsMenu();clipWebPage()">📥 网页转笔记</button>
+                <button class="nav-tools-item" onclick="closeToolsMenu();clipScreenshot()">📷 截图转笔记</button>
+                <button class="nav-tools-item" onclick="closeToolsMenu();toggleAiPanel()">✨ AI 助手</button>
+            </div>
+        </div>
         <div class="spacer"></div>
         <button class="nav-btn" id="btn-refresh" title="刷新当前视图">
             <svg class="refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
@@ -237,11 +255,16 @@
         <div class="container">
             <div class="sidebar" id="sidebar">
                 <div class="resizer" id="resizer"></div>
+                <div class="sidebar-tabs">
+                    <button class="sidebar-tab active" data-sb-tab="files">文件</button>
+                    <button class="sidebar-tab" data-sb-tab="attachments">附件</button>
+                </div>
                 <div class="file-tree" id="fileTree">
                     <div style="padding:20px;text-align:center;color:#888;font-size:13px;">
                         点击上方按钮打开文件夹
                     </div>
                 </div>
+                <div class="attachments-panel" id="attachmentsPanel" hidden></div>
             </div>
             <div class="main">
                 <div class="editor-area" id="editorArea">
@@ -283,6 +306,14 @@
                         </div>
                     </div>
                 </div>
+                <div class="backlinks-panel" id="backlinksPanel" hidden>
+                    <div class="backlinks-header">
+                        <span class="backlinks-title">🔗 反向链接</span>
+                        <span class="backlinks-count" id="backlinksCount">0</span>
+                        <button class="backlinks-toggle" onclick="toggleBacklinks()">▾</button>
+                    </div>
+                    <div class="backlinks-list" id="backlinksList"></div>
+                </div>
                 <div class="status-bar" id="statusBar">
                     <span id="stFile">未打开文件</span>
                     <span id="stPos">行 1, 列 1</span>
@@ -291,6 +322,17 @@
                     <span id="stEol" onclick="toggleEol()" title="点击切换 LF / CRLF" style="cursor:pointer;">LF</span>
                     <span>UTF-8</span>
                     <span id="stBuild" title="构建版本（用于确认 app 是否跑的最新代码）" style="color:#aaa;">b0819-6</span>
+                </div>
+                <div class="ai-panel" id="aiPanel" hidden>
+                    <div class="ai-panel-header">
+                        <span>✨ AI 助手</span>
+                        <button class="ai-panel-close" onclick="toggleAiPanel()">✕</button>
+                    </div>
+                    <div class="ai-messages" id="aiMessages"></div>
+                    <div class="ai-input-area">
+                        <textarea class="ai-input" id="aiInput" placeholder="输入问题... (Cmd+Enter 发送)"></textarea>
+                        <button class="ai-send" onclick="sendAiMessage()">发送</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -315,6 +357,55 @@
         </div>
         <div class="view" id="view-settings">
             <!-- settings.js 动态填充 -->
+        </div>
+        <div class="view" id="view-graph">
+            <div class="graph-toolbar">
+                <div class="graph-toolbar-group">
+                    <button class="graph-mode-btn active" data-graph-mode="full" title="全库图谱">全库</button>
+                    <button class="graph-mode-btn" data-graph-mode="local" title="局部图谱（当前文件关联）">局部</button>
+                </div>
+                <select class="graph-filter-select" id="graphDirFilter" title="方向过滤">
+                    <option value="all">全部方向</option>
+                    <option value="outgoing">仅出链</option>
+                    <option value="incoming">仅入链</option>
+                    <option value="bidirectional">双向</option>
+                </select>
+                <button class="graph-refresh-btn" id="graphRefreshBtn" title="刷新图谱">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>
+                </button>
+            </div>
+            <canvas id="graphCanvas" class="graph-canvas"></canvas>
+            <div class="graph-empty" id="graphEmpty">
+                <div class="graph-empty-icon">🕸️</div>
+                <div class="graph-empty-text">暂无图谱数据</div>
+                <div class="graph-empty-hint">打开包含 wikilink 的 Markdown 文件后点击刷新</div>
+            </div>
+        </div>
+        <div class="view" id="view-mindmap">
+            <div class="mindmap-toolbar">
+                <select class="mindmap-layout-select" id="mindmapLayout" title="布局方式">
+                    <option value="tree-right">树状（向右）</option>
+                    <option value="tree-down">树状（向下）</option>
+                    <option value="radial">放射状</option>
+                    <option value="organic">自由布局</option>
+                </select>
+                <div class="mindmap-toolbar-sep"></div>
+                <button class="mindmap-tool-btn" id="mmZoomIn" title="放大">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><circle cx="11" cy="11" r="7"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/><path d="m21 21-4.3-4.3"/></svg>
+                </button>
+                <button class="mindmap-tool-btn" id="mmZoomOut" title="缩小">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><circle cx="11" cy="11" r="7"/><line x1="8" y1="11" x2="14" y2="11"/><path d="m21 21-4.3-4.3"/></svg>
+                </button>
+                <button class="mindmap-tool-btn" id="mmFit" title="适应屏幕">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/></svg>
+                </button>
+            </div>
+            <svg id="mindmapSvg" class="mindmap-svg"></svg>
+            <div class="mindmap-empty" id="mindmapEmpty">
+                <div class="mindmap-empty-icon">🌳</div>
+                <div class="mindmap-empty-text">暂无导图数据</div>
+                <div class="mindmap-empty-hint">在编辑器中打开 Markdown 文件后切换到此处</div>
+            </div>
         </div>
     </div>
 </div>
@@ -374,6 +465,14 @@
         if (name === 'calendar' && window.showCalendar) {
             window.showCalendar();
         }
+        // 进入图谱页：初始化
+        if (name === 'graph' && window.initGraph) {
+            window.initGraph();
+        }
+        // 进入导图页：初始化
+        if (name === 'mindmap' && window.initMindmap) {
+            window.initMindmap();
+        }
     }
 
     navBtns.forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
@@ -408,7 +507,7 @@
     // 快捷键 Cmd+1~4 切换
     document.addEventListener('keydown', (e) => {
         if (!(e.metaKey || e.ctrlKey)) return;
-        const map = { '1': 'editor', '2': 'onetab', '3': 'otel', '4': 'chat' };
+        const map = { '1': 'editor', '2': 'onetab', '3': 'otel', '4': 'chat', '5': 'calendar', '6': 'graph', '7': 'mindmap' };
         const v = map[e.key];
         if (v) { e.preventDefault(); switchView(v); }
     });
@@ -417,7 +516,7 @@
     // 文件操作类菜单 → 先切到编辑器视图，再让编辑器处理
     const fileActions = new Set(['open-folder', 'open-file', 'new-file', 'save', 'delete', 'preview']);
     // 视图菜单（Cmd+1~4 原生加速键，子 webview 聚焦时也能切换）
-    const viewActions = { 'view-editor': 'editor', 'view-onetab': 'onetab', 'view-otel': 'otel', 'view-chat': 'chat' };
+    const viewActions = { 'view-editor': 'editor', 'view-onetab': 'onetab', 'view-otel': 'otel', 'view-chat': 'chat', 'view-calendar': 'calendar', 'view-graph': 'graph', 'view-mindmap': 'mindmap' };
     if (window.__TAURI__ && window.__TAURI__.event) {
         window.__TAURI__.event.listen('menu-action', (e) => {
             const action = e.payload;
@@ -428,6 +527,67 @@
             if (v) switchView(v);
         });
     }
+
+    // ===== 侧边栏 tab 切换（文件 / 附件） =====
+    document.querySelectorAll('.sidebar-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.sidebar-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const target = tab.dataset.sbTab;
+            const fileTree = document.getElementById('fileTree');
+            const attachments = document.getElementById('attachmentsPanel');
+            if (fileTree) fileTree.hidden = (target !== 'files');
+            if (attachments) attachments.hidden = (target !== 'attachments');
+        });
+    });
+
+    // ===== 反链面板 / AI 面板（逻辑层可覆盖 window.toggleBacklinks 等） =====
+    window.toggleBacklinks = function() {
+        const panel = document.getElementById('backlinksPanel');
+        if (!panel || panel.hidden) return;
+        panel.classList.toggle('collapsed');
+    };
+    window.toggleAiPanel = function() {
+        const panel = document.getElementById('aiPanel');
+        if (!panel) return;
+        if (panel.hidden) {
+            panel.hidden = false;
+            void panel.offsetHeight;
+            panel.classList.add('open');
+            const input = document.getElementById('aiInput');
+            setTimeout(() => { if (input) input.focus(); }, 280);
+        } else {
+            panel.classList.remove('open');
+            setTimeout(() => { panel.hidden = true; }, 250);
+        }
+    };
+    window.sendAiMessage = function() {
+        // 逻辑层实现
+    };
+
+    // ===== 状态栏「工具」下拉 =====
+    window.toggleToolsMenu = function() {
+        const menu = document.getElementById('toolsMenu');
+        if (!menu) return;
+        if (menu.hidden) {
+            menu.hidden = false;
+        } else {
+            menu.hidden = true;
+        }
+    };
+    window.closeToolsMenu = function() {
+        const menu = document.getElementById('toolsMenu');
+        if (menu) menu.hidden = true;
+    };
+    // 点击「工具」菜单/按钮之外的地方时收起下拉。
+    document.addEventListener('click', function(e) {
+        const tools = document.getElementById('navTools');
+        if (!tools) return;
+        if (!tools.contains(e.target)) {
+            const menu = document.getElementById('toolsMenu');
+            if (menu && !menu.hidden) menu.hidden = true;
+        }
+    });
 </script>
     <!-- ===== 设置页脚本（非 module，用 window.__TAURI__ 全局） ===== -->
     <script src="settings.js"></script>

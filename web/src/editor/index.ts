@@ -5,10 +5,10 @@
 
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
-import { state, viewGroup, setActiveGroup, getTabByPath, type Tab } from "./state";
+import { state, viewGroup, setActiveGroup, getTabByPath, getActiveTab, type Tab } from "./state";
 import { createEditorView, buildExtensions, clearOccurrences } from "./cm";
 import { setupShortcuts } from "./keymap";
-import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile } from "./files";
+import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile, openScannedFile } from "./files";
 import { renderTabsBar, switchToTab, addTab } from "./tabs";
 import { renderTree } from "./filetree";
 import { togglePreview, scheduleMdRender, updateFormatButtons, isMarkdownFile, syncPreviewPane } from "./preview";
@@ -24,7 +24,12 @@ import { recordMacroUpdate } from "./macros";
 import { updateStatusBar, updateStatusCursor, updateEolLabel } from "./statusbar";
 import { setupPasteImage } from "./paste-image";
 import { installReliableCopy } from "./copy";
+import { clipWebPage, clipScreenshot } from "./clip";
 import { toast, $ } from "./ui";
+import { setNoteFileProvider, buildLinkIndex, backlinksFor, type LinkEntry } from "./wikilink";
+import { createGraphView, type GraphView } from "./graph";
+import { createMindmapView, type MindmapView } from "./mindmap";
+import { setupAiPanel, toggleAiPanel, sendAiMessage } from "./ai-panel";
 
 /** Central update listener for the main EditorView. */
 function onDocUpdate(u: ViewUpdate): void {
@@ -128,10 +133,21 @@ async function onFileChanged(path: string, mtimeMs: number): Promise<void> {
     if (!g) return;
     const view = g.view;
     if (view && g.activeTabId === tab.id) {
+      // 内容与当前 doc 一致（多为自身保存触发的 mtime 变化）→ 跳过 reload，
+      // 避免 dispatch 触发 docChanged 把刚保存的文件重新标为「已修改」，
+      // 同时避免整段替换导致的编辑区/光标跳动。
+      if (content === view.state.doc.toString()) {
+        tab.mtimeMs = mtimeMs;
+        return;
+      }
       // Swap doc on the live view. Undo returns to the pre-reload state.
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: content } });
     } else if (state.buildExtensions && state.onUpdate) {
-      // Background tab: rebuild its saved state with fresh content.
+      // Background tab: skip reload if content is unchanged.
+      if (tab.cmState && content === tab.cmState.doc.toString()) {
+        tab.mtimeMs = mtimeMs;
+        return;
+      }
       tab.cmState = EditorState.create({ doc: content, extensions: state.buildExtensions(state.onUpdate) });
     }
     tab.mtimeMs = mtimeMs;
@@ -142,6 +158,187 @@ async function onFileChanged(path: string, mtimeMs: number): Promise<void> {
 
 // Lazy require wrapper wrapper removed; _session is imported directly below.
 import * as _session from "./session";
+
+// ---- Wikilink subsystem wiring ----
+// linkIndex caches all [[source → target]] pairs across the vault. Rebuilt
+// asynchronously on vault load; updated incrementally when a file is saved.
+let linkIndex: LinkEntry[] = [];
+let linkIndexTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Register the note-file provider (for [[ ]] autocomplete) and the preview
+ *  click handler (for wikilink navigation). Called once during initEditor. */
+function setupWikilink(): void {
+  // Provider: lazily reads state.scannedFiles on each completion request.
+  // Returns markdown filenames without extension, deduplicated.
+  setNoteFileProvider(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const f of state.scannedFiles) {
+      if (!/\.(md|markdown)$/i.test(f.name)) continue;
+      const title = f.name.replace(/\.(md|markdown)$/i, "");
+      if (!seen.has(title)) { seen.add(title); out.push(title); }
+    }
+    return out;
+  });
+
+  // Wikilink click navigation in preview pane (event delegation).
+  // previewPane is group0's preview; previewPane1 is group1's.
+  for (const id of ["previewPane", "previewPane1"]) {
+    const pane = document.getElementById(id);
+    if (!pane) continue;
+    pane.addEventListener("click", (e) => {
+      const link = (e.target as HTMLElement | null)?.closest("a.wikilink") as HTMLElement | null;
+      if (!link) return;
+      const target = link.dataset.target;
+      if (!target) return;
+      e.preventDefault();
+      void openWikilinkTarget(target);
+    });
+  }
+
+  // Rebuild link index when a vault is loaded.
+  window.addEventListener("slate:vault-loaded", () => { void rebuildLinkIndex(); });
+  // Refresh backlinks panel when the active tab changes.
+  window.addEventListener("slate:tab-switched", () => { refreshBacklinks(); });
+}
+
+/** Rebuild the full-vault link index by reading all .md file contents.
+ *  Debounced 500ms so rapid folder switches don't trigger redundant reads. */
+async function rebuildLinkIndex(): Promise<void> {
+  if (linkIndexTimer) clearTimeout(linkIndexTimer);
+  return new Promise((resolve) => {
+    linkIndexTimer = setTimeout(async () => {
+      linkIndexTimer = null;
+      const mdFiles = state.scannedFiles.filter(f => /\.(md|markdown)$/i.test(f.path));
+      const files: { path: string; content: string }[] = [];
+      for (const f of mdFiles) {
+        try {
+          const r = await readTextFile(f.absPath);
+          files.push({ path: f.path, content: r.text });
+        } catch { /* skip unreadable */ }
+      }
+      linkIndex = buildLinkIndex(files);
+      refreshBacklinks();
+      resolve();
+    }, 500);
+  });
+}
+
+/** Update the backlinks panel DOM for the currently active tab. */
+function refreshBacklinks(): void {
+  const panel = document.getElementById("backlinksPanel");
+  const list = document.getElementById("backlinksList");
+  const count = document.getElementById("backlinksCount");
+  if (!panel || !list || !count) return;
+
+  const tab = getActiveTab();
+  if (!tab || !/\.(md|markdown)$/i.test(tab.name)) {
+    panel.hidden = true;
+    return;
+  }
+  const title = tab.name.replace(/\.(md|markdown)$/i, "");
+  const links = backlinksFor(title, linkIndex);
+  if (links.length === 0) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+  count.textContent = String(links.length);
+  list.innerHTML = links.map(l =>
+    `<div class="backlink-item" data-path="${l.sourcePath}" style="padding:4px 8px;cursor:pointer;border-radius:3px;">` +
+    `<span style="color:#8ab4f8;font-size:13px;">${l.source}</span>` +
+    `<span style="color:#888;font-size:12px;margin-left:6px;">→ [[${l.target}]]</span>` +
+    `</div>`
+  ).join("");
+  // Click a backlink → open that file.
+  list.querySelectorAll<HTMLElement>(".backlink-item").forEach(item => {
+    item.addEventListener("mouseenter", () => { item.style.background = "#4a4a4a"; });
+    item.addEventListener("mouseleave", () => { item.style.background = ""; });
+    item.addEventListener("click", () => {
+      const path = item.dataset.path;
+      if (path) void openFileByPath(path);
+    });
+  });
+}
+
+/** Open a file by its path (used by backlink clicks). Searches scannedFiles
+ *  for a match; if found, opens it via openScannedFile. */
+async function openFileByPath(relPath: string): Promise<void> {
+  const ref = state.scannedFiles.find(f => f.path === relPath);
+  if (ref) {
+    await openScannedFile(ref);
+    return;
+  }
+  toast(`找不到文件: ${relPath}`);
+}
+
+/** Open or create the target of a [[wikilink]] click in the preview pane. */
+async function openWikilinkTarget(target: string): Promise<void> {
+  // Try to find a .md file whose basename (sans extension) matches the target.
+  const match = state.scannedFiles.find(f => {
+    const base = f.name.replace(/\.(md|markdown)$/i, "");
+    return base === target;
+  });
+  if (match) {
+    await openScannedFile(match);
+    return;
+  }
+  // No matching file — create a new untitled tab with the wikilink name.
+  const name = target + ".md";
+  addTab(name, name, `# ${target}\n\n`, null, "utf-8", "LF", null, state.activeGroup, false);
+  toast(`已创建新笔记: ${name}`);
+}
+
+/** Toggle backlinks panel visibility (overrides the index.html stub). */
+function toggleBacklinks(): void {
+  const panel = document.getElementById("backlinksPanel");
+  if (!panel) return;
+  if (panel.hidden) {
+    refreshBacklinks();
+  } else {
+    panel.classList.toggle("collapsed");
+  }
+}
+
+// ---- Graph & Mindmap views ----
+let graphView: GraphView | null = null;
+let mindmapView: MindmapView | null = null;
+
+/** Create graph/mindmap instances and wire them into #view-graph / #view-mindmap.
+ *  Called once during initEditor. The instances are lazy-rendered via
+ *  window.initGraph / window.initMindmap (triggered by switchView). */
+function setupGraphAndMindmap(): void {
+  const graphContainer = document.getElementById("view-graph");
+  if (graphContainer) {
+    graphView = createGraphView(graphContainer, {
+      onNodeClick: (id) => { void openWikilinkTarget(id); },
+    });
+  }
+  const mmContainer = document.getElementById("view-mindmap");
+  if (mmContainer) {
+    mindmapView = createMindmapView(mmContainer);
+  }
+}
+
+/** Current note's basename without extension (for graph local mode + backlinks). */
+function currentNoteName(): string | undefined {
+  const tab = getActiveTab();
+  if (!tab || !/\.(md|markdown)$/i.test(tab.name)) return undefined;
+  return tab.name.replace(/\.(md|markdown)$/i, "");
+}
+
+/** Render the knowledge graph (called by switchView when entering graph view). */
+function initGraph(): void {
+  if (!graphView) return;
+  graphView.render(linkIndex, currentNoteName());
+}
+
+/** Render the mindmap from the current document (called by switchView). */
+function initMindmap(): void {
+  if (!mindmapView) return;
+  const md = state.view?.state.doc.toString() ?? "";
+  mindmapView.render(md);
+}
 
 /** Mount the editor into #editorPane and boot all subsystems. */
 export async function initEditor(): Promise<void> {
@@ -165,6 +362,9 @@ export async function initEditor(): Promise<void> {
     setupSplitDivider();
     setupGroupActivation();
     setupFileWatcher();
+    setupWikilink();
+    setupGraphAndMindmap();
+    setupAiPanel();
     updateFormatButtons();
 
     await loadRecents();
@@ -291,6 +491,17 @@ export function exposeGlobals(): void {
   w.testCalendar = testCalendar;
   w.toggleSplitView = toggleSplitView;
   w.toggleMinimap = toggleMinimap;
+  // 网页转笔记 / 截图转笔记（存到当前文件夹 Clippings/）。
+  w.clipWebPage = clipWebPage;
+  w.clipScreenshot = clipScreenshot;
+  // Wikilink: backlinks panel toggle (overrides index.html stub).
+  w.toggleBacklinks = toggleBacklinks;
+  // Graph & mindmap: lazy-render hooks called by switchView.
+  w.initGraph = initGraph;
+  w.initMindmap = initMindmap;
+  // AI 助手面板（覆盖 index.html 桩函数）。
+  w.toggleAiPanel = toggleAiPanel;
+  w.sendAiMessage = sendAiMessage;
   // Expose for debugging.
   w.__slate = state;
   // Debug helper: trigger an in-file search so tests can verify highlight clearing.

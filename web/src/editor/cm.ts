@@ -48,6 +48,8 @@ import {
   closeBracketsKeymap,
   autocompletion,
   completionKeymap,
+  type CompletionContext,
+  type CompletionResult,
 } from "@codemirror/autocomplete";
 import { search, searchKeymap, setSearchQuery, SearchQuery, SearchCursor } from "@codemirror/search";
 import { EditorView as EV } from "@codemirror/view";
@@ -55,6 +57,7 @@ import { EditorView as EV } from "@codemirror/view";
 import { state, setActiveGroup } from "./state";
 import { darkThemeExt, lightThemeExt } from "./theme";
 import { languageForFile } from "./languages";
+import { getNoteFileList, fuzzyScore } from "./wikilink";
 
 // ---- Occurrence highlight via StateField (FIX #16) ----
 interface OccRange { from: number; to: number; }
@@ -211,6 +214,54 @@ function cmdClickHandler(): Extension {
   });
 }
 
+// ---- Wikilink [[ ]] autocomplete ----
+// Triggered when the cursor sits right after `[[` (with an optional partial
+// query). Offers every note title in the vault, ranked by fuzzyScore. The
+// note-title list comes from getNoteFileList() — a provider registered by
+// index.ts after the vault loads; until then this source returns null
+// (silent no-op). Bails inside code blocks / inline code so `[[x]]` inside
+// a fenced ``` block doesn't pop a spurious popup.
+const CODE_NODE_RE = /code/i;
+
+function wikilinkCompletionSource(context: CompletionContext): CompletionResult | null {
+  // matchBefore requires the match to end exactly at the cursor.
+  // /\[\[([^\]|]*)/ matches `[[` plus zero+ non-]/non-| chars.
+  const word = context.matchBefore(/\[\[([^\]|]*)/);
+  if (!word || word.text.length < 2) return null; // need at least "[["
+
+  // Skip when the cursor is inside a code construct (fenced block, inline
+  // code, etc.) so we don't interfere with code editing.
+  const node = syntaxTree(context.state).resolveInner(context.pos, -1);
+  if (node.name && CODE_NODE_RE.test(node.name)) return null;
+
+  const all = getNoteFileList();
+  if (all.length === 0) return null; // provider not wired / empty vault
+
+  const query = word.text.slice(2); // text after "[["
+
+  let items: { label: string; score: number }[];
+  if (query === "") {
+    // No query yet — show everything, alphabetical.
+    items = all.map((t) => ({ label: t, score: 0 }));
+  } else {
+    items = all
+      .map((t) => ({ label: t, score: fuzzyScore(query, t) }))
+      .filter((it) => it.score > 0);
+  }
+  if (items.length === 0) return null;
+  items.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+
+  return {
+    // Replace starting right after `[[` — `[[` stays typed, we insert
+    // `${label}]]`. `to` covers any partial query the user already typed.
+    from: word.from + 2,
+    to: word.to,
+    options: items.map((it) => ({ label: it.label, apply: `${it.label}]]` })),
+    // Stay valid while the user keeps typing non-]/non-| chars after `[[`.
+    validFor: /^[^\]|]*$/,
+  };
+}
+
 /** Build the full base extension set for the main editor. */
 export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] {
   return [
@@ -284,6 +335,8 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
     autocompletion({
       activateOnTyping: true,
       defaultKeymap: true,
+      // Wikilink [[ ]] completion source. See wikilinkCompletionSource above.
+      override: [wikilinkCompletionSource],
     }),
     cmdClickHandler(),
     makeUpdateListener(onUpdate),

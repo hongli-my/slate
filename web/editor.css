@@ -26,7 +26,7 @@
         /* ===== 侧边栏 ===== */
         #view-editor .sidebar {
             width: 260px; min-width: 140px; max-width: 500px;
-            background: #e8eaed; border-right: 1px solid #d0d4d9;
+            background: #eef0f4; border-right: 1px solid #e2e5ea;
             display: flex; flex-direction: column; flex-shrink: 0; position: relative;
             align-items: stretch; padding-top: 0; gap: 0;
         }
@@ -46,6 +46,23 @@
         }
         .sidebar-buttons { display: flex; gap: 2px; }
         .file-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+
+        /* ===== 导航栏「工具」下拉 ===== */
+        .nav-tools { position: relative; }
+        .nav-tools-menu {
+            position: absolute; left: 40px; top: 0;
+            background: #3a3a3a; border: 1px solid #555; border-radius: 6px;
+            min-width: 160px; padding: 4px; z-index: 300;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+        }
+        .nav-tools-menu[hidden] { display: none; }
+        .nav-tools-item {
+            display: block; width: 100%; text-align: left;
+            background: transparent; border: none; color: #e0e0e0; cursor: pointer;
+            font-size: 12px; padding: 6px 10px; border-radius: 4px; white-space: nowrap;
+            font-family: inherit;
+        }
+        .nav-tools-item:hover { background: #5a5a5a; }
 
         /* ===== 日历页面（独立 view，导航栏「日历」入口，纯白 + 柔和马卡龙色）===== */
         .calendar-page {
@@ -296,7 +313,7 @@
         .tree-arrow.expanded::before { content: '\25BC'; }
 
         /* ===== 主区域 ===== */
-        .main { flex: 1; display: flex; flex-direction: column; background: #4b4b4b; min-width: 0; }
+        .main { flex: 1; display: flex; flex-direction: column; background: #4b4b4b; min-width: 0; position: relative; overflow: hidden; }
         .tabs-bar {
             display: flex; background: #535353; border-bottom: 1px solid #6b6b6b;
             overflow-x: auto; flex-shrink: 0; min-height: 35px;
@@ -311,7 +328,11 @@
         }
         .tab:hover { background: #5a5a5a; }
         .tab:active { filter: brightness(0.92); }
-        .tab.active { background: #4b4b4b; color: #e0e0e0; border-bottom: 1px solid #4b4b4b; margin-bottom: -1px; }
+        .tab.active {
+            background: #4b4b4b; color: #ffffff;
+            box-shadow: inset 0 2px 0 0 #5b8def;
+            border-bottom: 1px solid #4b4b4b; margin-bottom: -1px;
+        }
         .tab .tab-name { margin-right: 8px; }
         .tab .tab-close {
             font-size: 14px; padding: 0 4px; border-radius: 3px;
@@ -457,7 +478,6 @@
             padding: 12px 10px; font-size: 12px; line-height: 1.5;
         }
         /* 无 TOC 时（非 md 文件或无标题）buildToc 设 display:none，content 自动占满 */
-        }
         .md-toc-title {
             font-size: 10px; font-weight: 700; text-transform: uppercase;
             color: #8b919a; letter-spacing: .8px; margin-bottom: 8px;
@@ -717,8 +737,8 @@
         }
         .tree-vrow:hover { background: #dadee3; }
         .tree-vrow.selected {
-            background: #d4d9df; color: #1a73e8;
-            box-shadow: inset 3px 0 0 0 #1a73e8;
+            background: #e2e7ef; color: #3b5998;
+            box-shadow: inset 3px 0 0 0 #3b5998;
         }
         .tree-vrow .icon { margin-right: 6px; font-size: 14px; flex-shrink: 0; }
         .tree-vrow .tree-arrow { width: 10px; margin-right: 2px; color: #8b919a; flex-shrink: 0; font-size: 10px; }
@@ -741,3 +761,316 @@
 
         /* Long list items in goto / search panels: skip rendering off-screen rows. */
         .float-panel .fp-list .fp-item { content-visibility: auto; contain-intrinsic-size: 0 26px; }
+
+        /* ============================================================
+           ===== 新增 UI 组件样式 =====
+           ============================================================ */
+
+        /* ===== 侧边栏 Tab 切换（文件 / 附件） — 浅色，与侧边栏一致 ===== */
+        .sidebar-tabs {
+            display: flex; flex-shrink: 0;
+            border-bottom: 1px solid #e2e5ea;
+            background: #e8eaef;
+        }
+        .sidebar-tab {
+            flex: 1; padding: 6px 0; border: 0; background: transparent;
+            font-size: 12px; font-weight: 500; color: #8b919a;
+            cursor: pointer; font-family: inherit;
+            border-bottom: 2px solid transparent;
+            transition: color .15s ease, border-color .15s ease, background .15s ease;
+        }
+        .sidebar-tab:hover { color: #4e5969; background: rgba(0,0,0,0.03); }
+        .sidebar-tab.active {
+            color: #3b5998; border-bottom-color: #3b5998; background: #eef0f4;
+        }
+
+        /* ===== 附件浏览器面板 — 浅色网格 ===== */
+        .attachments-panel { flex: 1; overflow-y: auto; padding: 8px; }
+        .attachments-panel[hidden] { display: none; }
+        .attachments-panel:not([hidden]) {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(82px, 1fr));
+            gap: 4px;
+            align-content: start;
+        }
+        .attachments-panel::-webkit-scrollbar { width: 6px; }
+        .attachments-panel::-webkit-scrollbar-thumb { background: #c4c8cd; border-radius: 3px; }
+        .attachments-panel:empty::before {
+            content: '暂无附件';
+            display: block; text-align: center; color: #aaa;
+            font-size: 12px; padding: 30px 0; grid-column: 1 / -1;
+        }
+        .att-item {
+            display: flex; flex-direction: column; align-items: center;
+            padding: 10px 6px; border-radius: 5px; cursor: pointer;
+            transition: background .15s ease; position: relative; text-align: center;
+        }
+        .att-item:hover { background: #dadee3; }
+        .att-icon { font-size: 28px; margin-bottom: 4px; line-height: 1; }
+        .att-name {
+            font-size: 11px; color: #4e5969; max-width: 100%;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .att-size { font-size: 10px; color: #b0b0b0; margin-top: 1px; }
+        .att-actions {
+            position: absolute; top: 4px; right: 4px;
+            display: none; gap: 2px;
+        }
+        .att-item:hover .att-actions { display: flex; }
+        .att-action-btn {
+            width: 20px; height: 20px; border: 0; border-radius: 3px;
+            background: rgba(255,255,255,0.85); color: #4e5969;
+            cursor: pointer; font-size: 11px; display: flex;
+            align-items: center; justify-content: center;
+            transition: background .12s ease, color .12s ease;
+        }
+        .att-action-btn:hover { background: #fff; color: #1a73e8; }
+        .att-action-btn.del:hover { color: #e53935; }
+
+        /* ===== 反链面板 — 深色，编辑区底部 ===== */
+        .backlinks-panel {
+            flex-shrink: 0; background: #3d3d3d; border-top: 1px solid #555;
+            max-height: 200px; display: flex; flex-direction: column;
+            overflow: hidden; transition: max-height .2s ease;
+        }
+        .backlinks-panel[hidden] { display: none; }
+        .backlinks-panel.collapsed { max-height: 32px; }
+        .backlinks-panel.collapsed .backlinks-list { display: none; }
+        .backlinks-header {
+            display: flex; align-items: center; gap: 8px;
+            padding: 0 12px; height: 32px; flex-shrink: 0;
+            background: #3d3d3d; border-bottom: 1px solid #4a4a4a;
+        }
+        .backlinks-title {
+            font-size: 12px; font-weight: 600; color: #ccc; user-select: none;
+        }
+        .backlinks-count {
+            font-size: 11px; color: #999; background: #555;
+            padding: 0 6px; border-radius: 8px; min-width: 18px;
+            text-align: center; line-height: 16px; height: 16px;
+        }
+        .backlinks-toggle {
+            margin-left: auto; border: 0; background: transparent;
+            color: #999; cursor: pointer; font-size: 12px;
+            padding: 2px 6px; border-radius: 3px;
+            transition: background .15s ease, color .15s ease, transform .2s ease;
+        }
+        .backlinks-toggle:hover { background: #555; color: #ddd; }
+        .backlinks-panel.collapsed .backlinks-toggle { transform: rotate(-90deg); }
+        .backlinks-list {
+            flex: 1; overflow-y: auto; padding: 2px 0;
+        }
+        .backlinks-list::-webkit-scrollbar { width: 6px; }
+        .backlinks-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+        .backlinks-item {
+            padding: 6px 12px; cursor: pointer;
+            border-bottom: 1px solid #444;
+            transition: background .12s ease;
+        }
+        .backlinks-item:hover { background: #484848; }
+        .backlinks-item:last-child { border-bottom: 0; }
+        .backlinks-item-name {
+            font-size: 12px; font-weight: 500; color: #8ab4f8;
+            margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .backlinks-item-context {
+            font-size: 11px; color: #999; line-height: 1.4;
+            overflow: hidden; text-overflow: ellipsis;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        }
+        .backlinks-empty {
+            padding: 16px; text-align: center; color: #777; font-size: 12px;
+        }
+
+        /* ===== AI 助手面板 — 深色，右侧滑出 ===== */
+        .ai-panel {
+            position: absolute; top: 0; right: 0; bottom: 0;
+            width: 360px; background: #383838;
+            border-left: 1px solid #555;
+            display: flex; flex-direction: column; z-index: 50;
+            transform: translateX(100%);
+            transition: transform .25s ease;
+            box-shadow: -4px 0 16px rgba(0,0,0,0.2);
+        }
+        .ai-panel[hidden] { display: none; }
+        .ai-panel.open { transform: translateX(0); }
+        .ai-panel-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 14px; background: #333; border-bottom: 1px solid #4a4a4a;
+            font-size: 13px; font-weight: 600; color: #ddd; flex-shrink: 0;
+        }
+        .ai-panel-close {
+            border: 0; background: transparent; color: #999; cursor: pointer;
+            font-size: 15px; padding: 2px 6px; border-radius: 3px; line-height: 1;
+            transition: background .15s ease, color .15s ease;
+        }
+        .ai-panel-close:hover { background: #555; color: #ddd; }
+        .ai-messages {
+            flex: 1; overflow-y: auto; padding: 12px 14px;
+        }
+        .ai-messages::-webkit-scrollbar { width: 6px; }
+        .ai-messages::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+        .ai-msg {
+            margin-bottom: 10px; max-width: 88%; font-size: 13px; line-height: 1.5;
+            animation: aiMsgIn .2s ease;
+        }
+        @keyframes aiMsgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        .ai-msg.user {
+            margin-left: auto; background: #2a4a6a; color: #d0e0f0;
+            padding: 8px 12px; border-radius: 10px 10px 2px 10px;
+        }
+        .ai-msg.assistant {
+            margin-right: auto; background: #4a4a4a; color: #e0e0e0;
+            padding: 8px 12px; border-radius: 10px 10px 10px 2px;
+        }
+        .ai-input-area {
+            flex-shrink: 0; padding: 10px 12px; background: #333;
+            border-top: 1px solid #4a4a4a;
+            display: flex; gap: 8px; align-items: flex-end;
+        }
+        .ai-input {
+            flex: 1; resize: none; min-height: 36px; max-height: 100px;
+            background: #2d2d2d; color: #e0e0e0; border: 1px solid #555;
+            border-radius: 6px; padding: 8px 10px; font-size: 13px;
+            font-family: inherit; outline: none; line-height: 1.4;
+            transition: border-color .15s ease;
+        }
+        .ai-input:focus { border-color: #6a8aca; }
+        .ai-input::placeholder { color: #777; }
+        .ai-send {
+            flex-shrink: 0; padding: 8px 16px; background: #3b5998; color: #fff;
+            border: 0; border-radius: 6px; cursor: pointer; font-size: 13px;
+            font-family: inherit; font-weight: 500; height: 36px;
+            transition: background .15s ease, transform .1s ease;
+        }
+        .ai-send:hover { background: #4a6ab0; }
+        .ai-send:active { transform: scale(0.95); }
+
+        /* ===== 知识图谱视图 — 深色画布 ===== */
+        #view-graph {
+            height: 100%; background: #3a3a3a; position: relative; overflow: hidden;
+        }
+        .graph-toolbar {
+            position: absolute; top: 12px; left: 12px; z-index: 10;
+            display: flex; align-items: center; gap: 8px;
+            background: rgba(40,40,40,0.85); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+            border: 1px solid #555; border-radius: 6px; padding: 6px 8px;
+        }
+        .graph-toolbar-group {
+            display: flex; gap: 2px; background: #2d2d2d; border-radius: 4px; padding: 2px;
+        }
+        .graph-mode-btn {
+            padding: 3px 12px; border: 0; background: transparent;
+            color: #999; font-size: 12px; cursor: pointer; border-radius: 3px;
+            font-family: inherit; transition: background .15s ease, color .15s ease;
+        }
+        .graph-mode-btn:hover { color: #ddd; }
+        .graph-mode-btn.active { background: #4a4a4a; color: #fff; }
+        .graph-filter-select {
+            background: #2d2d2d; color: #ccc; border: 1px solid #555;
+            border-radius: 4px; padding: 4px 8px; font-size: 12px;
+            font-family: inherit; outline: none; cursor: pointer;
+        }
+        .graph-filter-select:focus { border-color: #6a8aca; }
+        .graph-refresh-btn {
+            width: 28px; height: 28px; display: flex; align-items: center;
+            justify-content: center; border: 1px solid #555; background: #2d2d2d;
+            color: #ccc; border-radius: 4px; cursor: pointer;
+            transition: background .15s ease, color .15s ease;
+        }
+        .graph-refresh-btn:hover { background: #4a4a4a; color: #fff; }
+        .graph-refresh-btn:active { transform: scale(0.92); }
+        .graph-canvas {
+            display: block; width: 100%; height: 100%; cursor: grab;
+        }
+        .graph-canvas:active { cursor: grabbing; }
+        .graph-empty {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; color: #777; gap: 6px;
+            pointer-events: none;
+        }
+        .graph-empty[hidden] { display: none; }
+        .graph-empty-icon { font-size: 48px; opacity: 0.4; }
+        .graph-empty-text { font-size: 15px; font-weight: 500; color: #999; }
+        .graph-empty-hint { font-size: 12px; color: #666; }
+
+        /* ===== 思维导图视图 — 深色画布 ===== */
+        #view-mindmap {
+            height: 100%; background: #3a3a3a; position: relative; overflow: hidden;
+        }
+        .mindmap-toolbar {
+            position: absolute; top: 12px; left: 12px; z-index: 10;
+            display: flex; align-items: center; gap: 6px;
+            background: rgba(40,40,40,0.85); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+            border: 1px solid #555; border-radius: 6px; padding: 6px 8px;
+        }
+        .mindmap-layout-select {
+            background: #2d2d2d; color: #ccc; border: 1px solid #555;
+            border-radius: 4px; padding: 4px 8px; font-size: 12px;
+            font-family: inherit; outline: none; cursor: pointer;
+        }
+        .mindmap-layout-select:focus { border-color: #6a8aca; }
+        .mindmap-toolbar-sep { width: 1px; height: 20px; background: #555; margin: 0 2px; }
+        .mindmap-tool-btn {
+            width: 28px; height: 28px; display: flex; align-items: center;
+            justify-content: center; border: 1px solid #555; background: #2d2d2d;
+            color: #ccc; border-radius: 4px; cursor: pointer;
+            transition: background .15s ease, color .15s ease, transform .1s ease;
+        }
+        .mindmap-tool-btn:hover { background: #4a4a4a; color: #fff; }
+        .mindmap-tool-btn:active { transform: scale(0.92); }
+        .mindmap-svg {
+            display: block; width: 100%; height: 100%; cursor: grab;
+        }
+        .mindmap-svg:active { cursor: grabbing; }
+        .mindmap-empty {
+            position: absolute; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; color: #777; gap: 6px;
+            pointer-events: none;
+        }
+        .mindmap-empty[hidden] { display: none; }
+        .mindmap-empty-icon { font-size: 48px; opacity: 0.4; }
+        .mindmap-empty-text { font-size: 15px; font-weight: 500; color: #999; }
+        .mindmap-empty-hint { font-size: 12px; color: #666; }
+
+        /* ===== Wikilink 预览样式 ===== */
+        .wikilink {
+            color: #6cb6ff; cursor: pointer; text-decoration: none;
+            background: rgba(108,182,255,0.08); padding: 0 3px;
+            border-radius: 3px; border-bottom: 1px solid rgba(108,182,255,0.25);
+            transition: background .15s ease, color .15s ease, border-color .15s ease;
+        }
+        .wikilink:hover {
+            background: rgba(108,182,255,0.18); color: #8ab4f8;
+            border-bottom-color: rgba(108,182,255,0.6);
+        }
+        .wikilink.unresolved {
+            color: #e8a04c; border-bottom: 1px dashed rgba(232,160,76,0.4);
+            background: rgba(232,160,76,0.06);
+        }
+        .wikilink.unresolved:hover {
+            color: #f0b060; background: rgba(232,160,76,0.14);
+            border-bottom-color: rgba(232,160,76,0.6);
+        }
+
+        /* ===== 亮色主题适配 ===== */
+        #view-editor.light-theme .backlinks-panel { background: #f5f5f5; border-top-color: #e0e0e0; }
+        #view-editor.light-theme .backlinks-header { background: #f5f5f5; border-bottom-color: #e0e0e0; }
+        #view-editor.light-theme .backlinks-title { color: #333; }
+        #view-editor.light-theme .backlinks-count { background: #e0e0e0; color: #666; }
+        #view-editor.light-theme .backlinks-toggle { color: #666; }
+        #view-editor.light-theme .backlinks-toggle:hover { background: #e0e0e0; color: #333; }
+        #view-editor.light-theme .backlinks-item { border-bottom-color: #e8e8e8; }
+        #view-editor.light-theme .backlinks-item:hover { background: #ebebeb; }
+        #view-editor.light-theme .backlinks-item-name { color: #1a73e8; }
+        #view-editor.light-theme .backlinks-item-context { color: #666; }
+        #view-editor.light-theme .ai-panel { background: #f5f5f5; border-left-color: #e0e0e0; box-shadow: -4px 0 16px rgba(0,0,0,0.08); }
+        #view-editor.light-theme .ai-panel-header { background: #ebebeb; border-bottom-color: #e0e0e0; color: #333; }
+        #view-editor.light-theme .ai-panel-close { color: #666; }
+        #view-editor.light-theme .ai-panel-close:hover { background: #ddd; color: #333; }
+        #view-editor.light-theme .ai-msg.user { background: #d0e0f0; color: #1a3a5a; }
+        #view-editor.light-theme .ai-msg.assistant { background: #ebebeb; color: #333; }
+        #view-editor.light-theme .ai-input-area { background: #ebebeb; border-top-color: #e0e0e0; }
+        #view-editor.light-theme .ai-input { background: #fff; color: #333; border-color: #d0d0d0; }
+        #view-editor.light-theme .ai-input::placeholder { color: #aaa; }
+        #view-editor.light-theme .ai-input:focus { border-color: #6a8aca; }

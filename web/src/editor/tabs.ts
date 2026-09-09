@@ -139,6 +139,8 @@ export function switchToTab(id: number, groupId: 0 | 1 = state.activeGroup): voi
   }
   refreshPreviewIfVisible();
   refreshMinimap();
+  // Notify wikilink subsystem to refresh backlinks for the new tab.
+  window.dispatchEvent(new Event("slate:tab-switched"));
   // 大 JSON 自动折叠顶层 value（Slate 定位：JSON 查看）。仅首次打开该 tab 时
   // 执行一次——用户手动展开后切走再回来不会被重新折叠。
   if (/\.json$/i.test(tab.name) && view.state.doc.lines > 500 && !foldedTabs.has(tab)) {

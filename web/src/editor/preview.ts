@@ -55,6 +55,37 @@ hljs.registerLanguage("diff", diff);
 hljs.registerLanguage("plaintext", plaintext);
 
 let markedConfigured = false;
+
+// marked v18 custom inline extension: render [[target]] / [[target|alias]]
+// as <a class="wikilink" data-target="...">text</a>. The walk-dom click
+// handler (index.ts) reads data-target to navigate. `start` lets marked
+// find the token quickly by reporting the next `[[` index.
+const wikilinkExtension = {
+  name: "wikilink",
+  level: "inline" as const,
+  start(src: string): number {
+    return src.indexOf("[[");
+  },
+  tokenizer(src: string) {
+    const match = /^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(src);
+    if (match) {
+      return {
+        type: "wikilink",
+        raw: match[0],
+        target: match[1].trim(),
+        alias: match[2]?.trim(),
+        text: match[2]?.trim() || match[1].trim(),
+      };
+    }
+    return undefined;
+  },
+  renderer(token: { target: string; text: string }): string {
+    const target = token.target;
+    const text = token.text;
+    return `<a class="wikilink" data-target="${target}">${text}</a>`;
+  },
+};
+
 function ensureMarked(): void {
   if (markedConfigured) return;
   markedConfigured = true;
@@ -62,6 +93,7 @@ function ensureMarked(): void {
     gfm: true,
     breaks: true,
   });
+  marked.use({ extensions: [wikilinkExtension] });
 }
 
 export function isMarkdownFile(): boolean {

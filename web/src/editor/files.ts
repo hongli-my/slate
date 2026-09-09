@@ -89,6 +89,8 @@ export async function loadFolder(dirPath: string): Promise<void> {
   renderTree();
   toast("已加载 " + state.scannedFiles.length + " 个文件");
   await addRecent("folder", dirPath, basename(dirPath));
+  // Notify wikilink subsystem to rebuild the link index.
+  window.dispatchEvent(new Event("slate:vault-loaded"));
 }
 
 export async function doOpenFiles(): Promise<void> {
@@ -231,6 +233,9 @@ export async function saveCurrentFile(): Promise<boolean> {
       const stat = await fileStat(tab.absPath).catch(() => null);
       tab.mtimeMs = stat?.mtimeMs ?? tab.mtimeMs;
       tab.modified = false;
+      // 清除崩溃恢复快照——否则下次启动 restoreSession 会读到残留快照，
+      // 把已保存的文件误判为「有未保存修改」（tab 标题出现 • 圆点）。
+      void clearRecovery(tab.absPath);
       renderTabsBar();
       updateStatusBar();
       saveSession();

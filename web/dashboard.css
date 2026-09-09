@@ -12,13 +12,13 @@
   --bg-hover: #eef1f7;
   --bg-active: #e7ebf3;
 
-  --brand: #10b981;        /* 主品牌绿（盾牌 logo） */
-  --brand-soft: #d1fae5;
-  --brand-text: #047857;
+  --brand: #007aff;        /* 主色（与 chat 一致，单一强调色） */
+  --brand-soft: #e6f1ff;
+  --brand-text: #0056b3;
 
-  --accent: #6366f1;       /* 紫蓝主色 */
-  --accent-soft: #eef2ff;
-  --accent-hover: #4f46e5;
+  --accent: #007aff;       /* 单一强调色（去紫蓝） */
+  --accent-soft: #e6f1ff;
+  --accent-hover: #0056b3;
 
   --info: #3b82f6;
   --info-soft: #dbeafe;
@@ -28,22 +28,6 @@
   --warning-soft: #fef3c7;
   --danger: #ef4444;
   --danger-soft: #fee2e2;
-
-  /* 卡片图标用多色 */
-  --c-violet: #a855f7;
-  --c-violet-soft: #f3e8ff;
-  --c-blue: #3b82f6;
-  --c-blue-soft: #dbeafe;
-  --c-green: #22c55e;
-  --c-green-soft: #dcfce7;
-  --c-orange: #f97316;
-  --c-orange-soft: #ffedd5;
-  --c-amber: #eab308;
-  --c-amber-soft: #fef9c3;
-  --c-teal: #06b6d4;
-  --c-teal-soft: #cffafe;
-  --c-pink: #ec4899;
-  --c-pink-soft: #fce7f3;
 
   --text-1: #1f2937;
   --text-2: #475569;
@@ -59,13 +43,11 @@
   --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.06), 0 2px 4px rgba(15, 23, 42, 0.04);
   --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.08), 0 4px 8px rgba(15, 23, 42, 0.04);
 
-  /* 渐变 · 用于 Hero Banner */
+  /* 渐变 · 用于 Hero Banner（去紫粉橙，改深蓝灰中性） */
   --hero-grad: linear-gradient(135deg,
-    #4f7cff 0%,
-    #6c5ce7 25%,
-    #a855f7 45%,
-    #ec4899 70%,
-    #f97316 100%);
+    #1c2a3a 0%,
+    #26374a 55%,
+    #31475f 100%);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -339,7 +321,7 @@ button:focus-visible, a:focus-visible {
   padding: 28px 32px;
   color: var(--text-invert);
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(99, 102, 241, 0.18);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.16);
 }
 .pm-hero::before {
   content: "";
@@ -395,7 +377,7 @@ button:focus-visible, a:focus-visible {
   align-items: center;
   gap: 6px;
   background: rgba(255, 255, 255, 0.95);
-  color: #4c1d95;
+  color: #0a3d91;
   border: none;
   padding: 9px 18px;
   border-radius: var(--radius-md);
@@ -461,13 +443,11 @@ button:focus-visible, a:focus-visible {
   font-size: 18px;
   flex-shrink: 0;
 }
-.pm-stat-icon.c-violet  { background: var(--c-violet-soft);  color: var(--c-violet);  }
-.pm-stat-icon.c-blue    { background: var(--c-blue-soft);    color: var(--c-blue);    }
-.pm-stat-icon.c-green   { background: var(--c-green-soft);   color: var(--c-green);   }
-.pm-stat-icon.c-orange  { background: var(--c-orange-soft);  color: var(--c-orange);  }
-.pm-stat-icon.c-amber   { background: var(--c-amber-soft);   color: var(--c-amber);   }
-.pm-stat-icon.c-teal    { background: var(--c-teal-soft);    color: var(--c-teal);    }
-.pm-stat-icon.c-pink    { background: var(--c-pink-soft);    color: var(--c-pink);    }
+/* 统计卡图标：统一单一强调色（去 7 色马卡龙） */
+.pm-stat-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .pm-stat-trend {
   font-size: 10.5px;
   font-weight: 600;
@@ -749,12 +729,7 @@ button:focus-visible, a:focus-visible {
   border-radius: var(--radius-pill);
   font-weight: 500;
 }
-.pm-tag.t-violet { background: var(--c-violet-soft); color: var(--c-violet); }
-.pm-tag.t-blue   { background: var(--c-blue-soft);   color: var(--c-blue); }
-.pm-tag.t-green  { background: var(--c-green-soft);  color: var(--c-green); }
-.pm-tag.t-orange { background: var(--c-orange-soft); color: var(--c-orange); }
-.pm-tag.t-amber  { background: var(--c-amber-soft);  color: var(--c-amber); }
-.pm-tag.t-teal   { background: var(--c-teal-soft);   color: var(--c-teal); }
+.pm-tag { background: var(--accent-soft); color: var(--accent); }
 
 /* =========== 响应式：窄屏折叠侧栏 =========== */
 @media (max-width: 760px) {
