@@ -242,9 +242,11 @@ slate/
 ### 前置环境
 
 - Rust stable（≥ 1.77.2，实测 1.97.1）
-- Tauri CLI 2.11（实测 2.11.4）
+- Tauri CLI 2.11（作为 `@tauri-apps/cli` devDependency，`bun install` 自动安装，经 `bunx tauri` 调用；也可 `cargo install tauri-cli` 全局安装）
 - Bun 1.4（实测 1.4.0）
 - Xcode Command Line Tools（`codesign` / `xcrun`）
+
+> `bunx tauri` 依赖 `@tauri-apps/cli`（devDependency），而非 `tauri` 包——缺它会报 `could not determine executable to run for package tauri`。`bun install` 会一并安装。
 
 > tauri CLI 若以 node shebang 脚本安装（`#!/usr/bin/env node`）而系统无 node，用 `bunx tauri ...` 调用；bun 自带 node 兼容 shim，`bun run build`（esbuild）亦可直接执行，无需单独装 node。
 
