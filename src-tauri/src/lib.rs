@@ -163,10 +163,16 @@ pub fn run() {
         })
         .setup(|app| {
             // 日志始终开启（release 也写 ~/Library/Logs/com.slate.app/），
-            // 便于定位子 webview / sidecar 运行问题
+            // 便于定位子 webview / sidecar 运行问题。release 降到 Warn：sidecar
+            // stdout/stderr 经 log::info! 转发会落盘，可能含敏感数据，且量大。
+            // dev 保留 Info 便于调试。
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
+                    .level(if cfg!(debug_assertions) {
+                        log::LevelFilter::Info
+                    } else {
+                        log::LevelFilter::Warn
+                    })
                     .build(),
             )?;
             // app 启动自动拉起 pi-bridge sidecar（异步，不阻塞 setup）

@@ -89,6 +89,12 @@ function currentFileSymbols(): Symbol[] {
   return symbols;
 }
 
+/** FIX #14: drop the cached symbols for a tab. Call from closeTab so the
+ *  cache doesn't grow unboundedly as tabs open/close. */
+export function clearSymbolCache(tabId: number): void {
+  symbolCache.delete(tabId);
+}
+
 let gotoPanel: HTMLElement | null = null;
 
 export function showGotoPanel(): void {
@@ -265,19 +271,22 @@ function getEnclosingFunctionName(): string | null {
   const view = state.view;
   const tab = getActiveTab();
   if (!view || !tab) return null;
-  const content = view.state.doc.toString();
-  const lines = content.split("\n");
-  const cursorLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+  // FIX #15: iterate via doc.line(i) (CM6 API) instead of
+  // doc.toString().split("\n") — avoids materializing the whole document as a
+  // string + array of every line on every Goto open. Line numbers here are
+  // 1-indexed (doc.line(i) and symbol.line are both 1-based).
+  const doc = view.state.doc;
+  const cursorLine = doc.lineAt(view.state.selection.main.head).number;
   const symbols = currentFileSymbols();
   const candidates = symbols
-    .filter((s) => s.line - 1 <= cursorLine)
+    .filter((s) => s.line <= cursorLine)
     .sort((a, b) => b.line - a.line);
   for (const s of candidates) {
     let depth = 0;
     let closed = false;
-    for (let i = s.line - 1; i <= cursorLine; i++) {
-      const l = lines[i] || "";
-      for (const ch of l) {
+    for (let i = s.line; i <= cursorLine; i++) {
+      const line = doc.line(i).text;
+      for (const ch of line) {
         if (ch === "{") depth++;
         else if (ch === "}") {
           depth--;
@@ -289,7 +298,10 @@ function getEnclosingFunctionName(): string | null {
       }
       if (closed) break;
     }
-    if (depth === 0 && (lines[s.line - 1] || "").includes("def")) return s.name;
+    // Python `def` blocks aren't brace-scoped — a depth-0 def line still
+    // encloses the cursor if it hasn't been "closed" by a dedent we can't
+    // cheaply detect, so treat a matching def line as the enclosing scope.
+    if (depth === 0 && doc.line(s.line).text.includes("def")) return s.name;
     if (!closed) return s.name;
   }
   return null;

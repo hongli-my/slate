@@ -6,8 +6,18 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
-const DB_PATH_OPENCODE: &str = "/Users/honglichang/.local/share/opencode/otel.db";
-const DB_PATH_PI: &str = "/Users/honglichang/.local/share/pi/otel.db";
+/// 构造 opencode/pi 两个 otel.db 路径（基于 $HOME，不再硬编码绝对路径）。
+/// HOME 未设置时返回空 Vec，调用方将跳过查询（与库文件缺失时行为一致）。
+fn otel_db_paths() -> Vec<String> {
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => h,
+        _ => return Vec::new(),
+    };
+    vec![
+        format!("{}/.local/share/opencode/otel.db", home),
+        format!("{}/.local/share/pi/otel.db", home),
+    ]
+}
 
 static TITLE_CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<String>>>> =
     std::sync::OnceLock::new();
@@ -31,24 +41,19 @@ fn open_otel_db_at(path: &str) -> Result<Connection, String> {
     Ok(conn)
 }
 
-static DB_POOL: std::sync::OnceLock<Mutex<Vec<Connection>>> = std::sync::OnceLock::new();
-
 /// 打开 opencode + pi 两个 otel.db；缺失或打开失败的库被静默跳过，
 /// 因此 Slate 在仅有 opencode 库（或 pi 库尚未创建）时也能正常工作。
 ///
-/// 复用全局连接池：只读连接打开后缓存，避免每次命令调用都重开（大体积
-/// 库重开需重建 mmap 映射 + page cache，30s 自动刷新下累积开销明显）。
-/// 池为空（首次调用或库此前缺失）时重新探测打开；已缓存连接直接复用。
-fn open_otel_dbs() -> std::sync::MutexGuard<'static, Vec<Connection>> {
-    let pool = DB_POOL.get_or_init(|| Mutex::new(Vec::new()));
-    let mut guard = pool.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.is_empty() {
-        *guard = [DB_PATH_OPENCODE, DB_PATH_PI]
-            .iter()
-            .filter_map(|path| open_otel_db_at(path).ok())
-            .collect();
-    }
-    guard
+/// 每次调用新开只读连接并返回 owned Vec，不持有任何全局锁——所有 OTel 命令
+/// 可完全并发执行（此前用 Mutex<Vec<Connection>> 连接池，guard 贯穿整个命令
+/// 导致全部 OTel 命令串行化）。只读打开开销 ~1ms，且 SQLite mmap 按需映射，
+/// 重开不会立即读全库。新出现的库（如 Slate 启动后才创建的 pi 库）下次调用
+/// 即可被探测到，无需连接池刷新逻辑。
+fn open_otel_dbs() -> Vec<Connection> {
+    otel_db_paths()
+        .iter()
+        .filter_map(|path| open_otel_db_at(path).ok())
+        .collect()
 }
 
 // ============================================================
@@ -116,17 +121,17 @@ fn merge_json(base: &serde_json::Map<String, Value>, extra: Value) -> Value {
 }
 
 fn today_start_ms() -> i64 {
-    // macOS date: epoch seconds at local midnight
-    let out = std::process::Command::new("date")
-        .args(["-v", "0H", "-v", "0M", "-v", "0S", "+%s"])
-        .output();
-    match out {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            s.parse::<i64>().unwrap_or(0) * 1000
-        }
-        Err(_) => 0,
-    }
+    // 使用 chrono 计算本地午夜 0 点的 epoch 毫秒，替代 BSD-only 的 `date -v` 调用。
+    // 原实现 `date -v 0H ...` 仅在 macOS 可用，Linux/CI 上 `date` 不支持 -v 会报错，
+    // 导致 today_sessions 统计恒为 0。chrono 已是现有依赖，不新增编译开销。
+    use chrono::TimeZone;
+    let now = chrono::Local::now();
+    let midnight = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
+    chrono::Local
+        .from_local_datetime(&midnight)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(now.timestamp_millis())
 }
 
 // ============================================================
@@ -140,7 +145,7 @@ fn get_opencode_title(session_id: &str, profile: Option<&str>) -> Option<String>
 
     let cache_key = format!("{}|{}", profile.unwrap_or(""), session_id);
     {
-        let cache = title_cache().lock().unwrap();
+        let cache = title_cache().lock().unwrap_or_else(|e| e.into_inner());
         if let Some(cached) = cache.get(&cache_key) {
             return cached.clone();
         }
@@ -198,7 +203,7 @@ fn get_opencode_title(session_id: &str, profile: Option<&str>) -> Option<String>
     }
 
     let result = title.clone();
-    let mut cache = title_cache().lock().unwrap();
+    let mut cache = title_cache().lock().unwrap_or_else(|e| e.into_inner());
     cache.insert(cache_key, title);
     result
 }
@@ -214,7 +219,7 @@ fn batch_get_opencode_titles(
     }
 
     // 1. 检查缓存，收集 miss
-    let cache = title_cache().lock().unwrap();
+    let cache = title_cache().lock().unwrap_or_else(|e| e.into_inner());
     let mut miss_ids: Vec<String> = Vec::new();
     for (sid, profile) in items {
         let cache_key = format!("{}|{}", profile.as_deref().unwrap_or(""), sid);
@@ -288,7 +293,7 @@ fn batch_get_opencode_titles(
     }
 
     // 4. 回写缓存 + 填充 results
-    let mut cache = title_cache().lock().unwrap();
+    let mut cache = title_cache().lock().unwrap_or_else(|e| e.into_inner());
     for (sid, profile) in items {
         let cache_key = format!("{}|{}", profile.as_deref().unwrap_or(""), sid);
         let title = found.get(sid).cloned();

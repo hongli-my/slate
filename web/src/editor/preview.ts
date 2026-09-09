@@ -4,9 +4,10 @@
 // Post-processes code blocks with copy buttons + heading fold (ported).
 
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/core";
 import { state, getActiveTab, getActiveView, groupElId } from "./state";
-import { $ } from "./ui";
+import { $, escapeHtml } from "./ui";
 
 // Register ~20 common languages (FIX: bundle shrink from 2.9MB -> ~700KB).
 import javascript from "highlight.js/lib/languages/javascript";
@@ -80,8 +81,11 @@ const wikilinkExtension = {
     return undefined;
   },
   renderer(token: { target: string; text: string }): string {
-    const target = token.target;
-    const text = token.text;
+    // Escape both attribute (data-target) and body (text) contexts — a note
+    // named [["><img src=x onerror=...>]] would otherwise inject HTML. The
+    // outer DOMPurify pass (renderMarkdownPreview) is defense-in-depth.
+    const target = escapeHtml(token.target);
+    const text = escapeHtml(token.text);
     return `<a class="wikilink" data-target="${target}">${text}</a>`;
   },
 };
@@ -257,7 +261,10 @@ function renderMarkdownPreview(): void {
   try {
     // marked v18 dropped the `highlight` option, so render plain HTML then
     // highlight each <pre><code> block with hljs.highlightElement (robust).
-    const html = marked.parse(content) as string;
+    // Sanitize with DOMPurify before innerHTML: a .md with <img onerror=...>
+    // is a stored-XSS sink (full Tauri invoke access). DOMPurify keeps
+    // data-* attributes, so wikilink data-target survives for the click handler.
+    const html = DOMPurify.sanitize(marked.parse(content) as string);
     mdContent.innerHTML = html;
     // Build TOC from headings (adds ids for scroll-to). Must run BEFORE
     // addHeadingFold, which rewrites heading innerHTML but preserves the id.

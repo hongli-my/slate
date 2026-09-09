@@ -25,7 +25,7 @@ import { updateStatusBar, updateStatusCursor, updateEolLabel } from "./statusbar
 import { setupPasteImage } from "./paste-image";
 import { installReliableCopy } from "./copy";
 import { clipWebPage, clipScreenshot } from "./clip";
-import { toast, $ } from "./ui";
+import { toast, $, escapeHtml } from "./ui";
 import { setNoteFileProvider, buildLinkIndex, backlinksFor, type LinkEntry } from "./wikilink";
 import { createGraphView, type GraphView } from "./graph";
 import { createMindmapView, type MindmapView } from "./mindmap";
@@ -244,12 +244,17 @@ function refreshBacklinks(): void {
   }
   panel.hidden = false;
   count.textContent = String(links.length);
-  list.innerHTML = links.map(l =>
-    `<div class="backlink-item" data-path="${l.sourcePath}" style="padding:4px 8px;cursor:pointer;border-radius:3px;">` +
-    `<span style="color:#8ab4f8;font-size:13px;">${l.source}</span>` +
-    `<span style="color:#888;font-size:12px;margin-left:6px;">→ [[${l.target}]]</span>` +
-    `</div>`
-  ).join("");
+  // All three fields derive from .md file contents — escape before innerHTML
+  // (a note named foo"><img src=x onerror=...>.md would inject HTML).
+  list.innerHTML = links.map(l => {
+    const sourcePath = escapeHtml(l.sourcePath);
+    const source = escapeHtml(l.source);
+    const target = escapeHtml(l.target);
+    return `<div class="backlink-item" data-path="${sourcePath}" style="padding:4px 8px;cursor:pointer;border-radius:3px;">` +
+      `<span style="color:#8ab4f8;font-size:13px;">${source}</span>` +
+      `<span style="color:#888;font-size:12px;margin-left:6px;">→ [[${target}]]</span>` +
+      `</div>`;
+  }).join("");
   // Click a backlink → open that file.
   list.querySelectorAll<HTMLElement>(".backlink-item").forEach(item => {
     item.addEventListener("mouseenter", () => { item.style.background = "#4a4a4a"; });
@@ -384,7 +389,7 @@ export async function initEditor(): Promise<void> {
       pane.innerHTML =
         '<div style="padding:40px;color:#f66;font-family:monospace;">' +
         "Slate 编辑器初始化失败:<br>" +
-        String((err as Error).message || err) +
+        escapeHtml(String((err as Error).message || err)) +
         "</div>";
     }
   }

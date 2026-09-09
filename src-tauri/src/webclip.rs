@@ -32,6 +32,17 @@ pub struct PageContent {
 /// 上限 60KB 文本，避免超大页面拖垮 AI 上下文。
 #[tauri::command]
 pub async fn fetch_page(url: String) -> Result<PageContent, String> {
+    // SSRF / scheme 防护：只允许 http/https，并拒绝指向本机或云元数据服务的地址，
+    // 避免剪藏功能被用来探测内网 / 读取 file:// / 触发云实例元数据泄漏。
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "无效的 URL".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("不允许的地址".into());
+    }
+    let host = parsed.host_str().unwrap_or("");
+    if is_blocked_host(host) {
+        return Err("不允许的地址".into());
+    }
+
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15")
         .timeout(std::time::Duration::from_secs(20))
@@ -56,7 +67,28 @@ pub async fn fetch_page(url: String) -> Result<PageContent, String> {
     if !ct.contains("html") && !ct.contains("text") {
         return Err(format!("不支持的内容类型：{ct}"));
     }
-    let body = resp.text().await.map_err(|e| e.to_string())?;
+    // 响应体大小上限 1MB：先看 Content-Length，超限直接拒绝（避免下载巨型响应）。
+    if let Some(cl) = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Ok(n) = cl.trim().parse::<u64>() {
+            if n > 1_000_000 {
+                return Err("页面过大 (>1MB)".into());
+            }
+        }
+    }
+    // 读取字节流后再兜底裁剪到 1MB（Content-Length 可能缺失 / 不准）。
+    let raw_bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let cap = 1_000_000;
+    let body_bytes: &[u8] = if raw_bytes.len() > cap {
+        &raw_bytes[..cap]
+    } else {
+        &raw_bytes[..]
+    };
+    // String::from_utf8_lossy 容忍截断的多字节序列，不会 panic。
+    let body = String::from_utf8_lossy(body_bytes).into_owned();
     let (title, text) = extract_text(&body);
     // 60KB 截断。resp.text() 保证是合法 UTF-8，直接在字节边界切片可能切断
     // 多字节字符导致 panic，必须按 char 边界收缩（dsh 原版有该隐患，此处修复）。
@@ -68,6 +100,16 @@ pub async fn fetch_page(url: String) -> Result<PageContent, String> {
         text,
         images,
     })
+}
+
+/// SSRF 防护：拒绝指向本机回环 / 未指定地址 / 云元数据服务的 host。
+/// 采用字面量匹配，避免引入额外依赖或过度复杂化（私有网段如 192.168.* 由
+/// 用户自行判断，不在本编辑器剪藏的威胁模型内）。
+fn is_blocked_host(host: &str) -> bool {
+    matches!(
+        host,
+        "127.0.0.1" | "localhost" | "0.0.0.0" | "::1" | "169.254.169.254"
+    )
 }
 
 /// 按 UTF-8 char 边界截断到 `max_bytes`（不回退则原样返回）。
@@ -321,9 +363,24 @@ pub async fn download_images(root_dir: String, urls: Vec<String>) -> Result<Vec<
         } else {
             "jpg"
         };
+        // 图片大小上限 20MB：先看 Content-Length，超限跳过该图（不中断整体下载）。
+        if let Some(cl) = resp
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+        {
+            if let Ok(n) = cl.trim().parse::<u64>() {
+                if n > 20_000_000 {
+                    continue;
+                }
+            }
+        }
         let Ok(bytes) = resp.bytes().await else {
             continue;
         };
+        if bytes.len() > 20_000_000 {
+            continue; // 超过 20MB 跳过，避免占用过多内存/磁盘
+        }
         if bytes.len() < 5 * 1024 {
             continue; // 过小视为图标
         }

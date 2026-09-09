@@ -11,7 +11,7 @@
 
 import { state, basename } from "./state";
 import { toast } from "./ui";
-import { addTab } from "./tabs";
+import { addTab, switchToTab } from "./tabs";
 import { renderTree, buildTree } from "./filetree";
 import { addRecent } from "./files";
 import {
@@ -173,7 +173,10 @@ async function runWebPageClip(url: string, signal: AbortSignal): Promise<void> {
   if (!full.trim()) throw new Error("模型未返回内容，请检查对话引擎设置或稍后重试。");
 
   const today = new Date().toISOString().slice(0, 10);
-  const cleanTitle = (page.title || url).replace(/"/g, "'");
+  // Collapse all whitespace (incl. \n) to single spaces — a <title> with a
+  // newline would produce malformed YAML front-matter. Same normalization as
+  // descRaw below.
+  const cleanTitle = (page.title || url).replace(/\s+/g, " ").replace(/"/g, "'").trim();
   const descRaw = page.text.replace(/\s+/g, " ").trim().slice(0, 100) || page.title || "";
   const fm = [
     "---",
@@ -221,17 +224,26 @@ async function saveAndOpen(
     state.scannedFiles.sort((a, b) => a.path.localeCompare(b.path));
     state.folderTree = buildTree(state.scannedFiles, basename(dir));
   }
-  addTab(
-    fileName,
-    relPath,
-    content,
-    absPath,
-    "utf-8",
-    "LF",
-    stat?.mtimeMs ?? null,
-    state.activeGroup,
-    false
-  );
+  // Dedup: if a tab for this absPath is already open, switch to it instead of
+  // opening a second tab (matches files.ts open-files behavior). The file was
+  // just (re)written to disk; the watcher will reload the existing tab's
+  // buffer if it is unmodified.
+  const existing = state.openTabs.find((t) => t.absPath === absPath);
+  if (existing) {
+    switchToTab(existing.id);
+  } else {
+    addTab(
+      fileName,
+      relPath,
+      content,
+      absPath,
+      "utf-8",
+      "LF",
+      stat?.mtimeMs ?? null,
+      state.activeGroup,
+      false
+    );
+  }
   renderTree();
   void watchTrack(absPath).catch(() => {});
   void renameSession(sid, sessionPrefix + title.slice(0, 40)).catch(() => {});
@@ -281,6 +293,8 @@ function renameSession(sid: string, title: string): Promise<Record<string, unkno
 
 /** 逐行解析 SSE 帧（pi 原生事件透传，见 PLAN「已验证事实」）。 */
 export function parseSseFrame(frame: string): Record<string, unknown> | null {
+  // Normalize CRLF → LF so line-splitting works for servers using \r\n.
+  frame = frame.replace(/\r\n/g, "\n");
   let data = "";
   for (const line of frame.split("\n")) {
     if (line.startsWith("data:")) data += line.slice(5).trimStart();
@@ -323,39 +337,74 @@ async function sseChatStream(
   const dec = new TextDecoder();
   let buf = "";
   let text = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let idx = buf.indexOf("\n\n");
-    while (idx !== -1) {
-      const frame = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      const ev = parseSseFrame(frame);
-      if (ev) {
-        if (ev.type === "message_update") {
-          const ae = ev.assistantMessageEvent as { type?: string; delta?: string } | null;
-          if (ae && ae.type === "text_delta" && typeof ae.delta === "string") text += ae.delta;
-        } else if (ev.type === "error") {
-          throw new Error(typeof ev.error === "string" ? ev.error : "AI 回复出错");
+  // Idle timeout: if pi-bridge stalls mid-stream (TCP open, no bytes), abort
+  // the reader and surface a timeout instead of hanging until manual cancel.
+  // Reset on every successful read; cleared in `finally`.
+  const IDLE_TIMEOUT = 60000;
+  let idleTimedOut = false;
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const resetIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true;
+      // reader.cancel() releases the stream lock and rejects the pending
+      // reader.read() below. We do NOT abort `signal` (the caller's), so the
+      // timeout error still surfaces as a toast rather than a silent cancel.
+      void reader.cancel("idle-timeout").catch(() => {});
+    }, IDLE_TIMEOUT);
+  };
+  resetIdle();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      resetIdle();
+      buf += dec.decode(value, { stream: true });
+      // Normalize CRLF → LF so \n\n frame splitting works for \r\n\r\n servers.
+      buf = buf.replace(/\r\n/g, "\n");
+      let idx = buf.indexOf("\n\n");
+      while (idx !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const ev = parseSseFrame(frame);
+        if (ev) {
+          if (ev.type === "message_update") {
+            const ae = ev.assistantMessageEvent as { type?: string; delta?: string } | null;
+            if (ae && ae.type === "text_delta" && typeof ae.delta === "string") text += ae.delta;
+          } else if (ev.type === "error") {
+            throw new Error(typeof ev.error === "string" ? ev.error : "AI 回复出错");
+          }
         }
+        idx = buf.indexOf("\n\n");
       }
-      idx = buf.indexOf("\n\n");
     }
+  } catch (e) {
+    if (idleTimedOut) throw new Error("对话引擎响应超时");
+    throw e;
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
   }
   return text;
 }
 
 // ---- 文件命名 / 模态 ----
 
-/** 文件名非法字符替换（`/\:*?"<>|` → `-`），避免嵌套路径/系统保留字。 */
+/** 文件名非法字符替换（`/\:*?"<>|` → `-`），避免嵌套路径/系统保留字。
+ *  亦剥离控制字符（含换行）、首尾点/空格，并规避 Windows 保留名
+ *  (CON/PRN/AUX/NUL/COM1-9/LPT1-9) — macOS 无此限制但利于跨设备同步。 */
 function sanitizeFile(s: string): string {
-  const out = s
+  const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  let out = s
+    .replace(/[\x00-\x1f]/g, "") // control chars incl. newline
     .replace(/[\\/:*?"<>|]/g, "-")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 80)
-    .replace(/^\.+/, "");
+    .slice(0, 80) // 80-char cap (unchanged)
+    .replace(/^\.+/, "") // no leading dots
+    .replace(/[\s.]+$/, ""); // no trailing dots/spaces
+  // Check the stem (without extension) against Windows reserved names.
+  const stem = out.replace(/\.[^.]*$/, "");
+  if (stem && RESERVED.test(stem)) out = "_" + out;
   return out || "未命名";
 }
 

@@ -60,7 +60,9 @@ async function runGlobalSearch(term: string): Promise<void> {
   if (!term || !state.currentDirPath) return;
   const list = document.getElementById("searchAllList");
   if (!list) return;
-  list.innerHTML = '<div class="fp-empty">搜索中...</div>';
+  // Show a "searching" state BEFORE the (async) Rust call so the UI gives
+  // feedback immediately; cleared/replaced once results arrive.
+  list.innerHTML = '<div class="fp-empty">搜索中…</div>';
   // FIX #3: single Rust call instead of a serial JS fsReadText loop.
   let hits: SearchHit[] = [];
   try {
@@ -77,7 +79,14 @@ async function runGlobalSearch(term: string): Promise<void> {
     list.innerHTML = '<div class="fp-empty">未找到匹配</div>';
     return;
   }
-  list.innerHTML = "";
+  // Result-count summary (the search is a single batched call, so we can't
+  // stream incremental counts — show the total once it returns).
+  const MAX = 200;
+  const truncated = hits.length >= MAX;
+  list.innerHTML =
+    '<div class="fp-search-count">找到 ' + hits.length + (truncated ? "+ 个结果（仅显示前 " + MAX + "）" : " 个结果") + "</div>";
+  // Append rows via a DocumentFragment to avoid a layout pass per row.
+  const frag = document.createDocumentFragment();
   for (const r of hits) {
     const row = document.createElement("div");
     row.className = "fp-item";
@@ -90,8 +99,9 @@ async function runGlobalSearch(term: string): Promise<void> {
       closeSearchAllPanel();
       void openSearchResult(r);
     };
-    list.appendChild(row);
+    frag.appendChild(row);
   }
+  list.appendChild(frag);
 }
 
 async function openSearchResult(r: SearchHit): Promise<void> {

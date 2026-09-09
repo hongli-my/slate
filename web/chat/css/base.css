@@ -236,6 +236,7 @@ body {
   color: var(--accent);
   animation: blink 1s steps(1) infinite;
   font-weight: 400;
+  pointer-events: none; /* 装饰游标不参与 hit-test，防 WKWebView 光标闪烁 */
 }
 @keyframes blink {
   0%, 50% { opacity: 1; }

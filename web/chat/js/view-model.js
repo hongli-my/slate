@@ -303,6 +303,26 @@ window.Hermes = window.Hermes || {};
       }
     }
 
+    // 透传 _error 到末步（供渲染层显示错误提示）；无任何 step 时推一个承载 _error 的空步。
+    // SSE error 事件 / 网络中断残留会带 _error，若不透传则 onStreamComplete 收尾后错误不可见。
+    if (sm._error) {
+      if (steps.length > 0) {
+        steps[steps.length - 1]._error = sm._error;
+      } else {
+        steps.push({
+          assistant: { content: '', reasoning: '', timestamp: sm.timestamp },
+          toolCalls: null, toolResults: [], hasMore: false,
+          _error: sm._error
+        });
+      }
+    }
+
+    // 透传 _aborted 到末步：用户中止后 onStreamComplete 收尾走残留归一化（非流式渲染分支），
+    // 若不透传则 .step-final 的 _aborted 视觉标记（降透明度 + "(已中断)"）在重塑后丢失。
+    if (sm._aborted && steps.length > 0) {
+      steps[steps.length - 1]._aborted = true;
+    }
+
     return { steps: steps, flags: flags };
   }
 
@@ -316,9 +336,27 @@ window.Hermes = window.Hermes || {};
    * 注意：不含墙上时钟（running 步骤的每秒跳动由 live timer 显式触发重渲，
    * 不依赖签名变化）。
    */
+  // contentMarker 结果缓存：流式期 renderDiff 每 tick 对全部 turn 调 turnSig→contentMarker，
+  // 但只有最后一个（流式）turn 的内容在变，前序 turn 的 content 字符串值不变 → 命中缓存跳过 FNV-1a。
+  // 按"字符串值"作 key（同值不同引用也命中，因为前序 turn 的 content 来自同一 msgs 数组未变对象）。
+  // 容量上限避免长会话无界增长；LRU 式淘汰最旧项。
+  var _cmCache = new Map();
+  var _CM_CACHE_MAX = 1024;
+
   function contentMarker(text) {
     var s = String(text == null ? '' : text);
-    return s.length + ':' + s.slice(0, 12);
+    // 全量哈希（FNV-1a，复用 hashStr）：等长但内容不同的替换不会再撞签名导致漏渲。
+    // 旧实现 length+slice(0,12) 在"等长 + 前 12 字符相同"时误判未变，违背
+    // "宁可过度重渲，不可漏渲"的不变式。单趟扫描，开销与旧实现同量级。
+    var cached = _cmCache.get(s);
+    if (cached !== undefined) return cached;
+    var m = s.length + ':' + hashStr(s);
+    if (_cmCache.size >= _CM_CACHE_MAX) {
+      var fk = _cmCache.keys().next().value;
+      _cmCache.delete(fk);
+    }
+    _cmCache.set(s, m);
+    return m;
   }
 
   function stepSig(step) {

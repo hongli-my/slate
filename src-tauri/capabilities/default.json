@@ -24,11 +24,17 @@
     },
     {
       "identifier": "shell:allow-spawn",
-      "allow": [{ "name": "binaries/pi-bridge", "sidecar": true, "args": true }]
+      "allow": [
+        { "name": "binaries/pi-bridge", "sidecar": true, "args": true },
+        { "name": "binaries/cal-bridge", "sidecar": true, "args": true }
+      ]
     },
     {
       "identifier": "shell:allow-execute",
-      "allow": [{ "name": "binaries/pi-bridge", "sidecar": true, "args": true }]
+      "allow": [
+        { "name": "binaries/pi-bridge", "sidecar": true, "args": true },
+        { "name": "binaries/cal-bridge", "sidecar": true, "args": true }
+      ]
     },
     "shell:allow-kill",
     "shell:allow-stdin-write"

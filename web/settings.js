@@ -23,6 +23,20 @@
     return ev.listen(event, cb);
   }
 
+  // ---- 带超时的 invoke ----
+  // 引擎命令 (start/stop/restart_bridge) 若 Rust 侧 hang 住，invoke 永不 resolve，
+  // engineBusy 会一直为 true，三个按钮永久禁用。这里加超时兜底，并在 settle 后清 timer。
+  function invokeWithTimeout(cmd, ms) {
+    var timer;
+    var timeoutP = new Promise(function (_, reject) {
+      timer = setTimeout(function () { reject(new Error('操作超时')); }, ms);
+    });
+    var invokeP = tauriInvoke(cmd);
+    // 无论成功/失败都清掉超时 timer，避免泄露
+    invokeP.then(function () { clearTimeout(timer); }, function () { clearTimeout(timer); });
+    return Promise.race([invokeP, timeoutP]);
+  }
+
   // ---- 引擎状态 ----
   var BRIDGE_PORT = '127.0.0.1:8643';
   var MAX_LOG_LINES = 200;
@@ -32,6 +46,7 @@
   var engineLogs = [];
   var engineListeners = [];    // unlisten 函数
   var statusPollTimer = null;
+  var statusPolling = false;   // 轮询 in-flight 标记，防止 fetch 堆叠
   var settingsActive = false;  // 设置页是否激活
 
   function esc(str) {
@@ -251,8 +266,7 @@
     renderStatus();
     appendLog('[cmd] ' + action + '_bridge …');
 
-    tauriInvoke(cmd).then(function () {
-      engineBusy = false;
+    invokeWithTimeout(cmd, 15000).then(function () {
       appendLog('[cmd] ' + action + '_bridge 完成');
       if (action === 'stop') {
         engineState = 'stopped';
@@ -265,11 +279,14 @@
         setTimeout(refreshStatus, 800);
       }
     }).catch(function (e) {
-      engineBusy = false;
       engineState = 'error';
       renderStatus();
       var msg = e && e.message ? e.message : String(e);
       appendLog('[error] ' + action + '_bridge 失败: ' + msg);
+    }).finally(function () {
+      // 无论成功 / 失败 / 超时，都解除按钮 loading，避免卡死无法恢复
+      engineBusy = false;
+      renderStatus();
     });
   }
 
@@ -278,10 +295,10 @@
   // ============================================================
   function fetchBusinessStatus() {
     var meta = el('engine-meta');
-    if (!meta) return;
-    if (engineState !== 'running') { meta.textContent = ''; return; }
+    if (!meta) return Promise.resolve();
+    if (engineState !== 'running') { meta.textContent = ''; return Promise.resolve(); }
 
-    fetch('http://' + BRIDGE_PORT + '/status')
+    return fetch('http://' + BRIDGE_PORT + '/status')
       .then(function (r) { return r.json(); })
       .then(function (res) {
         var data = res && res.data ? res.data : (res || {});
@@ -297,17 +314,31 @@
       });
   }
 
+  // 递归 setTimeout：等上一次 fetch 真正结束（含失败）再排下一次，
+  // 避免慢请求 >10s 时 setInterval 堆叠调用。statusPolling 防 in-flight 重入。
   function startPolling() {
     stopPolling();
-    statusPollTimer = setInterval(function () {
-      if (engineState === 'running' && settingsActive) {
-        fetchBusinessStatus();
+    var tick = function () {
+      statusPollTimer = null;
+      if (!settingsActive || statusPolling) return;
+      var scheduleNext = function () {
+        statusPolling = false;
+        if (settingsActive) statusPollTimer = setTimeout(tick, 10000);
+      };
+      if (engineState === 'running') {
+        statusPolling = true;
+        fetchBusinessStatus().then(scheduleNext, scheduleNext);
+      } else {
+        // 非运行态：保持节奏，状态可能后续变 running
+        statusPollTimer = setTimeout(tick, 10000);
       }
-    }, 10000);
+    };
+    statusPollTimer = setTimeout(tick, 10000);
   }
 
   function stopPolling() {
-    if (statusPollTimer) { clearInterval(statusPollTimer); statusPollTimer = null; }
+    if (statusPollTimer) { clearTimeout(statusPollTimer); statusPollTimer = null; }
+    statusPolling = false;
   }
 
   // ============================================================

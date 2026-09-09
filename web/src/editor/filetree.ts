@@ -41,14 +41,26 @@ export function buildTree(
   files: { name: string; path: string; absPath: string }[],
   rootName: string
 ): TreeNode {
-  const root: TreeNode = { name: rootName, type: "dir", children: [], expanded: true };
+  // FIX #5: O(n²) → O(n). The old loop did a linear `children.find()` for
+  // every path segment of every file, so building a 10k-file tree was
+  // quadratic and janky. We now keep a per-node `childMap` (Map<string,
+  // BuildNode>) so each segment lookup is O(1); the maps are stripped by
+  // sortTree after the structure is finalized (they're build-only scratch).
+  interface BuildNode extends TreeNode {
+    childMap?: Map<string, BuildNode>;
+  }
+  const root: BuildNode = {
+    name: rootName, type: "dir", children: [], expanded: true, childMap: new Map(),
+  };
   for (const f of files) {
     const parts = f.path.split("/");
     let node = root;
     for (let i = 0; i < parts.length - 1; i++) {
-      let child = node.children!.find((c) => c.type === "dir" && c.name === parts[i]);
+      const seg = parts[i];
+      let child = node.childMap!.get(seg);
       if (!child) {
-        child = { name: parts[i], type: "dir", children: [], expanded: false };
+        child = { name: seg, type: "dir", children: [], expanded: false, childMap: new Map() };
+        node.childMap!.set(seg, child);
         node.children!.push(child);
       }
       node = child;
@@ -61,6 +73,10 @@ export function buildTree(
 
 function sortTree(node: TreeNode): void {
   if (!node.children) return;
+  // Strip the build-only childMap (see buildTree) so it isn't retained on the
+  // long-lived tree state.
+  const bn = node as TreeNode & { childMap?: unknown };
+  if (bn.childMap) delete bn.childMap;
   node.children.sort((a, b) => {
     if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
     return a.name.localeCompare(b.name);

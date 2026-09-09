@@ -176,35 +176,41 @@ window.Hermes = window.Hermes || {};
     var stream = state.activeStreams[sid];
     if (!stream) return;
 
-    // 标记流已完成
-    stream.finished = true;
-    stream.finishedAt = Date.now();
+    // S#4: 任何步骤抛错也必须 delete activeStreams[sid]，否则流永久"活跃"→
+    // 清理定时器只驱逐 finished 流，该 sid 永不被驱逐且无法重新流式。
+    try {
+      // 标记流已完成
+      stream.finished = true;
+      stream.finishedAt = Date.now();
 
-    // 标记 streaming 消息完成（保留流式数据用于渲染）
-    var cache = state.sessionMessages[sid];
-    if (cache) {
-      var msgs = cache.messages;
-      for (var i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i]._streaming) {
-          msgs[i]._streaming = false;
-          msgs[i]._toolSteps && msgs[i]._toolSteps.forEach(function(s) { s.running = false; });
-          break;
+      // 标记 streaming 消息完成（保留流式数据用于渲染）
+      var cache = state.sessionMessages[sid];
+      if (cache) {
+        var msgs = cache.messages;
+        for (var i = msgs.length - 1; i >= 0; i--) {
+          if (msgs[i]._streaming) {
+            msgs[i]._streaming = false;
+            msgs[i]._toolSteps && msgs[i]._toolSteps.forEach(function(s) { s.running = false; });
+            break;
+          }
         }
+        cache.isStale = true;
       }
-      cache.isStale = true;
-    }
 
-    // 如果用户正在看这个会话：清残留 render timer/实时计时器/流式 md 缓存后渲染一次，
-    // renderer 检测到 turn 由 live 变 static（残留归一化）自动重渲为终态（B4 净化兜底）
-    if (state.focusedSessionId === sid && state.viewMode === 'chat') {
-      if (H._clearRenderTimer) H._clearRenderTimer(sid);
-      if (H._stopLiveTimer) H._stopLiveTimer();
-      if (H.clearStreamingMdCache) H.clearStreamingMdCache();
-      H.renderCurrentChat();
-    }
+      // 如果用户正在看这个会话：清残留 render timer/实时计时器/流式 md 缓存后渲染一次，
+      // renderer 检测到 turn 由 live 变 static（残留归一化）自动重渲为终态（B4 净化兜底）
+      if (state.focusedSessionId === sid && state.viewMode === 'chat') {
+        if (H._clearRenderTimer) H._clearRenderTimer(sid);
+        if (H._stopLiveTimer) H._stopLiveTimer();
+        if (H.clearStreamingMdCache) H.clearStreamingMdCache();
+        H.renderCurrentChat();
+      }
 
-    // 后台静默 re-fetch，让缓存与 DB 同步
-    backgroundReFetch(sid);
+      // 后台静默 re-fetch，让缓存与 DB 同步
+      backgroundReFetch(sid);
+    } finally {
+      delete state.activeStreams[sid];
+    }
   }
 
   /** 后台静默 re-fetch：合并新数据，用增量替换最后一个 turn */
@@ -321,6 +327,10 @@ window.Hermes = window.Hermes || {};
     // 清除旧会话残存的 render debounce timer，防止误触发新会话的渲染
     if (prev && prev !== sid && H._clearRenderTimer) {
       H._clearRenderTimer(prev);
+    }
+    // 切会话时清最终渲染 markdown 缓存：_mdCache 按全文 key，跨会话陈旧条目无意义且占内存
+    if (prev !== sid && H.clearMdCache) {
+      H.clearMdCache();
     }
 
     state.focusedSessionId = sid;

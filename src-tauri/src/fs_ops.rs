@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
@@ -140,15 +140,43 @@ const MAX_READ_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 /// the editor can open them read-only instead of presenting garbage.
 #[tauri::command]
 pub fn read_text_file_detect(path: String) -> Result<ReadResult, String> {
-    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-    let total_size = bytes.len() as u64;
+    // 先 stat 文件大小：若超过 MAX_READ_SIZE，仅读取前 MAX_READ_SIZE 字节，
+    // 避免一次性把数百 MB 的日志/二进制读进内存导致 OOM 或主线程长时间卡顿。
+    // metadata 失败时回退到 fs::read（保持原有行为）。
+    let (bytes, total_size): (Vec<u8>, u64) = match fs::metadata(&path) {
+        Ok(meta) => {
+            let len = meta.len();
+            if len > MAX_READ_SIZE {
+                let f = fs::File::open(&path).map_err(|e| e.to_string())?;
+                let mut buf = Vec::with_capacity(MAX_READ_SIZE as usize);
+                // take(n) 限制最多读取 n 字节，再 read_to_end 安全收尾。
+                f.take(MAX_READ_SIZE)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| e.to_string())?;
+                (buf, len)
+            } else {
+                let b = fs::read(&path).map_err(|e| e.to_string())?;
+                let sz = b.len() as u64;
+                (b, sz)
+            }
+        }
+        Err(_) => {
+            // 回退：直接读全文件（保留原有行为）。
+            let b = fs::read(&path).map_err(|e| e.to_string())?;
+            let sz = b.len() as u64;
+            (b, sz)
+        }
+    };
 
-    // Size cap: decode at most MAX_READ_SIZE bytes. Truncating at a byte
-    // boundary is safe for UTF-8-with-replacement (the decoder handles
-    // truncated sequences); for strict UTF-8 a mid-codepoint cut just falls
-    // through to the GBK / replacement branches.
+    // Defense-in-depth：即便走 bounded read 路径，这里再裁剪一次确保不超过上限。
     let (buf, truncated) = if total_size > MAX_READ_SIZE {
-        (&bytes[..MAX_READ_SIZE as usize], true)
+        let cap = MAX_READ_SIZE as usize;
+        if bytes.len() > cap {
+            (&bytes[..cap], true)
+        } else {
+            // 已读取前 cap 字节，但原文件超过上限 → 仍标记 truncated。
+            (&bytes[..], true)
+        }
     } else {
         (&bytes[..], false)
     };
@@ -507,18 +535,28 @@ pub fn scan_dir_tree(dir: String) -> Result<Vec<ScanEntry>, String> {
     }
     let mut out: Vec<ScanEntry> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    scan_dir_recursive(root, "", &mut out, &mut seen)?;
+    scan_dir_recursive(root, "", &mut out, &mut seen, 0)?;
     // Stable ordering matching the old JS sort (path.localeCompare).
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
+
+/// 递归扫描的深度上限。防止异常深的目录结构（或绕过 canonicalize seen
+/// 检测的场景）导致栈溢出 / 长时间扫描。32 层足以覆盖任何正常项目结构。
+const MAX_SCAN_DEPTH: usize = 32;
 
 fn scan_dir_recursive(
     dir: &Path,
     base: &str,
     out: &mut Vec<ScanEntry>,
     seen: &mut std::collections::HashSet<PathBuf>,
+    depth: usize,
 ) -> Result<(), String> {
+    // 深度上限：超过即停止下探（仍返回当前已收集的条目）。
+    if depth >= MAX_SCAN_DEPTH {
+        return Ok(());
+    }
+
     // Canonicalize for symlink-loop detection. If canonicalize fails (e.g.
     // permission), fall back to the raw path so we don't skip a real dir.
     let canon = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -548,12 +586,17 @@ fn scan_dir_recursive(
             Ok(t) => t,
             Err(_) => continue,
         };
+        // 符号链接一律不下探：canonicalize 的 seen 检测只能防同文件系统回环，
+        // 无法防「链接到 / 或 /Users」之类的任意遍历。链接目录跳过递归；
+        // 链接文件也不加入树（与既有行为一致：file_type 对符号链接 is_file() 为 false）。
+        if ft.is_symlink() {
+            continue;
+        }
         if ft.is_dir() {
             if TREE_SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
-            // Follow symlinks only if they point to a dir we haven't visited.
-            scan_dir_recursive(&entry.path(), &rel, out, seen)?;
+            scan_dir_recursive(&entry.path(), &rel, out, seen, depth + 1)?;
         } else if ft.is_file() && is_supported_ext(&name) {
             out.push(ScanEntry {
                 name,

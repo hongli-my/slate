@@ -128,6 +128,32 @@ window.Hermes = window.Hermes || {};
   }
 
   // ------------------------------------------------------------
+  // L3.5：结构未变但有 running 工具 → 只刷新实时耗时徽标，跳过 L2 全量 morphdom。
+  // live timer 每秒触发一次：旧实现 running 即 L2（重建整个 .turn-steps + morphdom），
+  // 仅为让 "3.2s→4.2s" 耗时跳动。此处直接改 .ow-tl-dur-live 的 textContent，零结构重建。
+  // ------------------------------------------------------------
+  function _l35PatchDurations(turnEl, sm) {
+    var fmtDur = H.fmtTimelineDur;
+    if (!fmtDur) return;
+    var steps = sm._toolSteps || [];
+    var liveEls = turnEl.querySelectorAll('.ow-tl-dur-live');
+    if (liveEls.length === 0) return;
+    var now = Date.now();
+    liveEls.forEach(function(el) {
+      // 徽标所在的 .ow-tl-item / .ow-ep 均带 data-call-id（renderToolCard 输出）
+      var item = el.closest('[data-call-id]');
+      var cid = item ? item.getAttribute('data-call-id') : null;
+      var ts = null;
+      for (var i = 0; i < steps.length; i++) {
+        if (steps[i].toolCallId === cid) { ts = steps[i]; break; }
+      }
+      if (ts && ts.running && ts.startTime) {
+        el.textContent = fmtDur((now - ts.startTime) / 1000);
+      }
+    });
+  }
+
+  // ------------------------------------------------------------
   // L2（结构变化）：重建一个 turn 的内容。
   //   streaming（含 streaming step）→ 只重建 .turn-steps 子树 + 同步思考气泡骨架；
   //   终态/残留 → 整体重建 .turn 子节点（renderSingleTurnHTML）。
@@ -269,22 +295,39 @@ window.Hermes = window.Hermes || {};
       var struct = _streamStructSig(sm);
       var running = (sm._toolSteps || []).some(function(ts) { return ts.running; });
       if (entry.live) {
-        // 上次也是 live：结构变化 or 有 running 步骤（需每秒刷新耗时秒数）→ L2；仅文本变 → L3；全等 → 不动
-        if (entry.struct !== struct || running) {
+        // 上次也是 live。优先级：结构变化 → L2；结构未变但有 running → L3.5（仅刷耗时）；
+        // 仅文本变 → L3；全等 → 不动。
+        var curContent = sm.content != null ? sm.content : '';
+        var curReasoning = sm.reasoning != null ? sm.reasoning : '';
+        if (entry.struct !== struct) {
+          // 结构变化（新工具步/工具完成/正文开始或停止/思考→正文切换）→ L2 全量重建
           _applyStreaming(entry.el, turn, sm);
           entry.struct = struct;
           entry.sig = sig;
-          entry.lastContent = sm.content != null ? sm.content : '';
-          entry.lastReasoning = sm.reasoning != null ? sm.reasoning : '';
+          entry.lastContent = curContent;
+          entry.lastReasoning = curReasoning;
           return true;
         }
-        if (entry.lastContent !== (sm.content != null ? sm.content : '') ||
-            entry.lastReasoning !== (sm.reasoning != null ? sm.reasoning : '')) {
+        if (running) {
+          // L3.5：结构未变但有 running 工具 → 只刷新 .ow-tl-dur-live 实时耗时，跳过 L2 morphdom。
+          // live timer 每秒触发走此路径（旧实现 running 即 L2，每秒重建整个 .turn-steps）。
+          _l35PatchDurations(entry.el, sm);
+          // running 期间可能并发 text_delta → 继续走 L3 文本 patch
+          if (entry.lastContent !== curContent || entry.lastReasoning !== curReasoning) {
+            _l3Patch(entry.el, sm, entry.lastContent, entry.lastReasoning);
+            entry.lastContent = curContent;
+            entry.lastReasoning = curReasoning;
+          }
+          entry.sig = sig;
+          return true;
+        }
+        if (entry.lastContent !== curContent ||
+            entry.lastReasoning !== curReasoning) {
           var changedText = _l3Patch(entry.el, sm, entry.lastContent, entry.lastReasoning);
           if (changedText) {
             entry.sig = sig;
-            entry.lastContent = sm.content != null ? sm.content : '';
-            entry.lastReasoning = sm.reasoning != null ? sm.reasoning : '';
+            entry.lastContent = curContent;
+            entry.lastReasoning = curReasoning;
             return true;
           }
           // 文本引用有差异但 L3 找不到目标 DOM（结构缺失等）→ 保守全量
@@ -328,20 +371,47 @@ window.Hermes = window.Hermes || {};
   // ------------------------------------------------------------
 
   /** 全量渲染（切会话 / 首次 / 结构性大改后）。返回 true。 */
+  var MAX_RENDERED_TURNS = 200; // 超长对话 DOM 上限：只渲染最近 N 个 turn，旧 turn 用占位保留滚动高度
+
   function renderFull(container, msgs, sid) {
-    var turns = H.buildTurns(msgs);
+    var allTurns = H.buildTurns(msgs);
+    // 虚拟化：turns 超上限时只渲染最近 N 个，顶部插占位 div 保留滚动位置。
+    // 占位高度用 contain-intrinsic-size 估算（每个 turn ~500px），避免滚动条跳变。
+    // __rdx.map 只含已渲染 turn；renderDiff 的尾部追加逻辑天然兼容（占位不计入 map）。
+    var turns, placeholderHeight = 0, droppedCount = 0;
+    if (allTurns.length > MAX_RENDERED_TURNS) {
+      droppedCount = allTurns.length - MAX_RENDERED_TURNS;
+      turns = allTurns.slice(droppedCount);
+      placeholderHeight = droppedCount * 500;
+    } else {
+      turns = allTurns;
+    }
     var html = '';
+    if (placeholderHeight > 0) {
+      html += '<div class="turn-placeholder" data-dropped="' + droppedCount + '" style="height:' + placeholderHeight + 'px"></div>';
+    }
     turns.forEach(function(turn) {
       try { html += H.renderSingleTurnHTML(turn) || ''; } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); }
     });
     container.innerHTML = html;
 
     var map = new Map();
+    // 不依赖位置：按 data-key 索引根元素。单个 turn 渲染抛错/为空时不会产出元素，
+    // 位置式 children[i] 会让后续 turn 错位映射到错误的 key（静默腐败）。
+    // 改为查 [data-key]：渲染成功的 turn 精确匹配，失败的 turn 落空为 null（不波及他人）。
+    var elByKey = Object.create(null);
     var children = container.children;
+    for (var c = 0; c < children.length; c++) {
+      var child = children[c];
+      if (child.getAttribute) {
+        var dk = child.getAttribute('data-key');
+        if (dk != null && elByKey[dk] == null) elByKey[dk] = child;
+      }
+    }
     for (var i = 0; i < turns.length; i++) {
       var key = turns[i].key;
-      var el = children[i];
-      // buildTurns 与 HTML 根节点一一对应（含 data-key 由 renderSingleTurnHTML 输出）
+      var keyStr = String(key == null ? '' : key);
+      var el = elByKey[keyStr] || null;
       var streamingStep = turns[i].steps.find(function(s) { return s.streaming; });
       var entry = {
         el: el,
@@ -359,7 +429,7 @@ window.Hermes = window.Hermes || {};
     if (H.scheduleIdleHighlight) {
       try { H.scheduleIdleHighlight(container); } catch (e) {}
     }
-    container.__rdx = { sid: sid || null, map: map, seq: (container.__rdx && container.__rdx.seq ? container.__rdx.seq + 1 : 1) };
+    container.__rdx = { sid: sid || null, map: map, seq: (container.__rdx && container.__rdx.seq ? container.__rdx.seq + 1 : 1), droppedCount: droppedCount };
     return true;
   }
 
@@ -373,7 +443,15 @@ window.Hermes = window.Hermes || {};
     if (!rdx || rdx.sid !== sid) {
       return renderFull(container, msgs, sid);
     }
-    var turns = H.buildTurns(msgs);
+    var allTurns = H.buildTurns(msgs);
+    // 虚拟化对齐：只比对已渲染窗口（跳过 droppedCount 个旧 turn）。
+    // 若总数未超上限 droppedCount=0，逻辑与旧实现一致。
+    var dropped = rdx.droppedCount || 0;
+    // 若需要渲染的窗口超出已渲染范围（dropped 变化或总数回落到上限下）→ 全量回退重算
+    if (allTurns.length > MAX_RENDERED_TURNS && dropped !== allTurns.length - Math.min(allTurns.length, MAX_RENDERED_TURNS)) {
+      return renderFull(container, msgs, sid);
+    }
+    var turns = dropped > 0 ? allTurns.slice(dropped) : allTurns;
     var oldKeys = [];
     rdx.map.forEach(function(v, k) { oldKeys.push(k); });
     var newKeys = turns.map(function(t) { return t.key; });

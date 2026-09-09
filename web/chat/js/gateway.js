@@ -14,6 +14,7 @@ window.Hermes = window.Hermes || {};
   const fmtDuration = window.Hermes.fmtDuration;
   const state = window.Hermes.state;
   const dom = window.Hermes.dom;
+  const H = window.Hermes; // 兄弟模块别名：toast / loadContextInfo 等挂在此命名空间
 
   // ---- 网关状态 ----
   async function checkGateway() {

@@ -77,7 +77,7 @@ window.Hermes = window.Hermes || {};
       { keys: 'Ctrl + K', desc: '全局搜索会话' },
       { keys: 'Ctrl + N', desc: '新对话' },
       { keys: 'Shift + ?', desc: '显示快捷键帮助' },
-      { keys: 'Escape', desc: '关闭弹窗/退出对话' },
+      { keys: 'Escape', desc: '中止生成 / 关闭弹窗' },
       { keys: 'Enter', desc: '发送消息' },
       { keys: 'Shift + Enter', desc: '换行' },
       { keys: '/', desc: '斜杠命令 (对话中)' },

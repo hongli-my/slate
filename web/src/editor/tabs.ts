@@ -19,6 +19,7 @@ const foldedTabs = new WeakSet<Tab>();
 import { closeSplit } from "./split";
 import { refreshMinimap } from "./minimap";
 import { watchUntrack, clearRecovery } from "./io";
+import { clearSymbolCache } from "./goto";
 
 export function renderTabsBar(groupId: 0 | 1 = state.activeGroup): void {
   const bar = $(groupElId("tabsBar", groupId));
@@ -191,6 +192,8 @@ export async function closeTab(id: number): Promise<void> {
     void clearRecovery(tab.absPath);
   }
   g.tabs.splice(idx, 1);
+  // FIX #14: drop the per-tab symbol cache so closed buffers don't leak.
+  clearSymbolCache(id);
   // Stop watching for external changes if no other tab still holds this file.
   if (tab.absPath && !getAllTabs().some((t) => t.absPath === tab.absPath)) {
     void watchUntrack(tab.absPath);

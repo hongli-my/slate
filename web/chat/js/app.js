@@ -132,7 +132,6 @@ window.Hermes = window.Hermes || {};
     // Stop generation
     $('#btn-stop').addEventListener('click', () => {
       H.abortCurrentStream();
-      dom.chatInput.disabled = false;
       dom.chatInput.focus();
     });
     dom.chatInput.addEventListener('keydown', (e) => {
@@ -148,6 +147,14 @@ window.Hermes = window.Hermes || {};
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         H.sendMessage();
+      }
+      // Esc 中止当前焦点会话的活跃流（无活跃流时走默认 blur 行为）
+      if (e.key === 'Escape') {
+        var sid = H.state.focusedSessionId;
+        if (sid && H.hasActiveStream && H.hasActiveStream(sid)) {
+          e.preventDefault();
+          H.abortCurrentStream(sid);
+        }
       }
       // E#11: 上/下箭头浏览输入历史（仅在非斜杠菜单模式且光标在首/末时）
       if (!H.slashState || !H.slashState().visible) {

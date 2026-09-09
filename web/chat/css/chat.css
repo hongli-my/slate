@@ -20,6 +20,11 @@
 .turn[data-streaming="true"] {
   content-visibility: visible;
 }
+/* 虚拟化占位：超长对话只渲染最近 N 个 turn，旧 turn 用此占位保留滚动高度 */
+.turn-placeholder {
+  contain: strict;
+  background: transparent;
+}
 /* P#4: 稳定段容器隔离布局，流式只 patch .md-active 时不影响 stable 子树 */
 .turn .md-stable { contain: layout style; }
 /* 活跃块隔离：morphdom patch 时 reflow 不扩散到 stable 子树与外部布局 */
@@ -203,6 +208,11 @@
 }
 .step-final {
   margin-bottom: 0;
+  /* 同宽透明左边框：让 .streaming-content 的有色边框 → 去类后的透明边框可平滑过渡
+     （CSS 无法从 1.5px solid 过渡到 border:none，故基态保持同尺寸透明边框）。 */
+  border-left: 1.5px solid transparent;
+  padding-left: 8px;
+  transition: border-left-color 0.18s ease, opacity 0.15s ease;
 }
 
 .answer-stats {
@@ -713,8 +723,25 @@
   font-size: 13px;
 }
 
+/* 防闪烁：所有纯装饰伪元素（游标/状态点/脉冲）不参与 hit-test。
+   WKWebView 下 ::after 即使只动画 opacity，若父元素 cursor:pointer 仍可能
+   在动画帧影响鼠标光标判定；pointer-events:none 彻底剥离命中测试。 */
+.streaming-content::after,
+.streaming-content .step-answer::after,
+.ow-tl-item::before,
+.ow-spinner,
+.step-spinner,
+.streaming-spinner,
+.working-spinner,
+.step-running .step-num,
+.ow-tl-dur-live {
+  pointer-events: none;
+}
+
 /* E#18: 流式游标用 CSS 伪元素，不进入 Markdown 文本 */
-/* 有 step-answer 时游标跟在内容后；无内容（思考中）时游标跟在 step 后 */
+/* 有 step-answer 时游标跟在内容后；无内容（思考中）时游标跟在 step 后。
+   游标绑定 .streaming-content：live→static 去类时伪元素立即移除（伪元素无法过渡创建/销毁）。
+   主闪现源（边框/按钮/结构）已由结构对齐 + 过渡消除；游标瞬灭影响极小。 */
 .streaming-content .step-answer::after,
 .streaming-content:not(:has(.step-answer))::after {
   content: '▊';
@@ -1180,11 +1207,20 @@
   color: var(--accent);
   animation: blink 1s steps(1) infinite;
   font-weight: 400;
+  pointer-events: none; /* 装饰游标不参与 hit-test */
 }
 
 .streaming-content {
-  border-left: 1.5px solid var(--accent);
-  padding-left: 8px;
+  /* 仅覆盖边框颜色：基态 .step-final 已有 1.5px transparent 左边框 + 过渡。
+     去 streaming-content 类时 border-left-color 过渡到 transparent（非瞬切）。 */
+  border-left-color: var(--accent);
+}
+/* 流式期隐藏复制/折叠按钮（结构同静态分支，但 opacity:0 + 不参与命中）。
+   live→static 去类后 opacity 过渡显现，避免按钮瞬现闪现。 */
+.streaming-content .copy-md-btn,
+.streaming-content .collapse-btn {
+  opacity: 0;
+  pointer-events: none;
 }
 .step-usage {
   font-size: 11px;

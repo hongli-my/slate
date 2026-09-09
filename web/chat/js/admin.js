@@ -203,7 +203,16 @@ window.Hermes = window.Hermes || {};
 
     document.body.appendChild(overlay);
 
-    function close() { overlay.remove(); }
+    // FIX #6: named handler so close() can removeEventListener — the old
+    // anonymous fn was re-added every time the overlay opened and never
+    // removed, leaking one listener per open.
+    function onEscKey(e) {
+      if (e.key === 'Escape' && document.getElementById('agent-editor-overlay')) close();
+    }
+    function close() {
+      document.removeEventListener('keydown', onEscKey);
+      overlay.remove();
+    }
 
     function collect() {
       var $ = function (id) { return document.getElementById(id); };
@@ -243,9 +252,7 @@ window.Hermes = window.Hermes || {};
     overlay.querySelector('#ae-cancel').addEventListener('click', close);
     overlay.querySelector('#ae-save').addEventListener('click', save);
     overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && document.getElementById('agent-editor-overlay')) close();
-    });
+    document.addEventListener('keydown', onEscKey);
     setTimeout(function () { var i = document.getElementById('ae-name'); if (i) i.focus(); }, 80);
   }
 
@@ -577,7 +584,14 @@ window.Hermes = window.Hermes || {};
     document.getElementById('se-cron').addEventListener('input', updateCronPreview);
     updateFreqUI();
 
-    function close() { overlay.remove(); }
+    // FIX #6: named handler so close() can removeEventListener (see agent editor).
+    function onEscKey(e) {
+      if (e.key === 'Escape' && document.getElementById('sched-editor-overlay')) close();
+    }
+    function close() {
+      document.removeEventListener('keydown', onEscKey);
+      overlay.remove();
+    }
 
     function collect() {
       return {
@@ -609,9 +623,7 @@ window.Hermes = window.Hermes || {};
     overlay.querySelector('#se-cancel').addEventListener('click', close);
     overlay.querySelector('#se-save').addEventListener('click', save);
     overlay.addEventListener('click', function (e) { if (e.target === overlay) close(); });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && document.getElementById('sched-editor-overlay')) close();
-    });
+    document.addEventListener('keydown', onEscKey);
     setTimeout(function () { var i = document.getElementById('se-name'); if (i) i.focus(); }, 80);
   }
 

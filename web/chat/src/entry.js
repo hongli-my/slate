@@ -28,3 +28,23 @@ import "../js/gateway.js";
 import "../js/shortcuts.js";
 import "../js/admin.js";
 import "../js/app.js";
+
+// ---- 全局错误兜底（最小恢复提示）----
+// ESM 静态 import 无法 try/catch：任一业务模块 eval 抛错会级联失败 → 白屏。
+// ESM 语义下所有 import 先于本模块体求值，故此监听器在全部模块加载后才注册，
+// 可捕获 DOMContentLoaded 延迟的 init() 抛错及运行期未捕获错误，渲染最小恢复提示，
+// 避免用户面对白屏无从下手。（同步求值期级联仍会白屏，受 ESM 语义限制无法在此拦截。）
+window.addEventListener('error', function (e) {
+  // 资源加载错误（img/script 404 等）e.error 为 null，忽略以免误覆盖整屏
+  if (!e.error) return;
+  if (document.getElementById('hermes-fatal-overlay')) return;
+  var msg = String(e.error.message || e.error).replace(/</g, '&lt;').slice(0, 500);
+  var box = document.createElement('div');
+  box.id = 'hermes-fatal-overlay';
+  box.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(18,18,22,0.94);color:#eee;font-family:system-ui,-apple-system,sans-serif;z-index:99999;text-align:center;padding:24px';
+  box.innerHTML = '<div><div style="font-size:36px;margin-bottom:10px">⚠️</div>'
+    + '<div style="font-size:15px;font-weight:600;margin-bottom:6px">应用初始化失败，请刷新或重启</div>'
+    + '<div style="font-size:12px;color:#9aa0a6;max-width:340px;line-height:1.5;word-break:break-all">' + msg + '</div></div>';
+  if (document.body) document.body.appendChild(box);
+  else document.documentElement.appendChild(box);
+});

@@ -354,6 +354,7 @@ window.Hermes = window.Hermes || {};
       stFlags.hasReasoning = !!(sm.reasoning && sm.reasoning.trim());
       stFlags.usage = sm._usage || null;
       stFlags.aborted = !!sm._aborted;
+      stFlags.error = sm._error || '';
 
       // 有工具步骤 → 构建 toolStep（reasoning 跟着 toolStep，content 拆到 finalStep）
       if (sm._toolSteps && sm._toolSteps.length > 0) {
@@ -445,8 +446,8 @@ window.Hermes = window.Hermes || {};
         html += '</div>';
       }
 
-      // 流式专属：思考中占位（无任何内容）
-      if (steps.length === 0 && sm._streaming) {
+      // 流式专属：思考中占位（无任何内容）。有错误时不提前返回，让末尾错误块渲染。
+      if (steps.length === 0 && sm._streaming && !stFlags.error) {
         html += '<div class="step step-final streaming-content">';
         html += '<div class="step-header"><span class="ow-spinner"></span><span class="step-label">思考中</span></div>';
         html += '</div>';
@@ -475,9 +476,11 @@ window.Hermes = window.Hermes || {};
 
     // 分类：toolSteps（含工具或仅思考）+ finalStep（有正文）
     let finalStep = null;
+    let errorStep = null; // 首个携带 _error 的步（decomposeStreaming 透传，供末尾错误块渲染）
     const toolSteps = [];
     steps.forEach((step) => {
       if (step.system || step.orphan) return;
+      if (step._error && !errorStep) errorStep = step;
       const hasTools = step.toolCalls && step.toolCalls.length > 0;
       const assistantContent = step.assistant?.content || '';
       if (hasTools) {
@@ -577,13 +580,26 @@ window.Hermes = window.Hermes || {};
     if (finalStep) {
       const assistantContent = finalStep.assistant?.content || '';
       if (isStreaming) {
+        // 结构与静态分支对齐（同 .step-answer-wrap + 按钮 + md-raw），让 live→static 时
+        // morphdom 只做 class 去除 + 按钮 opacity 过渡，而非整节点替换 → 消除单帧闪现。
+        // 差异仅：streaming-content 类（border-left + 游标）、md-stable/md-active 拆分容器、
+        // 按钮流式期 opacity:0（CSS .streaming-content .copy-md-btn/.collapse-btn 不可见）。
         var stepClass = 'step step-final streaming-content';
         if (stFlags.aborted) stepClass += ' _aborted';
         html += '<div class="' + stepClass + '">';
         html += '<div class="step-header"><span class="step-num step-num-final">✦</span><span class="step-label">回复中</span></div>';
-        // P#4: 拆分 md-stable/md-active 容器，让流式更新只 patch 活跃块 DOM
+        // P#4: 拆分 md-stable/md-active 容器，让流式更新只 patch 活跃块 DOM。
+        // 与静态 renderAnswerBlock 共用 .step-answer-wrap>.step-answer.collapsible 外壳。
         var _sfSplit = window.Hermes.renderStreamingMarkdownSplit(assistantContent, 'sf');
-        html += '<div class="step-answer-wrap"><div class="step-answer collapsible"><div class="md-stable">' + _sfSplit.stableHtml + '</div><div class="md-active">' + _sfSplit.activeHtml + '</div></div></div>';
+        var _ansId = 'ans-' + (++window.Hermes.answerBlockCounter);
+        html += '<div class="step-answer-wrap" id="' + _ansId + '">';
+        html += '<div class="step-answer collapsible"><div class="md-stable">' + _sfSplit.stableHtml + '</div><div class="md-active">' + _sfSplit.activeHtml + '</div></div>';
+        // 按钮与静态分支同构：流式期由 CSS（.streaming-content 内）置 opacity:0 + pointer-events:none，
+        // live→static 去 streaming-content 类后 opacity 过渡显现，避免按钮瞬现闪现。
+        html += '<button class="collapse-btn" data-action="toggle-collapse" data-target="' + _ansId + '" style="display:none"><span class="arrow">▼</span><span class="label">展开</span></button>';
+        html += '<button class="copy-md-btn" data-action="copy-markdown" data-target="' + _ansId + '" title="复制 Markdown 原文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg><span>复制</span></button>';
+        html += '<textarea class="md-raw" readonly>' + esc(assistantContent) + '</textarea>';
+        html += '</div>';
         if (stFlags.usage && (stFlags.usage.total_tokens || stFlags.usage.prompt_tokens)) {
           var u = stFlags.usage;
           var tokInfo = '';
@@ -597,11 +613,22 @@ window.Hermes = window.Hermes || {};
         const agentTime = finalStep.assistant?.timestamp_fmt || fmtTime(finalStep.assistant?.timestamp);
         var totalBadge = (stepDurs && stepDurs.totalDur != null && stepDurs.totalDur > 0)
           ? '<span class="step-total-dur">总计 ' + esc(fmtTimelineDur(stepDurs.totalDur)) + '</span>' : '';
-        html += '<div class="step step-final">';
+        // 残留重塑后保留 _aborted 视觉标记（decomposeStreaming 透传 finalStep._aborted），
+        // 与流式分支 stFlags.aborted 一致：降透明度 + "(已中断)" 标签（chat.css 定义）。
+        var staticFinalClass = 'step step-final' + (finalStep._aborted ? ' _aborted' : '');
+        html += '<div class="' + staticFinalClass + '">';
         html += '<div class="step-header"><span class="step-num step-num-final">✦</span><span class="step-label">回复</span><span class="step-time">' + esc(agentTime) + '</span>' + totalBadge + '</div>';
         html += window.Hermes.renderAnswerBlock(assistantContent);
         html += '</div>';
       }
+    }
+
+    // 错误提示（流式 SSE error 事件 / 网络中断残留）。
+    // 流式分支：sm._error 经 stFlags.error 可见；残留分支：_error 由 decomposeStreaming
+    // 透传到 errorStep。无正文时也需可见，否则用户只看到空回复或"思考中"无限转圈。
+    var _errMsg = (isStreaming && stFlags.error) ? stFlags.error : (errorStep ? errorStep._error : '');
+    if (_errMsg) {
+      html += '<div class="step step-error"><div class="step-header"><span class="step-label">⚠️ 出错</span></div><div class="step-error-msg">' + esc(String(_errMsg)) + '</div></div>';
     }
 
     return html;
@@ -1139,6 +1166,7 @@ window.Hermes = window.Hermes || {};
   window.Hermes.renderTurnStepsHTML = renderTurnStepsHTML;
   window.Hermes.renderSingleTurnHTML = renderSingleTurnHTML;
   window.Hermes.renderToolCard = renderToolCard;
+  window.Hermes.fmtTimelineDur = fmtTimelineDur;
   window.Hermes.renderThinkingMargin = renderThinkingMargin;
   window.Hermes.initSessionListEvents = initSessionListEvents;
   window.Hermes.deleteSession = deleteSession;

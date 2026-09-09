@@ -67,19 +67,29 @@ echo "[build-pi-bridge] -> $DEST ($(du -h "$DEST" | cut -f1))"
 if [[ "$TRIPLE" == *apple* ]]; then
   if [ -f "$ENTITLEMENTS" ]; then
     echo "[build-pi-bridge] codesign (ad-hoc + JIT entitlements)"
-    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$DEST"
+    # 签名失败必须清理已拷贝的二进制，否则 tauri build 会打包未签名产物，
+    # 运行时被内核 kill。set -e 不会自动 rm，这里显式清理后再退出。
+    if ! codesign --force --sign - --entitlements "$ENTITLEMENTS" "$DEST"; then
+      rm -f "$DEST"
+      echo "[build-pi-bridge] codesign 失败，已清理未签名二进制" >&2
+      exit 1
+    fi
     # 注意：不要用 `codesign -dv | grep -q`——grep -q 命中后关管道，
     # codesign 收 SIGPIPE(141)，配合 pipefail 会误判失败。改捕获后字串匹配。
     SIG_INFO="$(codesign -dv "$DEST" 2>&1 || true)"
     if [[ "$SIG_INFO" == *"Signature=adhoc"* ]]; then
       echo "[build-pi-bridge] 签名验证通过 (adhoc)"
     else
+      rm -f "$DEST"
       echo "[build-pi-bridge] 签名验证失败" >&2
       printf '%s\n' "$SIG_INFO" >&2
       exit 1
     fi
   else
-    echo "[build-pi-bridge] 跳过签名：未找到 $ENTITLEMENTS" >&2
+    # 缺少 entitlements 无法签名：必须失败，而不是 warn 后留下未签名二进制。
+    rm -f "$DEST"
+    echo "[build-pi-bridge] 缺少 $ENTITLEMENTS，无法签名（拒绝生成未签名二进制）" >&2
+    exit 1
   fi
 fi
 

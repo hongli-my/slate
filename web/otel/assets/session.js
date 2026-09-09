@@ -58,6 +58,22 @@
   } catch (_) {}
   document.documentElement.style.setProperty('--label-w', gutterW + 'px');
 
+  /* ---- 大数组的 min/max ----
+   * 避免 Math.min(...arr) / Math.max(...arr) 把数组元素铺开成函数参数：
+   * V8/WebKit 在 ~65k-120k 个参数时会抛 RangeError（栈溢出），
+   * 直接导致 renderTimeline / renderTraceOverview / renderPage 崩溃。
+   * 改用循环归约，无参数数量上限。 */
+  function arrayMin(arr) {
+    let m = Infinity;
+    for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+    return m;
+  }
+  function arrayMax(arr) {
+    let m = -Infinity;
+    for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+    return m;
+  }
+
   /* ============================================================
    * 页面状态显示
    * ========================================================== */
@@ -95,8 +111,8 @@
     let totalDur = 0;
     let rangeText = formatLocalTime(session.time_created);
     if (traces.length) {
-      const tStart = Math.min(...traces.map(t => t.start_ms));
-      const tEnd   = Math.max(...traces.map(t => t.end_ms));
+      const tStart = arrayMin(traces.map(t => t.start_ms));
+      const tEnd   = arrayMax(traces.map(t => t.end_ms));
       totalDur = Math.max(0, tEnd - tStart);
       rangeText = formatLocalTime(tStart) + '  →  ' + formatLocalTime(tEnd)
                 + '  (' + formatDuration(totalDur) + ')';
@@ -693,8 +709,8 @@
     }
 
     // 时间范围
-    const tStart = Math.min(...spans.map(s => s.start_ms));
-    const tEnd   = Math.max(...spans.map(s => s.end_ms));
+    const tStart = arrayMin(spans.map(s => s.start_ms));
+    const tEnd   = arrayMax(spans.map(s => s.end_ms));
     const totalMs = Math.max(1, tEnd - tStart);
 
     // 初始 pxPerMs：让 bar 区填满可用宽度（至少 600px）
@@ -777,7 +793,11 @@
       // span 行
       rowsEl.innerHTML = '';
       const frag = document.createDocumentFragment();
-      spans.forEach(s => {
+      // 大 trace 保护：每个 span 一个 DOM 节点，>2000 条会卡死渲染。
+      // 仅渲染前 MAX_RENDER_SPANS 条，并追加提示行。热力图/选中仍基于完整 spans。
+      const MAX_RENDER_SPANS = 2000;
+      const renderSpans = spans.length > MAX_RENDER_SPANS ? spans.slice(0, MAX_RENDER_SPANS) : spans;
+      renderSpans.forEach(s => {
         const row = document.createElement('div');
         row.className = 'span-row';
         row.dataset.spanId = s.span_id;
@@ -820,6 +840,13 @@
         row.appendChild(bar);
         frag.appendChild(row);
       });
+      if (spans.length > MAX_RENDER_SPANS) {
+        const notice = document.createElement('div');
+        notice.className = 'span-row span-row-notice';
+        notice.innerHTML = '<div class="span-label">（仅显示前 ' + MAX_RENDER_SPANS
+          + ' 条，共 ' + spans.length + ' 条 span）</div>';
+        frag.appendChild(notice);
+      }
       rowsEl.appendChild(frag);
 
       // 缩放信息
@@ -834,19 +861,19 @@
     wrap.querySelector('[data-zoom="in"]').addEventListener('click', () => {
       pxPerMs = Math.min(1e6, pxPerMs * 1.5);
       tlState[trace.trace_id] = { pxPerMs };
-      draw();
+      scheduleDraw();
     });
     wrap.querySelector('[data-zoom="out"]').addEventListener('click', () => {
       pxPerMs = Math.max(0.0001, pxPerMs / 1.5);
       tlState[trace.trace_id] = { pxPerMs };
-      draw();
+      scheduleDraw();
     });
     wrap.querySelector('[data-reset]').addEventListener('click', () => {
       pxPerMs = barAreaW0 / totalMs;
       tlState[trace.trace_id] = { pxPerMs };
       vp.scrollLeft = 0;
       vp.scrollTop = 0;
-      draw();
+      scheduleDraw();
     });
 
     // 滚轮缩放（围绕鼠标）
@@ -1017,8 +1044,8 @@
       else okCount++;
     });
 
-    const tStart = Math.min(...spans.map(s => s.start_ms));
-    const tEnd   = Math.max(...spans.map(s => s.end_ms));
+    const tStart = arrayMin(spans.map(s => s.start_ms));
+    const tEnd   = arrayMax(spans.map(s => s.end_ms));
     const totalDur = tEnd - tStart;
 
     const session = sessionData.session;

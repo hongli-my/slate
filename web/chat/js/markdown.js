@@ -12,6 +12,33 @@ window.Hermes = window.Hermes || {};
   // 流式模式标志：跳过 hljs 语法高亮（性能瓶颈），保留 marked Markdown 渲染
   var _streamingMode = false;
 
+  // ---- hljs 懒加载 ----
+  // hljs（core + 25 语言 ~350KB）不进 chat.bundle.js，改由独立 hljs.bundle.js
+  // 在 scheduleIdleHighlight 首次需要时动态 <script> 加载。流式渲染不触达 hljs，
+  // 仅终态/历史渲染的代码块高亮才触发加载 → 首屏（无代码块的对话）零 hljs 开销。
+  var _hljsPromise = null;
+  function loadHljs() {
+    if (window.hljs) return Promise.resolve(window.hljs);
+    if (_hljsPromise) return _hljsPromise;
+    _hljsPromise = new Promise(function (resolve) {
+      // hljs-entry.js 加载完会置 window.__hljsReady=true 并调 window.__hljsResolve
+      window.__hljsResolve = resolve;
+      if (window.__hljsReady) { resolve(window.hljs); return; }
+      var s = document.createElement('script');
+      // 相对 chat.bundle.js 所在目录（web/chat/）
+      s.src = './hljs.bundle.js';
+      s.async = true;
+      s.onerror = function () {
+        // 加载失败：resolve(undefined) 让调用方降级（代码块保持转义态）
+        _hljsPromise = null;
+        resolve(undefined);
+      };
+      document.head.appendChild(s);
+    });
+    return _hljsPromise;
+  }
+  window.Hermes.loadHljs = loadHljs;
+
   // ---- Markdown 渲染 (marked + highlight.js) ----
   function initMarked() {
     const renderer = new marked.Renderer();
@@ -25,7 +52,7 @@ window.Hermes = window.Hermes || {};
         // 流式阶段跳过 hljs（highlightAuto 可达 100-500ms），仅转义
         // 代码块结构（header/语言标签/复制按钮）与最终渲染一致
         highlighted = esc(text);
-      } else if (lang && hljs.getLanguage(lang)) {
+      } else if (lang && window.hljs && hljs.getLanguage(lang)) {
         // B2: 已知语言也异步化——同步 hljs.highlight 2-10ms/块，多块阻塞 finalize
         // 先转义 + 标记 need-auto-highlight + data-lang，scheduleIdleHighlight 用指定语言高亮
         highlighted = esc(text);
@@ -258,29 +285,49 @@ window.Hermes = window.Hermes || {};
     var stableText = stableBlocks.join('\n\n');
 
     var stableChanged = false;
-    // 稳定前缀变化（增长一个块）时重新解析并缓存（含 sanitize）
-    if (!c || c.stableText !== stableText) {
-      _streamingMode = true;
-      var sh;
-      try { sh = stableText ? marked.parse(stableText) : ''; }
-      catch(e) { sh = stableText ? '<p>' + esc(stableText) + '</p>' : ''; }
-      finally { _streamingMode = false; }
-      // 流式期跳过 DOMPurify（3-15ms/帧，是流式渲染最大瓶颈）。
-      // 带 cacheKey = 流式路径：marked 输出结构化 HTML，innerHTML 不执行 script，
-      // 风险窗口仅限流式期间；finalize 由 renderMarkdown 统一 sanitize 兜底。
-      if (!cacheKey && typeof DOMPurify !== 'undefined' && sh) {
-        sh = DOMPurify.sanitize(sh, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
+    // 按块缓存稳定段：每个稳定块只 parse+sanitize 一次，边界推进时只解析新增块。
+    // 旧实现每次边界推进都 re-parse 整个 stableText（1+2+...+N = O(N²) 段落解析）。
+    // 新实现总开销 O(N)（N = 块数）。块内文本未变即命中缓存（已 sanitize 的 html）。
+    var cachedBlocks = (c && c.blocks) || [];
+    var htmlBlocks = []; // [{text, html}]
+    for (var bi = 0; bi < stableBlocks.length; bi++) {
+      var btext = stableBlocks[bi];
+      if (cachedBlocks[bi] && cachedBlocks[bi].text === btext) {
+        htmlBlocks.push(cachedBlocks[bi]); // 命中：复用已 sanitize 的 html
+      } else {
+        _streamingMode = true;
+        var bh;
+        try { bh = marked.parse(btext); }
+        catch(e) { bh = '<p>' + esc(btext) + '</p>'; }
+        finally { _streamingMode = false; }
+        // 流式期也必须 sanitize：marked.parse 会保留 raw inline HTML（<img onerror>、
+        // <svg onload> 等），morphdom/innerHTML 写入即执行，live 流式窗口即可触发。
+        if (typeof DOMPurify !== 'undefined' && bh) {
+          bh = DOMPurify.sanitize(bh, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
+        }
+        htmlBlocks.push({ text: btext, html: bh });
+        stableChanged = true;
       }
-      c = { stableText: stableText, stableHtml: sh };
-      _mdStreamCache[cacheKey] = c;
-      stableChanged = true;
     }
+    var sh = htmlBlocks.map(function(b) { return b.html; }).join('\n');
+    c = { text: null, stableText: stableText, stableHtml: sh, blocks: htmlBlocks };
+    _mdStreamCache[cacheKey] = c;
 
     // 活跃块每次重新解析（体积小，开销低）
     // 纯文本快路径：无 markdown 语法/HTML 标签 → 跳过 remend + marked（对纯文本
     // 都是无意义的遍历），直接转义。AI 输出大段纯叙述文字时收益明显。
+    // 大块节流：活跃块 >10KB 时 marked.parse 可达 50-100ms/tick，每 tick 解析致卡顿。
+    // 200ms 内已解析过大块复用上次 activeHtml，跳过 parse+sanitize（稳定段已独立缓存）。
+    var BIG_BLOCK = 10 * 1024;
+    var BIG_THROTTLE_MS = 200;
+    var now = Date.now();
+    var bigBlock = activeBlock.length > BIG_BLOCK;
+    var throttled = bigBlock && c._lastActiveParseAt && (now - c._lastActiveParseAt < BIG_THROTTLE_MS);
     var activeHtml;
-    if (isPlainBlock(activeBlock)) {
+    if (throttled) {
+      // 复用上次活跃块 HTML（不 parse 不 sanitize）；stableChanged 保持 false
+      activeHtml = c.activeHtml || '';
+    } else if (isPlainBlock(activeBlock)) {
       activeHtml = '<p>' + esc(activeBlock) + '</p>';
     } else {
       // remend 修复未闭合标记（** / [ / ( / ` / 围栏），避免流式期 marked 解析闪烁
@@ -289,8 +336,10 @@ window.Hermes = window.Hermes || {};
       try { activeHtml = marked.parse(activeBlock); }
       catch(e) { activeHtml = '<p>' + esc(activeBlock) + '</p>'; }
       finally { _streamingMode = false; }
-    }    // 活跃块跳过 DOMPurify（每帧调用，最大性能瓶颈）；finalize 由 renderMarkdown 兜底
-    if (!cacheKey && typeof DOMPurify !== 'undefined' && activeHtml) {
+      if (bigBlock) c._lastActiveParseAt = now;
+    }
+    // 活跃块同样必须 sanitize（与稳定块同理：防流式期 XSS 执行）；节流复用路径已 sanitize
+    if (!throttled && typeof DOMPurify !== 'undefined' && activeHtml) {
       activeHtml = DOMPurify.sanitize(activeHtml, { ADD_TAGS: ['del', 'input'], ADD_ATTR: ['type', 'checked', 'disabled'] });
     }
 
@@ -313,35 +362,41 @@ window.Hermes = window.Hermes || {};
   }
 
   // 异步高亮：用 requestIdleCallback 分批处理 need-auto-highlight 的代码块，避免阻塞主线程
+  // hljs 懒加载：首次调用时动态 <script> 加载 hljs.bundle.js，加载完再高亮。
   function scheduleIdleHighlight(container) {
     var scope = container || document;
     var pending = scope.querySelectorAll('code.need-auto-highlight');
     if (pending.length === 0) return;
-    var i = 0;
-    function processOne(deadline) {
-      while (i < pending.length) {
-        if (deadline && deadline.timeRemaining && deadline.timeRemaining() <= 0) break;
-        var codeEl = pending[i];
-        try {
-          var text = codeEl.textContent;
-          // B2: 有 data-lang 用指定语言高亮（比 highlightAuto 快且准），否则回退 highlightAuto
-          var lang = codeEl.dataset.lang;
-          if (lang && hljs.getLanguage(lang)) {
-            codeEl.innerHTML = hljs.highlight(text, { language: lang }).value;
-          } else {
-            codeEl.innerHTML = hljs.highlightAuto(text).value;
-          }
-        } catch(e) {}
-        codeEl.classList.remove('need-auto-highlight');
-        i++;
+    // 转 Array（pending 是 live NodeList，延迟高亮期间可能变化）
+    var list = Array.prototype.slice.call(pending);
+    loadHljs().then(function (hljs) {
+      if (!hljs) return; // 加载失败，代码块保持转义态
+      var i = 0;
+      function processOne(deadline) {
+        while (i < list.length) {
+          if (deadline && deadline.timeRemaining && deadline.timeRemaining() <= 0) break;
+          var codeEl = list[i];
+          try {
+            var text = codeEl.textContent;
+            // B2: 有 data-lang 用指定语言高亮（比 highlightAuto 快且准），否则回退 highlightAuto
+            var lang = codeEl.dataset.lang;
+            if (lang && hljs.getLanguage(lang)) {
+              codeEl.innerHTML = hljs.highlight(text, { language: lang }).value;
+            } else {
+              codeEl.innerHTML = hljs.highlightAuto(text).value;
+            }
+          } catch(e) {}
+          codeEl.classList.remove('need-auto-highlight');
+          i++;
+        }
+        if (i < list.length) {
+          if (window.requestIdleCallback) window.requestIdleCallback(processOne);
+          else setTimeout(function() { processOne(); }, 16);
+        }
       }
-      if (i < pending.length) {
-        if (window.requestIdleCallback) window.requestIdleCallback(processOne);
-        else setTimeout(function() { processOne(); }, 16);
-      }
-    }
-    if (window.requestIdleCallback) window.requestIdleCallback(processOne);
-    else setTimeout(function() { processOne(); }, 16);
+      if (window.requestIdleCallback) window.requestIdleCallback(processOne);
+      else setTimeout(function() { processOne(); }, 16);
+    });
   }
 
   // ---- Exports ----
@@ -374,10 +429,16 @@ window.Hermes = window.Hermes || {};
     return html;
   }
 
+  // 清除最终渲染 markdown 缓存（切会话时调用，防跨会话陈旧条目累积）
+  function clearMdCache() {
+    _mdCache.clear();
+  }
+
   window.Hermes.renderMarkdown = renderMarkdown;
   window.Hermes.renderStreamingMarkdown = renderStreamingMarkdown;
   window.Hermes.renderStreamingMarkdownSplit = renderStreamingMarkdownSplit;
   window.Hermes.clearStreamingMdCache = clearStreamingMdCache;
+  window.Hermes.clearMdCache = clearMdCache;
   window.Hermes.renderAnswerBlock = renderAnswerBlock;
   window.Hermes.scheduleIdleHighlight = scheduleIdleHighlight;
 

@@ -117,11 +117,14 @@ window.Hermes = window.Hermes || {};
     _scrollBtn.innerHTML = '↓';
     _scrollBtn.title = '回到底部';
     _scrollBtn.style.display = 'none';
+    _scrollBtn.style.pointerEvents = 'none';
     _scrollBtn.addEventListener('click', function() {
       var el = window.Hermes.dom.chatMessages;
       // 回底按钮：单次触发平滑滚动（css 已移除全局 smooth，这里显式指定）
       if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       _scrollBtn.style.display = 'none';
+      _scrollBtn.style.pointerEvents = 'none';
+      _scrollBtnShown = false;
     });
     var chatView = document.getElementById('chat-view') || document.querySelector('.chat-main');
     if (chatView) {
@@ -135,6 +138,10 @@ window.Hermes = window.Hermes || {};
 
   // rAF 去重：scroll 事件高频触发 + 流式每帧调用，合并到一帧执行避免 forced reflow 风暴
   var _scrollBtnRaf = 0;
+  // 滞回：显示阈值 80px / 隐藏阈值 20px。避免在 isNearBottom 阈值附近抖动时
+  // 按钮反复 display:none↔flex → 该按钮 cursor:pointer 且定位(bottom:80px)压在输入区上沿，
+  // 反复显隐会让鼠标在 textarea(text 光标)与按钮(pointer)间来回切换 → 1-2Hz 闪烁。
+  var _scrollBtnShown = false;
   function _updateScrollBtn() {
     if (_scrollBtnRaf) return;
     _scrollBtnRaf = requestAnimationFrame(function() {
@@ -142,24 +149,28 @@ window.Hermes = window.Hermes || {};
       var el = window.Hermes.dom.chatMessages;
       if (!el) return;
       var btn = _getScrollBtn();
-      if (isNearBottom(el)) {
-        btn.style.display = 'none';
-      } else {
+      var dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // 滞回判定：未显示且距底>80px → 显示；已显示且距底<20px → 隐藏；中间态保持现状
+      var shouldShow = _scrollBtnShown ? (dist >= 20) : (dist >= 80);
+      if (shouldShow === _scrollBtnShown) return;
+      _scrollBtnShown = shouldShow;
+      if (shouldShow) {
         btn.style.display = 'flex';
+        btn.style.pointerEvents = 'auto';
+      } else {
+        btn.style.display = 'none';
+        btn.style.pointerEvents = 'none'; // 双保险：隐藏后绝不参与 hit-test
       }
     });
   }
 
-  // P#4: 钉底去 FSL —— innerHTML 写入后立即读 scrollHeight 会触发 forced synchronous layout。
-  // 用 rAF 把 scrollTop 赋值延迟到下一帧，让浏览器批量处理布局，消除每帧一次的强制回流。
-  var _pinRaf = 0;
+  // 钉底：在渲染 rAF 内同步执行（renderDiff 写完 DOM 立即 scrollTop=scrollHeight）。
+  // 旧实现用独立的嵌套 rAF 把 scrollTop 推迟到下一帧 → DOM 先 paint 到错误滚动位置，
+  // 下一帧才 snap，流式期每帧 ~16ms 微抖。同步执行接受一次 forced layout（~1ms），
+  // 换取零视觉跳变：scrollHeight 反映刚写入的 DOM，同帧 paint 即正确位置。
   function _pinToBottom() {
-    if (_pinRaf) return;
-    _pinRaf = requestAnimationFrame(function() {
-      _pinRaf = 0;
-      var el = window.Hermes.dom.chatMessages;
-      if (el) el.scrollTop = el.scrollHeight;
-    });
+    var el = window.Hermes.dom.chatMessages;
+    if (el) el.scrollTop = el.scrollHeight;
   }
 
   // ----------------------------------------------------------
@@ -572,12 +583,15 @@ window.Hermes = window.Hermes || {};
     if (state.viewMode !== 'chat') return;
     const sid = state.focusedSessionId;
     const hasActiveStream = sid ? window.Hermes.hasActiveStream(sid) : false;
+    // 不再 disabled 输入框：流式期间仍可打字。Enter 发送时若仍有活跃流，先 auto-abort 再发。
+    // 仅用 stop 按钮提示"忙碌"状态；输入框轻微 dim 作为视觉提示但不阻断输入。
+    dom.chatInput.disabled = false;
     if (hasActiveStream) {
-      dom.chatInput.disabled = true;
       showStopButton();
+      dom.chatInput.style.opacity = '0.7';
     } else {
-      dom.chatInput.disabled = false;
       showSendButton();
+      dom.chatInput.style.opacity = '';
     }
   }
 
@@ -635,8 +649,11 @@ window.Hermes = window.Hermes || {};
       return;
     }
 
-    // 检查是否已有活跃流
-    if (window.Hermes.hasActiveStream(sid)) return;
+    // 检查是否已有活跃流：auto-abort+send（而非阻断）。用户流式期按 Enter 发新消息，
+    // 先中止当前流（让后端释放），再发新消息。比队列化简单且符合"打断即发"直觉。
+    if (window.Hermes.hasActiveStream(sid)) {
+      try { window.Hermes.abortStream(sid); } catch (e) { console.warn('[sendMessage] auto-abort failed', e); }
+    }
 
     const input = dom.chatInput.value.trim();
     if (!input) return;
@@ -658,7 +675,6 @@ window.Hermes = window.Hermes || {};
 
     dom.chatInput.value = '';
     dom.chatInput.style.height = 'auto';
-    dom.chatInput.disabled = true;
     showStopButton();
 
     // 清除上一轮失败可能残留的重连按钮，避免"新请求已成功却仍显示重连"的误导
@@ -734,11 +750,14 @@ window.Hermes = window.Hermes || {};
             });
           } catch {}
           await new Promise(function(r) { setTimeout(r, 400); });
-          // 清理占位 assistant 消息与流状态，恢复输入后重发
+          // 清理占位 assistant 消息与本次刚 push 的 userMsg + 流状态，恢复输入后重发。
+          // 否则 H.sendMessage() 会再 push 一个 userMsg，与残留的旧 userMsg 重复。
           var _msgs = getMsgs(sid);
           if (_msgs) {
             var _i = _msgs.indexOf(streamAssistantMsg);
             if (_i >= 0) _msgs.splice(_i, 1);
+            var _ui = _msgs.indexOf(userMsg);
+            if (_ui >= 0) _msgs.splice(_ui, 1);
           }
           delete state.activeStreams[sid];
           dom.chatInput.value = streamState.userInput;
@@ -852,7 +871,10 @@ window.Hermes = window.Hermes || {};
               return;
             }
             if (_t === 'error') {
+              // SSE error 事件视为终态：置错误态 + 标记终止 + 调度渲染，由读取循环
+              // 检测 _errorReceived 后 break 走 onStreamComplete 收尾（否则会空转到 60s 看门狗）。
               streamAssistantMsg._error = evt.error || 'unknown error';
+              streamState._errorReceived = true;
               scheduleRender(sid, false);
               return;
             }
@@ -929,11 +951,15 @@ window.Hermes = window.Hermes || {};
         if (text.length > SUB) {
           for (let i = 0; i < text.length; i += SUB) {
             parser.feed(text.slice(i, i + SUB));
+            // SSE error 事件已处理 → 中止剩余子块，直接走收尾
+            if (streamState._errorReceived) break;
             await new Promise(function(resolve) { setTimeout(resolve, 0); });
           }
         } else {
           parser.feed(text);
         }
+        // error 事件视为终态：跳出读取循环，走与正常完成一致的收尾（onStreamComplete）
+        if (streamState._errorReceived) break;
       }
 
       // 流正常结束：清理看门狗，统一收尾
@@ -1007,6 +1033,17 @@ window.Hermes = window.Hermes || {};
           reconBtn.textContent = isWatchdog ? '🔄 重连(响应超时)' : '🔄 重连(连接断开)';
           reconBtn.onclick = function() {
             reconBtn.remove();
+            // 移除上一轮失败残留的 _aborted assistant（保留了部分内容但已中断）。
+            // 否则 sendMessage 的新 preStreamCount 会把它算进 slice(0, offset)，
+            // backgroundReFetch 保留前缀 → 中断的半截回复永远卡在新回复上方不被替换。
+            // 注意：不动 user 消息（重发/已存在取决于流程，留给 sendMessage 处理）。
+            var _reconMsgs = getMsgs(sid);
+            if (_reconMsgs) {
+              for (var _r = _reconMsgs.length - 1; _r >= 0; _r--) {
+                var _rm = _reconMsgs[_r];
+                if (_rm && _rm.role === 'assistant' && _rm._aborted) _reconMsgs.splice(_r, 1);
+              }
+            }
             dom.chatInput.value = input;
             H.sendMessage();
           };

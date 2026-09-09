@@ -55,7 +55,8 @@ fn poll_once(app: &AppHandle) -> Result<(), ()> {
     // the lock before doing any fs IO (stat calls can be slow on network
     // mounts; we don't want to hold the lock across them).
     let snapshot: Vec<(String, i64)> = {
-        let paths = state.paths.lock().map_err(|_| ())?;
+        // 中毒的 mutex 也恢复（取内部数据）继续轮询，避免一次 panic 永久停掉监视线程。
+        let paths = state.paths.lock().unwrap_or_else(|e| e.into_inner());
         paths.iter().map(|(p, m)| (p.clone(), *m)).collect()
     };
     if snapshot.is_empty() {
@@ -132,7 +133,7 @@ pub fn watch_track(app: AppHandle, path: String) -> Result<(), String> {
     let mut paths = state
         .paths
         .lock()
-        .map_err(|e| format!("lock: {}", e))?;
+        .unwrap_or_else(|e| e.into_inner());
     // Seed with the current mtime so we don't fire a spurious "changed" event
     // on the very first poll for an unchanged file.
     let mtime = stat_mtime(&path).unwrap_or(-1);
@@ -147,7 +148,7 @@ pub fn watch_untrack(app: AppHandle, path: String) -> Result<(), String> {
     let mut paths = state
         .paths
         .lock()
-        .map_err(|e| format!("lock: {}", e))?;
+        .unwrap_or_else(|e| e.into_inner());
     paths.remove(&path);
     Ok(())
 }
@@ -159,7 +160,7 @@ pub fn watch_clear(app: AppHandle) -> Result<(), String> {
     let mut paths = state
         .paths
         .lock()
-        .map_err(|e| format!("lock: {}", e))?;
+        .unwrap_or_else(|e| e.into_inner());
     paths.clear();
     Ok(())
 }

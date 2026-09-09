@@ -589,8 +589,8 @@
         }
     });
 </script>
-    <!-- ===== 设置页脚本（非 module，用 window.__TAURI__ 全局） ===== -->
-    <script src="settings.js"></script>
+    <!-- ===== 设置页脚本（非 module，用 window.__TAURI__ 全局；defer 不阻塞首屏） ===== -->
+    <script src="settings.js" defer></script>
     <!-- ===== Editor 脚本（CM6 本地 bundle，ESM） ===== -->
     <script type="module" src="vendor/editor.bundle.js"></script>
 </body>
