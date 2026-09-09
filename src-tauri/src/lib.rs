@@ -5,6 +5,7 @@ mod fs_ops;
 mod otel;
 mod pi_bridge;
 mod recents;
+mod webclip;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
@@ -89,6 +90,9 @@ pub fn run() {
             fs_ops::read_recovery,
             fs_ops::clear_recovery,
             fs_ops::clear_all_recovery,
+            webclip::fetch_page,
+            webclip::download_images,
+            webclip::interactive_screenshot,
             file_watcher::watch_track,
             file_watcher::watch_untrack,
             file_watcher::watch_clear,

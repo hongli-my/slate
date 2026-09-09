@@ -7,7 +7,7 @@
  */
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { CWD, json } from "../config.ts";
-import { ensureSession, createSession, deleteSession, getCachedSession, refreshIdToPath, setPathForId } from "../session-cache.ts";
+import { ensureSession, createSession, createClipSession, deleteSession, getCachedSession, refreshIdToPath, setPathForId } from "../session-cache.ts";
 
 export async function handleSessionsRoute(p: string, m: string, req: Request, body: any, jsonFn: (o: any, s?: number) => Response): Promise<Response | null> {
   // ---- 会话列表 ----
@@ -30,9 +30,11 @@ export async function handleSessionsRoute(p: string, m: string, req: Request, bo
   }
 
   // ---- 新建会话 ----
+  // body.clip=true → 无工具"剪藏"会话（编辑器 网页/截图转笔记 用，纯问答输出）；
+  // 否则普通对话会话。均持久化，可在历史里回看。
   if (p === "/sessions" && m === "POST") {
     const cwd = body.working_dir || CWD;
-    const session = await createSession(cwd);
+    const session = body.clip === true ? await createClipSession(cwd) : await createSession(cwd);
     const sid = session.sessionId;
     return jsonFn({ ok: true, session: { id: sid }, session_id: sid });
   }

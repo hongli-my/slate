@@ -36,5 +36,8 @@ tauri-plugin-shell = "2"
 # 不走异步消息队列，避免缩放/最小化后 frame 不同步导致的显示异常）
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", features = ["NSView"], default-features = false }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
-tokio = { version = "1", features = ["time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+tokio = { version = "1", features = ["time", "process"] }
+# webclip.rs 用（均在 Cargo.lock 已锁定版本内，不新增编译）：
+chrono = "0.4"
+base64 = "0.22"

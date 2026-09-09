@@ -115,6 +115,29 @@ export async function createSession(cwd: string): Promise<AgentSession> {
   return session;
 }
 
+/** 新建"剪藏"会话（编辑器 网页/截图转笔记 用）。
+ *  与 createSession 同构，但工具白名单为空：agent 纯问答输出整理结果，
+ *  不会中途读文件/跑命令改东西。会话同样走 SessionManager 持久化，
+ *  保留在历史里可回看。 */
+export async function createClipSession(cwd: string): Promise<AgentSession> {
+  const sm = SessionManager.create(cwd);
+  const { session, extensionsResult } = await createAgentSession({
+    sessionManager: sm,
+    modelRuntime,
+    cwd,
+    model: defaultModel,
+    // 空白名单 → 不暴露任何工具（见 SDK AgentSessionConfig.allowedToolNames）
+    allowedToolNames: [],
+    ...(AGENT_DIR ? { agentDir: AGENT_DIR } : {}),
+  });
+  await initSessionExtensions(session, extensionsResult);
+  const sid = session.sessionId;
+  sessionCache.set(sid, session);
+  evictSessionCache();
+  if (session.sessionFile) idToPath.set(sid, session.sessionFile);
+  return session;
+}
+
 /** 删除会话：清缓存 + 删文件 */
 export async function deleteSession(sid: string): Promise<void> {
   const p = idToPath.get(sid);

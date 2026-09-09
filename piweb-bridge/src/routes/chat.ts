@@ -7,6 +7,7 @@
 import { json, readBody } from "../config.ts";
 import { ensureSession } from "../session-cache.ts";
 import { sseResponse, isBusy, acquireBusy, releaseBusy } from "../sse.ts";
+import type { ImageContent } from "@earendil-works/pi-ai";
 
 export async function handleChatRoute(p: string, m: string, req: Request, body: any, jsonFn: (o: any, s?: number) => Response): Promise<Response | null> {
   // ---- 对话流式 ----
@@ -18,7 +19,7 @@ export async function handleChatRoute(p: string, m: string, req: Request, body: 
     acquireBusy(sid);
     try {
       const session = await ensureSession(sid);
-      return sseResponse(session, body.message || "", sid);
+      return sseResponse(session, body.message || "", sid, parseBodyImages(body.images));
     } catch (e) {
       releaseBusy(sid);
       throw e;
@@ -69,4 +70,20 @@ export async function handleChatRoute(p: string, m: string, req: Request, body: 
   }
 
   return null;
+}
+
+/** dataURL（data:<mime>;base64,<payload>）→ pi 原生 ImageContent（data 为裸 base64）。
+ *  非 dataURL / 非字符串项跳过；无有效项返回 undefined（退化为纯文本消息）。 */
+function parseBodyImages(raw: unknown): ImageContent[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ImageContent[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const comma = item.indexOf(",");
+    const header = comma > 0 ? item.slice(0, comma) : "";
+    if (!header.startsWith("data:")) continue;
+    const mimeType = header.slice(5).split(";")[0] || "image/png";
+    out.push({ type: "image", data: item.slice(comma + 1), mimeType });
+  }
+  return out.length ? out : undefined;
 }

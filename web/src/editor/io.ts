@@ -266,6 +266,42 @@ export function watchClear(): Promise<void> {
   return safeInvoke<void>("watch_clear");
 }
 
+// ---- Web clipper / 截图（Rust commands in webclip.rs） ----
+
+/** 网页抓取结果（与 Rust PageContent 对齐，serde camelCase）。 */
+export interface PageContent {
+  url: string;
+  title: string;
+  text: string;
+  /** 正文图片 URL（微信公众号等，已过滤内联/图标）。 */
+  images: string[];
+}
+
+/** 抓取网页正文（供 AI 整理成 markdown 笔记）。 */
+export async function fetchPage(url: string): Promise<PageContent> {
+  return safeInvoke<PageContent>("fetch_page", { url });
+}
+
+/** 把网页配图批量下载到 `{rootDir}/attachments/年/月/`，返回相对 rootDir 的路径。 */
+export async function downloadImages(rootDir: string, urls: string[]): Promise<string[]> {
+  return (await safeInvoke<string[]>("download_images", { rootDir, urls })) || [];
+}
+
+/** macOS 交互式截图（screencapture -i），返回 PNG base64；用户按 Esc 取消返回 null。 */
+export async function interactiveScreenshot(): Promise<string | null> {
+  return safeInvoke<string | null>("interactive_screenshot");
+}
+
+/** 递归建目录（plugin-fs mkdir，capability 已含 fs:allow-mkdir + 任意路径 scope）。 */
+export async function mkdirDir(path: string): Promise<void> {
+  const w = window as unknown as {
+    __TAURI__?: { fs?: { mkdir?: (p: string, o?: { recursive?: boolean }) => Promise<void> } };
+  };
+  const fn = w.__TAURI__?.fs?.mkdir;
+  if (!fn) throw new Error("fs.mkdir unavailable");
+  await fn.call(w.__TAURI__!.fs, path, { recursive: true });
+}
+
 // ---- macOS 日历（EventKit via cal-bridge） ----
 export interface CalEvent {
   title: string;

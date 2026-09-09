@@ -15,6 +15,7 @@
  * 自行重建 content blocks（与 pi SDK 内部构建 partial 的逻辑一致）。
  */
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { CORS, ts } from "./config.ts";
 
 // 进程内同步忙锁：防止同一 session 并发 prompt 搅乱状态
@@ -49,8 +50,9 @@ function stripEvent(event: any): any {
   return event;
 }
 
-/** 构造 SSE 流：订阅 session 事件 → 原样透传；prompt 驱动 */
-export function sseResponse(session: AgentSession, message: string, lockSid?: string): Response {
+/** 构造 SSE 流：订阅 session 事件 → 原样透传；prompt 驱动。
+ *  images 为 pi 原生 ImageContent[]（可选，截图/图片转笔记用），直接随消息发送。 */
+export function sseResponse(session: AgentSession, message: string, lockSid?: string, images?: ImageContent[]): Response {
   const enc = new TextEncoder();
   let unsub: (() => void) | undefined;
   let finished = false;
@@ -150,8 +152,8 @@ export function sseResponse(session: AgentSession, message: string, lockSid?: st
       });
 
       try {
-        console.log(`[pi-bridge] [${ts()}] prompt start sid=${lockSid || "-"}: ${message.slice(0, 40)} | isStreaming: ${(session as any).isStreaming}`);
-        await session.prompt(message);
+        console.log(`[pi-bridge] [${ts()}] prompt start sid=${lockSid || "-"}: ${message.slice(0, 40)}${images?.length ? ` | images=${images.length}` : ""} | isStreaming: ${(session as any).isStreaming}`);
+        await session.prompt(message, images && images.length ? { images } : undefined);
         console.log(`[pi-bridge] [${ts()}] prompt done sid=${lockSid || "-"}`);
       } catch (e: any) {
         console.log(`[pi-bridge] [${ts()}] prompt error sid=${lockSid || "-"}:`, e.message);
