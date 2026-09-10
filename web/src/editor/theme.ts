@@ -26,10 +26,13 @@ export const darkTheme = EditorView.theme(
     ".cm-activeLine": { backgroundColor: "rgba(255,255,255,0.07)" },
     ".cm-activeLineGutter": { backgroundColor: "rgba(255,255,255,0.07)" },
     "&.cm-focused": { outline: "none" },
-    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-      backgroundColor: "rgba(255,200,120,0.25)",
+    // 选中 = 唯一“动作”高亮：去饱和钢蓝，聚焦时更强、失焦时更弱。
+    // 与同词标记（中性色）刻意不同色相，两种角色一眼可分。
+    "&.cm-focused .cm-selectionBackground": {
+      backgroundColor: "rgba(90,130,205,0.38)",
     },
-    "& ::selection": { backgroundColor: "rgba(255,200,120,0.25)" },
+    ".cm-selectionBackground": { backgroundColor: "rgba(90,130,205,0.2)" },
+    "& ::selection": { backgroundColor: "rgba(90,130,205,0.38)" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#f8f8f0" },
     ".cm-foldGutter .cm-gutterElement": {
       cursor: "pointer",
@@ -44,17 +47,11 @@ export const darkTheme = EditorView.theme(
       padding: "0 4px",
       margin: "0 2px",
     },
+    // 同词 = 被动参照：中性色低透明度填充 + 细圆角“词胶囊”，无边框无下划线，
+    // 不抢语法色、不与蓝色选中混淆。选中区自身永不落此标记。
     ".cm-occurrence": {
-      backgroundColor: "rgba(255,255,255,0.12)",
-      borderBottom: "1px solid rgba(255,255,255,0.3)",
-    },
-    // Selection-match (from highlightSelectionMatches) must NOT look like the
-    // actual selection — use a distinct tinted background + underline. The
-    // higher-specificity selector (.cm-content prefix) overrides the default
-    // "#99ff7780" that highlightSelectionMatches injects.
-    ".cm-content .cm-selectionMatch": {
-      backgroundColor: "rgba(120,180,255,0.18)",
-      outline: "1px solid rgba(120,180,255,0.35)",
+      backgroundColor: "rgba(255,255,255,0.1)",
+      borderRadius: "2px",
     },
     ".cm-searchMatch": { backgroundColor: "rgba(255,200,0,0.4)" },
     ".cm-searchMatch-selected": { backgroundColor: "rgba(255,200,0,0.6)" },
@@ -128,10 +125,11 @@ export const lightTheme = EditorView.theme(
     ".cm-activeLine": { backgroundColor: "rgba(0,0,0,0.05)" },
     ".cm-activeLineGutter": { backgroundColor: "rgba(0,0,0,0.05)" },
     "&.cm-focused": { outline: "none" },
-    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-      backgroundColor: "rgba(217,160,50,0.28)",
+    "&.cm-focused .cm-selectionBackground": {
+      backgroundColor: "rgba(52,110,215,0.22)",
     },
-    "& ::selection": { backgroundColor: "rgba(217,160,50,0.28)" },
+    ".cm-selectionBackground": { backgroundColor: "rgba(52,110,215,0.13)" },
+    "& ::selection": { backgroundColor: "rgba(52,110,215,0.22)" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#1a1a1a" },
     ".cm-foldGutter .cm-gutterElement": { cursor: "pointer", color: "#aaa" },
     ".cm-foldPlaceholder": {
@@ -143,12 +141,8 @@ export const lightTheme = EditorView.theme(
       margin: "0 2px",
     },
     ".cm-occurrence": {
-      backgroundColor: "rgba(0,0,0,0.08)",
-      borderBottom: "1px solid rgba(0,0,0,0.2)",
-    },
-    ".cm-content .cm-selectionMatch": {
-      backgroundColor: "rgba(80,130,220,0.15)",
-      outline: "1px solid rgba(80,130,220,0.3)",
+      backgroundColor: "rgba(0,0,0,0.07)",
+      borderRadius: "2px",
     },
     ".cm-searchMatch": { backgroundColor: "rgba(255,200,0,0.4)" },
     ".cm-searchMatch-selected": { backgroundColor: "rgba(255,200,0,0.6)" },

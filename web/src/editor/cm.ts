@@ -22,6 +22,7 @@ import {
   StateEffect,
   Extension,
   EditorSelection,
+  type Text,
 } from "@codemirror/state";
 import {
   defaultKeymap,
@@ -51,12 +52,13 @@ import {
   type CompletionContext,
   type CompletionResult,
 } from "@codemirror/autocomplete";
-import { search, searchKeymap, setSearchQuery, SearchQuery, SearchCursor } from "@codemirror/search";
+import { search, searchKeymap, setSearchQuery, SearchQuery } from "@codemirror/search";
 import { EditorView as EV } from "@codemirror/view";
 
 import { state, setActiveGroup } from "./state";
 import { darkThemeExt, lightThemeExt } from "./theme";
 import { languageForFile } from "./languages";
+import { sqlFolding } from "./sqlfold";
 import { getNoteFileList, fuzzyScore } from "./wikilink";
 
 // ---- Occurrence highlight via StateField (FIX #16) ----
@@ -104,7 +106,9 @@ let occTimer: ReturnType<typeof setTimeout> | null = null;
 const MAX_OCC = 300;
 const MAX_OCC_DOC = 200000;
 
-/** Debounced (120ms) occurrence highlight of the word at / around the cursor.
+/** Debounced (120ms) occurrence highlight of the word at / around the cursor,
+ *  or — when text is selected — of the same text elsewhere. The selection's own
+ *  range is never marked, so native selection / Cmd+C stay intact.
  *  120ms (down from 220ms) makes same-word highlighting feel instant, like
  *  Sublime — the MAX_OCC / MAX_OCC_DOC guards keep this safe on big docs. */
 export function scheduleOccurrenceHighlight(view: EditorView): void {
@@ -142,15 +146,32 @@ function highlightOccurrences(view: EditorView): void {
   // `replaceWholeDoc`). Normalize to (min, max) before any sliceString call.
   const selFrom = Math.min(sel.from, sel.to);
   const selTo = Math.max(sel.from, sel.to);
-  let word = "";
-  let wordFrom = selFrom;
-  let wordTo = selTo;
-  if (selFrom !== selTo) {
-    // 用户正在选择文本（很可能准备复制）。此时不做任何 occurrence 高亮：
-    // Decoration.mark 会改变 DOM（在选中的词外包一层 span），导致浏览器原生
-    // 选区错乱 —— 表现为“复制只复制了一半”。直接清除并返回，保持 DOM 稳定。
-    clearOccurrences(view);
-    return;
+
+  // —— 匹配模式 ——
+  // 选中一段文本：高亮其它相同的词/文本（跳过与选中区重叠的 occurrence，
+  // 绝不把 Decoration.mark 包到原生选区上 —— 那是“复制只复制一半”的根因）。
+  // 单光标：高亮光标所在词（Sublime 式，跳过光标自己的词）。
+  const qLen = selTo - selFrom;
+  let query = "";
+  let wholeWord = false;
+  let skipFrom = selFrom;
+  let skipTo = selTo;
+  if (qLen > 0) {
+    const s = doc.sliceString(selFrom, selTo);
+    if (s.includes("\n") || s.trim().length < 2 || s.trim().length > 60) {
+      clearOccurrences(view);
+      return;
+    }
+    // 去掉选区首尾空白，只按实际内容匹配（视觉上不把空格高亮进去）。
+    const lead = s.length - s.trimStart().length;
+    query = s.trim();
+    skipFrom = selFrom + lead;
+    skipTo = skipFrom + query.length;
+    // 选区恰好是一个完整单词（两端都是非词字符）→ 按整词匹配；
+    // 否则（选中的是词的局部/短语）按原样子串匹配。
+    wholeWord =
+      !/\s/.test(query) &&
+      isWordBoundaryAt(doc, skipFrom, skipTo);
   } else {
     // Word at cursor (Sublime-style).
     const line = doc.lineAt(sel.head);
@@ -160,28 +181,58 @@ function highlightOccurrences(view: EditorView): void {
     while (a > 0 && /[\w$]/.test(text[a - 1])) a--;
     let b = s;
     while (b < text.length && /[\w$]/.test(text[b])) b++;
-    word = text.slice(a, b);
-    wordFrom = line.from + a;
-    wordTo = line.from + b;
-    if (word.length < 2 || !/^[\w$]+$/.test(word)) {
+    query = text.slice(a, b);
+    skipFrom = line.from + a;
+    skipTo = line.from + b;
+    if (query.length < 2 || !/^[\w$]+$/.test(query)) {
       clearOccurrences(view);
       return;
     }
   }
 
-  // Collect matches via SearchCursor — no full-doc toString() + indexOf scan
-  // (that was O(n) string copy per keystroke and janked on large files).
+  // 逐行 indexOf 收集（避免整文档 toString 的 O(n) 拷贝）；query 不含换行，
+  // 不可能跨行，逐行扫描即等价于全文档扫描。
   const ranges: OccRange[] = [];
-  const cursor = new SearchCursor(doc, word);
   let count = 0;
-  while (!cursor.next().done && count < MAX_OCC) {
-    const m = cursor.value;
-    // Skip the cursor's own occurrence (matches CM5 behavior).
-    if (m.from === wordFrom && m.to === wordTo) continue;
-    ranges.push({ from: m.from, to: m.to });
-    count++;
+  for (let i = 1; i <= doc.lines && count < MAX_OCC; i++) {
+    const line = doc.line(i);
+    const t = line.text;
+    let idx = t.indexOf(query);
+    while (idx !== -1 && count < MAX_OCC) {
+      const from = line.from + idx;
+      const to = from + query.length;
+      // 跳过与“自身”（光标词 / 选中区）重叠的 occurrence：
+      // 1) 保证选中文本不被 mark 包裹，原生选区/复制不受影响；
+      // 2) 光标词的精确位置跳过（与 CM5 行为一致）。
+      if (!(from < skipTo && to > skipFrom)) {
+        if (!wholeWord || isWordBoundary(t, idx, query.length)) {
+          ranges.push({ from, to });
+          count++;
+        }
+      }
+      idx = t.indexOf(query, idx + 1);
+    }
   }
   view.dispatch({ effects: setOccurrences.of(ranges) });
+}
+
+/** 判断 [from, to) 两端在文档里都贴着非词字符（或文档边界）——即它是否是一个完整单词。 */
+function isWordBoundaryAt(doc: Text, from: number, to: number): boolean {
+  const line = doc.lineAt(from);
+  if (line.to < to) return false; // 跨行（调用方已排除换行，防御）
+  const t = line.text;
+  const rel = from - line.from;
+  const len = to - from;
+  const prev = rel > 0 ? t[rel - 1] : "";
+  const next = rel + len < t.length ? t[rel + len] : "";
+  return !/[\w$]/.test(prev) && !/[\w$]/.test(next);
+}
+
+/** 某 occurrence 的左右邻字符是否都是非词字符。 */
+function isWordBoundary(lineText: string, idx: number, len: number): boolean {
+  const prev = idx > 0 ? lineText[idx - 1] : "";
+  const next = idx + len < lineText.length ? lineText[idx + len] : "";
+  return !/[\w$]/.test(prev) && !/[\w$]/.test(next);
 }
 
 // ---- Compartments ----
@@ -273,6 +324,7 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
     drawSelection(),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
+    occurrenceField, // 同词高亮 StateField（must be enabled to receive setOccurrences effects）
     indentOnInput(),
     bracketMatching(),
     closeBrackets(),
@@ -286,6 +338,7 @@ export function buildExtensions(onUpdate: (u: ViewUpdate) => void): Extension[] 
     // stays clean.
     highlightActiveLineGutter(),
     codeFolding(),
+    sqlFolding, // SQL 细粒度折叠：多行括号块（子查询等）+ CASE...END
     foldGutter({
       markerDOM: (open) => {
         const el = document.createElement("span");

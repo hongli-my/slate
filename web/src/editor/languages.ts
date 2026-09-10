@@ -42,6 +42,9 @@ import {
 
 const stream = (p: unknown) => new LanguageSupport(StreamLanguage.define(p as never));
 
+// SQL 语言实例（LanguageSupport）单例：EXT_MAP 与 sqlfold.ts 的语言门控共用同一引用。
+export const sqlSupport = sql();
+
 // javascript with both jsx+typescript support covers .js/.jsx/.ts/.tsx/.mjs/.cjs
 const jsExt = javascript({ jsx: true, typescript: true });
 
@@ -86,7 +89,7 @@ const EXT_MAP: Record<string, LanguageSupport> = {
   // Lua
   lua: stream(lua),
   // SQL
-  sql: sql(),
+  sql: sqlSupport,
   // Swift
   swift: stream(swift),
   // Web

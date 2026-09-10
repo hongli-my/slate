@@ -6,7 +6,7 @@
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { state, viewGroup, setActiveGroup, getTabByPath, getActiveTab, type Tab } from "./state";
-import { createEditorView, buildExtensions, clearOccurrences } from "./cm";
+import { createEditorView, buildExtensions, clearOccurrences, scheduleOccurrenceHighlight } from "./cm";
 import { setupShortcuts } from "./keymap";
 import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile, openScannedFile } from "./files";
 import { renderTabsBar, switchToTab, addTab } from "./tabs";
@@ -53,6 +53,8 @@ function onDocUpdate(u: ViewUpdate): void {
     // Crash-recovery snapshot (debounced 1s). Only buffers with a path —
     // untitled buffers have no stable key to restore under.
     if (tab) scheduleRecoverySave(tab);
+    // 编辑后刷新同词高亮（120ms 防抖在 cm.ts 内）。
+    if (u.view.hasFocus) scheduleOccurrenceHighlight(u.view);
   }
   if (u.selectionSet || u.focusChanged) {
     updateStatusCursor();
@@ -61,12 +63,24 @@ function onDocUpdate(u: ViewUpdate): void {
       setActiveGroup(g.id);
       syncPreviewPane(); // move preview pane to the newly active group
     }
+    // 同词高亮：选中/移动光标后调度。选中非空时先清旧标记再重绘——
+    // 避免上一轮的 Decoration.mark 与新原生选区叠加（“复制只复制一半”的根因）。
+    // ⚠ 不能在这里同步 dispatch：CM6 在 update listener 执行期间 updateState≠Idle，
+    //   同步 view.dispatch 会抛 “update is in progress” 且被 CM6 静默吞掉，
+    //   后面的 schedule 永不执行。统一延迟到本次更新结束后（microtask）再操作。
+    if (u.view.hasFocus) {
+      const sel = u.view.state.selection.main;
+      const hasSel = sel.from !== sel.to;
+      queueMicrotask(() => {
+        if (hasSel) clearOccurrences(u.view);
+        scheduleOccurrenceHighlight(u.view);
+      });
+    }
   }
-  // NOTE: occurrence highlights are NO LONGER cleared on every docChanged.
-  // The occurrence StateField maps its decorations through transactions
-  // (dec.map(tr.changes)), and the debounced re-highlight overwrites the set
-  // on its own. The old per-keystroke clear caused a 120ms flicker to "no
-  // highlights"; removing it makes same-word highlighting feel instant.
+  // NOTE: occurrence highlights persist across transactions — the StateField
+  // maps its decorations through changes (dec.map(tr.changes)) and the
+  // debounced re-highlight overwrites the set on its own; editing feels
+  // flicker-free while typed words still get re-highlighted on pause.
 }
 
 // Debounced crash-recovery save. Each docChanged reschedules, so we only
