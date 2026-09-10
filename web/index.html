@@ -179,6 +179,40 @@
         .s-btn-primary:hover:not(:disabled) { opacity: 0.88; background: var(--accent); color: #fff; }
         .s-btn-ghost { border-color: transparent; color: var(--text-3); }
         .s-btn-ghost:hover:not(:disabled) { background: var(--surface-2); }
+
+        /* AI 助手设置项行 */
+        .settings-row {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 16px; padding: 12px 0; border-top: 1px solid var(--border);
+        }
+        .settings-row:first-of-type { border-top: none; }
+        .settings-row-text { flex: 1; min-width: 0; }
+        .settings-row-name { font-size: 13px; font-weight: 500; color: var(--text-1); }
+        .settings-row-desc { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+        /* toggle 开关 */
+        .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .switch-slider {
+            position: absolute; cursor: pointer; inset: 0;
+            background: var(--surface-3); border-radius: 999px; transition: background .2s ease;
+        }
+        .switch-slider::before {
+            content: ""; position: absolute; height: 16px; width: 16px; left: 3px; top: 3px;
+            background: #fff; border-radius: 50%; transition: transform .2s ease;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        }
+        .switch input:checked + .switch-slider { background: var(--accent); }
+        .switch input:checked + .switch-slider::before { transform: translateX(18px); }
+
+        /* 模型选择下拉 */
+        .settings-select {
+            padding: 6px 10px; border-radius: var(--radius-sm); font-size: 13px;
+            border: 1px solid var(--border); background: var(--surface);
+            color: var(--text-1); cursor: pointer; min-width: 180px; max-width: 260px;
+            flex-shrink: 0;
+        }
+        .settings-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     </style>
     <!-- ===== Editor 依赖（本地 vendored bundle，离线可用） ===== -->
     <link rel="stylesheet" href="vendor/hljs-monokai.css">
@@ -323,12 +357,19 @@
                     <span>UTF-8</span>
                     <span id="stBuild" title="构建版本（用于确认 app 是否跑的最新代码）" style="color:#aaa;">b0819-6</span>
                 </div>
+                <button class="ai-fab" id="aiFab" onclick="toggleAiPanel()" title="AI 助手">✨</button>
                 <div class="ai-panel" id="aiPanel" hidden>
+                    <div class="ai-resizer" id="aiResizer"></div>
                     <div class="ai-panel-header">
                         <span>✨ AI 助手</span>
-                        <button class="ai-panel-close" onclick="toggleAiPanel()">✕</button>
+                        <div class="ai-panel-header-actions">
+                            <button class="ai-panel-action" onclick="newAiSession()" title="新建会话">＋</button>
+                            <button class="ai-panel-action danger" onclick="deleteAiSession()" title="删除当前会话">🗑</button>
+                            <button class="ai-panel-close" onclick="toggleAiPanel()">✕</button>
+                        </div>
                     </div>
                     <div class="ai-messages" id="aiMessages"></div>
+                    <div class="ai-context" id="aiContext" title="发送消息时将自动附带当前文件内容"></div>
                     <div class="ai-input-area">
                         <textarea class="ai-input" id="aiInput" placeholder="输入问题... (Cmd+Enter 发送)"></textarea>
                         <button class="ai-send" onclick="sendAiMessage()">发送</button>
@@ -562,6 +603,12 @@
         }
     };
     window.sendAiMessage = function() {
+        // 逻辑层实现
+    };
+    window.newAiSession = function() {
+        // 逻辑层实现
+    };
+    window.deleteAiSession = function() {
         // 逻辑层实现
     };
 

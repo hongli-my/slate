@@ -29,7 +29,13 @@ import { toast, $, escapeHtml } from "./ui";
 import { setNoteFileProvider, buildLinkIndex, backlinksFor, type LinkEntry } from "./wikilink";
 import { createGraphView, type GraphView } from "./graph";
 import { createMindmapView, type MindmapView } from "./mindmap";
-import { setupAiPanel, toggleAiPanel, sendAiMessage } from "./ai-panel";
+import {
+  setupAiPanel,
+  toggleAiPanel,
+  sendAiMessage,
+  newAiSession,
+  deleteAiSession,
+} from "./ai-panel";
 
 /** Central update listener for the main EditorView. */
 function onDocUpdate(u: ViewUpdate): void {
@@ -335,8 +341,26 @@ function setupGraphAndMindmap(): void {
   }
   const mmContainer = document.getElementById("view-mindmap");
   if (mmContainer) {
-    mindmapView = createMindmapView(mmContainer);
+    mindmapView = createMindmapView(mmContainer, {
+      onNodeClick: (line) => { gotoMindmapLine(line); },
+    });
   }
+}
+
+/** 导图节点点击 → 切回编辑器视图并定位到对应行。 */
+function gotoMindmapLine(line: number): void {
+  const view = state.view;
+  if (!view) return;
+  // 切回编辑器视图（switchView 是 index.html 内联脚本的全局函数）。
+  const sw = (window as unknown as Record<string, unknown>).switchView;
+  if (typeof sw === "function") (sw as (n: string) => void)("editor");
+  const ln = Math.max(1, Math.min(line, view.state.doc.lines));
+  const lineObj = view.state.doc.line(ln);
+  view.dispatch({
+    selection: { anchor: lineObj.from },
+    scrollIntoView: true,
+  } as never);
+  view.focus();
 }
 
 /** Current note's basename without extension (for graph local mode + backlinks). */
@@ -521,6 +545,8 @@ export function exposeGlobals(): void {
   // AI 助手面板（覆盖 index.html 桩函数）。
   w.toggleAiPanel = toggleAiPanel;
   w.sendAiMessage = sendAiMessage;
+  w.newAiSession = newAiSession;
+  w.deleteAiSession = deleteAiSession;
   // Expose for debugging.
   w.__slate = state;
   // Debug helper: trigger an in-file search so tests can verify highlight clearing.

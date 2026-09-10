@@ -109,6 +109,36 @@
             '<pre class="engine-log" id="engine-log"></pre>' +
             '<div class="settings-hint">来自 pi-bridge 的 stdout / stderr，实时推送，保留最近 ' + MAX_LOG_LINES + ' 行。</div>' +
           '</section>' +
+          // ---- AI 助手卡片 ----
+          '<section class="settings-card" id="ai-card">' +
+            '<div class="settings-card-head">' +
+              '<div class="settings-card-title">' +
+                '<span class="settings-card-icon">✨</span>' +
+                '<div>' +
+                  '<div class="settings-card-name">AI 助手</div>' +
+                  '<div class="settings-card-desc">编辑区内嵌 AI 助手的偏好设置</div>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="settings-row">' +
+              '<div class="settings-row-text">' +
+                '<div class="settings-row-name">自动附当前文件</div>' +
+                '<div class="settings-row-desc">提问时自动带上当前打开文件的正文作为上下文</div>' +
+              '</div>' +
+              '<label class="switch">' +
+                '<input type="checkbox" id="ai-attach-file">' +
+                '<span class="switch-slider"></span>' +
+              '</label>' +
+            '</div>' +
+            '<div class="settings-row">' +
+              '<div class="settings-row-text">' +
+                '<div class="settings-row-name">默认模型</div>' +
+                '<div class="settings-row-desc">AI 助手与对话引擎共用的默认模型</div>' +
+              '</div>' +
+              '<select class="settings-select" id="ai-model"></select>' +
+            '</div>' +
+            '<div class="settings-hint" id="ai-model-hint">模型列表需对话引擎在线后加载。</div>' +
+          '</section>' +
           // ---- 未来设置项占位 ----
           '<section class="settings-card settings-card-coming">' +
             '<div class="settings-card-title">' +
@@ -128,6 +158,22 @@
       engineLogs = [];
       renderLogs();
     });
+
+    // ---- AI 助手设置 ----
+    var attachEl = el('ai-attach-file');
+    if (attachEl) {
+      attachEl.checked = localStorage.getItem('slate.ai.attachFile') !== '0';
+      attachEl.addEventListener('change', function () {
+        localStorage.setItem('slate.ai.attachFile', attachEl.checked ? '1' : '0');
+      });
+    }
+    var modelSel = el('ai-model');
+    if (modelSel) {
+      modelSel.addEventListener('change', function () {
+        switchAiModel(modelSel.value);
+      });
+    }
+    loadAiModels();
   }
 
   // ============================================================
@@ -358,6 +404,57 @@
     if (!pre) return;
     pre.textContent = engineLogs.join('\n');
     pre.scrollTop = pre.scrollHeight;
+  }
+
+  // ============================================================
+  // AI 助手：默认模型加载 / 切换
+  // ============================================================
+  function loadAiModels() {
+    var sel = el('ai-model');
+    var hint = el('ai-model-hint');
+    if (!sel) return;
+    fetch('http://' + BRIDGE_PORT + '/models')
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        var models = (res && res.models) || [];
+        sel.innerHTML = '';
+        models.forEach(function (mm) {
+          var opt = document.createElement('option');
+          opt.value = mm.id;
+          opt.textContent = mm.name + ' (' + mm.provider + ')';
+          sel.appendChild(opt);
+        });
+        return fetch('http://' + BRIDGE_PORT + '/providers').then(function (r) { return r.json(); });
+      })
+      .then(function (prov) {
+        var current = prov && prov.current;
+        if (current && current.modelId) sel.value = current.modelId;
+        if (hint) hint.textContent = '';
+      })
+      .catch(function () {
+        if (hint) hint.textContent = '模型列表不可用，请先启动对话引擎。';
+      });
+  }
+
+  function switchAiModel(modelId) {
+    var hint = el('ai-model-hint');
+    if (!modelId) return;
+    fetch('http://' + BRIDGE_PORT + '/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId: modelId }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (res) {
+        if (res && res.ok) {
+          if (hint) hint.textContent = '已切换默认模型。';
+        } else {
+          if (hint) hint.textContent = '切换失败: ' + (res && res.error ? res.error : 'unknown');
+        }
+      })
+      .catch(function (e) {
+        if (hint) hint.textContent = '切换失败: ' + (e && e.message ? e.message : e);
+      });
   }
 
   // ============================================================

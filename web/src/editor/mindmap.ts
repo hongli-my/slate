@@ -5,7 +5,9 @@
 
 import { Transformer } from "markmap-lib/no-plugins";
 import { Markmap } from "markmap-view";
-import type { IPureNode } from "markmap-common";
+import { select } from "d3-selection";
+import type { IPureNode, INode } from "markmap-common";
+import type { ITransformPlugin } from "markmap-lib";
 import { toast } from "./ui";
 
 export interface MindmapView {
@@ -13,6 +15,11 @@ export interface MindmapView {
   render(markdown: string): void;
   /** 销毁 markmap 实例、解绑工具栏事件与 ResizeObserver。 */
   destroy(): void;
+}
+
+/** 导图节点点击回调：传入节点对应的 markdown 源文档行号（1-based）。 */
+export interface MindmapOptions {
+  onNodeClick?: (line: number) => void;
 }
 
 // markmap 默认 options（CSS 内联 embedGlobalCSS，离线可用）。
@@ -26,10 +33,47 @@ const MM_OPTIONS = {
   maxInitialScale: 2,
 };
 
+// 手写 sourceLines 等价插件：给每个块节点写入源文档行号（data-lines），
+// 供节点点击跳转定位。不 import markmap-lib/plugins —— 那会连带引入
+// katex / highlight.js 等重依赖，使 bundle 从 3.4mb 膨胀到 5.9mb。
+const sourceLinesPlugin: ITransformPlugin = {
+  name: "sourceLines",
+  transform(hooks) {
+    let frontmatterLines = 0;
+    hooks.beforeParse.tap((_md, context) => {
+      frontmatterLines = context.frontmatterInfo?.lines ?? 0;
+    });
+    hooks.parser.tap((md) => {
+      const renderer = md.renderer as any;
+      const origRenderAttrs = renderer.renderAttrs;
+      renderer.renderAttrs = (token: any) => {
+        if (token.block && token.map) {
+          const lineRange = token.map.map((line: number) => line + frontmatterLines);
+          token.attrSet("data-lines", lineRange.join(","));
+        }
+        return origRenderAttrs(token);
+      };
+      if (renderer.rules.fence) {
+        const origFence = renderer.rules.fence;
+        renderer.rules.fence = (tokens: any, idx: number, options: any, env: any, self: any) => {
+          let result = origFence(tokens, idx, options, env, self);
+          const token = tokens[idx];
+          if (result.startsWith("<pre>") && token.map) {
+            const lineRange = token.map.map((line: number) => line + frontmatterLines);
+            result = result.slice(0, 4) + ` data-lines="${lineRange.join(",")}"` + result.slice(4);
+          }
+          return result;
+        };
+      }
+    });
+    return {};
+  },
+};
+
 // 模块级 Transformer 单例（缓存复用，避免每次 render 重建 markdown-it 实例）。
 let transformer: Transformer | null = null;
 function getTransformer(): Transformer {
-  if (!transformer) transformer = new Transformer();
+  if (!transformer) transformer = new Transformer([sourceLinesPlugin]);
   return transformer;
 }
 
@@ -52,7 +96,7 @@ function readScale(transformAttr: string | null): number | null {
   return m ? parseFloat(m[1]) : null;
 }
 
-export function createMindmapView(container: HTMLElement): MindmapView {
+export function createMindmapView(container: HTMLElement, opts?: MindmapOptions): MindmapView {
   const svg = container.querySelector<SVGSVGElement>("#mindmapSvg");
   const emptyEl = container.querySelector<HTMLElement>("#mindmapEmpty");
   const layoutSelect = container.querySelector<HTMLSelectElement>("#mindmapLayout");
@@ -62,6 +106,30 @@ export function createMindmapView(container: HTMLElement): MindmapView {
 
   // 深色主题：markmap globalCSS 中 `.markmap-dark .markmap` 变量需作用在 svg 祖先上。
   container.classList.add("markmap-dark");
+
+  // 节点文字点击 → 跳转编辑器对应行。
+  // 用事件委托绑在 svg 上（svg 元素稳定，不随 markmap renderData 重建）：
+  // - 圆点 circle 的点击由 markmap 默认 handleClick 处理（折叠/展开），此处不拦截；
+  // - 文字 foreignObject 的 click 冒泡到此，读 datum 的 payload.lines 跳转。
+  // 这样「折叠」与「跳转」并存，叶子节点（无圆点）也能点文字跳转。
+  let onSvgClick: ((e: MouseEvent) => void) | null = null;
+  if (opts?.onNodeClick && svg) {
+    const cb = opts.onNodeClick;
+    onSvgClick = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      const fo = target?.closest("foreignObject.markmap-foreign");
+      if (!fo) return; // 点在圆点/空白 → 交给 markmap 默认折叠，不跳转
+      const node = select(fo).datum() as INode | undefined;
+      const lines = node?.payload?.lines as string | undefined;
+      if (!lines) return;
+      const start = parseInt(lines.split(",")[0], 10);
+      if (Number.isFinite(start)) {
+        e.stopPropagation();
+        cb(start + 1);
+      }
+    };
+    svg.addEventListener("click", onSvgClick);
+  }
 
   let mm: Markmap | null = null;
   let currentScale = 1;
@@ -160,6 +228,8 @@ export function createMindmapView(container: HTMLElement): MindmapView {
     if (rafId) cancelAnimationFrame(rafId);
     rafId = 0;
     ro.disconnect();
+    if (onSvgClick && svg) svg.removeEventListener("click", onSvgClick);
+    onSvgClick = null;
     zoomInBtn?.removeEventListener("click", onZoomIn);
     zoomOutBtn?.removeEventListener("click", onZoomOut);
     fitBtn?.removeEventListener("click", onFit);
