@@ -33,8 +33,14 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     // 编辑菜单：macOS WKWebView 必须有标准 Edit 菜单项，
     // 否则 Cmd+C / Cmd+V / Cmd+X / Cmd+A 不会路由到 webview
     let edit_submenu = Submenu::with_items(app, "编辑", true, &[
-        &PredefinedMenuItem::undo(app, None)?,
-        &PredefinedMenuItem::redo(app, None)?,
+        // 撤销/重做：不用 PredefinedMenuItem（其 Cmd+Z/Cmd+Shift+Z accelerator
+        // 会被 macOS 菜单系统拦截，触发 WKWebView 原生 undo:/redo: selector，
+        // 但 CodeMirror 用自己的 history field、原生 undo 栈为空，导致 Cmd+Z
+        // 被吃掉、CodeMirror 收不到按键）。改用自定义 MenuItem 且不设
+        // accelerator，让 Cmd+Z 直接落到 webview，由 CodeMirror 的
+        // historyKeymap 处理；菜单点击则经 menu-action 桥转发前端执行 undo/redo。
+        &MenuItem::with_id(app, "undo", "撤销", true, None::<&str>)?,
+        &MenuItem::with_id(app, "redo", "重做", true, None::<&str>)?,
         &PredefinedMenuItem::separator(app)?,
         &PredefinedMenuItem::cut(app, None)?,
         &PredefinedMenuItem::copy(app, None)?,

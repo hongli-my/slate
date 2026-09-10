@@ -5,7 +5,7 @@
 
 import { EditorView, ViewUpdate } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
-import { state, viewGroup, setActiveGroup, getTabByPath, getActiveTab, type Tab } from "./state";
+import { state, viewGroup, setActiveGroup, getTabByPath, getActiveTab, type Tab, type FileRef } from "./state";
 import { createEditorView, buildExtensions, clearOccurrences, scheduleOccurrenceHighlight } from "./cm";
 import { setupShortcuts } from "./keymap";
 import { loadRecents, doOpenFolder, doOpenFiles, saveCurrentFile, doNewFile, deleteCurrentFile, openScannedFile } from "./files";
@@ -16,7 +16,7 @@ import { formatSQL, formatJSON, minifyJSON, toggleEol, toggleTheme } from "./com
 import { setSearchQuery, SearchQuery } from "@codemirror/search";
 import { toggleSplitView, setupSplitDivider } from "./split";
 import { toggleMinimap } from "./minimap";
-import { saveRecovery, readTextFile, readCalendar } from "./io";
+import { saveRecovery, readTextFile, readCalendar, removeFile, confirmDialog } from "./io";
 import { showCalendar, calEventClick, calPrevMonth, calNextMonth, calGoToday, calSelectDate, calSwitchView, calJumpDate } from "./calendar";
 import { setupEditorContextMenu } from "./contextmenu";
 import { restoreSession } from "./session";
@@ -26,7 +26,7 @@ import { setupPasteImage } from "./paste-image";
 import { installReliableCopy } from "./copy";
 import { clipWebPage, clipScreenshot } from "./clip";
 import { toast, $, escapeHtml } from "./ui";
-import { setNoteFileProvider, buildLinkIndex, backlinksFor, type LinkEntry } from "./wikilink";
+import { setNoteFileProvider, buildLinkIndex, buildTagIndex, backlinksFor, type LinkEntry } from "./wikilink";
 import { createGraphView, type GraphView } from "./graph";
 import { createMindmapView, type MindmapView } from "./mindmap";
 import {
@@ -183,6 +183,7 @@ import * as _session from "./session";
 // linkIndex caches all [[source → target]] pairs across the vault. Rebuilt
 // asynchronously on vault load; updated incrementally when a file is saved.
 let linkIndex: LinkEntry[] = [];
+let tagIndex: Map<string, Set<string>> = new Map();
 let linkIndexTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Register the note-file provider (for [[ ]] autocomplete) and the preview
@@ -238,6 +239,7 @@ async function rebuildLinkIndex(): Promise<void> {
         } catch { /* skip unreadable */ }
       }
       linkIndex = buildLinkIndex(files);
+      tagIndex = buildTagIndex(files);
       refreshBacklinks();
       resolve();
     }, 500);
@@ -337,6 +339,7 @@ function setupGraphAndMindmap(): void {
   if (graphContainer) {
     graphView = createGraphView(graphContainer, {
       onNodeClick: (id) => { void openWikilinkTarget(id); },
+      onNodeMenu: (id) => buildGraphMenu(id),
     });
   }
   const mmContainer = document.getElementById("view-mindmap");
@@ -373,7 +376,77 @@ function currentNoteName(): string | undefined {
 /** Render the knowledge graph (called by switchView when entering graph view). */
 function initGraph(): void {
   if (!graphView) return;
-  graphView.render(linkIndex, currentNoteName());
+  graphView.render(linkIndex, currentNoteName(), allNoteNames(), tagIndex);
+}
+
+/** All .md note basenames in the vault (used to render orphan graph nodes). */
+function allNoteNames(): string[] {
+  return state.scannedFiles
+    .filter((f) => /\.(md|markdown)$/i.test(f.name))
+    .map((f) => f.name);
+}
+
+/** Global-search → graph bridge: switch to graph view and highlight the
+ *  matching note nodes (others fade). Exposed as window.highlightGraph. */
+function highlightGraph(names: string[]): void {
+  const sw = (window as unknown as Record<string, unknown>).switchView;
+  if (typeof sw === "function") (sw as (n: string) => void)("graph");
+  const ids = new Set(names.map((n) => n.replace(/\.(md|markdown)$/i, "")));
+  graphView?.setHighlight(ids);
+}
+
+/** Build the right-click menu for a graph node id. */
+function buildGraphMenu(id: string): { label: string; danger?: boolean; run: () => void }[] {
+  const ref = state.scannedFiles.find((f) => {
+    const base = f.name.replace(/\.(md|markdown)$/i, "");
+    return base === id;
+  });
+  const items: { label: string; danger?: boolean; run: () => void }[] = [];
+  items.push({ label: "打开笔记", run: () => { void openWikilinkTarget(id); } });
+  items.push({
+    label: "复制笔记名",
+    run: () => { void navigator.clipboard.writeText(id); toast("已复制: " + id); },
+  });
+  items.push({ label: "查看反链", run: () => { void showBacklinksFor(id); } });
+  if (ref) {
+    items.push({ label: "删除笔记", danger: true, run: () => { void deleteGraphNote(ref); } });
+  }
+  return items;
+}
+
+/** Open a note then reveal its backlinks panel (from the graph context menu). */
+async function showBacklinksFor(id: string): Promise<void> {
+  const ref = state.scannedFiles.find((f) => {
+    const base = f.name.replace(/\.(md|markdown)$/i, "");
+    return base === id;
+  });
+  if (!ref) {
+    toast(`笔记不存在: ${id}`);
+    return;
+  }
+  await openScannedFile(ref);
+  const sw = (window as unknown as Record<string, unknown>).switchView;
+  if (typeof sw === "function") (sw as (n: string) => void)("editor");
+  const panel = document.getElementById("backlinksPanel");
+  if (panel && panel.hidden) panel.hidden = false;
+  refreshBacklinks();
+}
+
+/** Delete a note (with confirmation) from the graph context menu. */
+async function deleteGraphNote(ref: FileRef): Promise<void> {
+  const ok = await confirmDialog(`确定删除笔记 "${ref.name}"？此操作不可撤销。`, "删除笔记");
+  if (!ok) return;
+  try {
+    await removeFile(ref.absPath);
+  } catch (e) {
+    toast(`删除失败: ${(e as Error).message}`);
+    return;
+  }
+  state.scannedFiles = state.scannedFiles.filter((f) => f.absPath !== ref.absPath);
+  renderTree();
+  void rebuildLinkIndex();
+  initGraph();
+  toast(`已删除: ${ref.name}`);
 }
 
 /** Render the mindmap from the current document (called by switchView). */
@@ -542,6 +615,7 @@ export function exposeGlobals(): void {
   // Graph & mindmap: lazy-render hooks called by switchView.
   w.initGraph = initGraph;
   w.initMindmap = initMindmap;
+  w.highlightGraph = highlightGraph;
   // AI 助手面板（覆盖 index.html 桩函数）。
   w.toggleAiPanel = toggleAiPanel;
   w.sendAiMessage = sendAiMessage;

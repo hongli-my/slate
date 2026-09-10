@@ -14,15 +14,28 @@ import type { LinkEntry } from "./wikilink";
 export interface GraphView {
   /** Rebuild graph data from `links` and (re)start the render loop.
    *  Pass `currentFile` (basename, with or without extension) to enable
-   *  direction filtering and local mode anchoring. */
-  render(links: LinkEntry[], currentFile?: string): void;
+   *  direction filtering and local mode anchoring. `allNotes` adds orphan
+   *  (link-less) notes; `tagIndex` colours nodes by their #tag. */
+  render(links: LinkEntry[], currentFile?: string, allNotes?: string[], tagIndex?: Map<string, Set<string>>): void;
+  /** Highlight a set of node ids (e.g. global-search matches); pass null to
+   *  clear. Non-highlighted nodes fade back. */
+  setHighlight(ids: Set<string> | null): void;
   /** Tear down: cancel rAF, detach listeners, disconnect ResizeObserver. */
   destroy(): void;
 }
 
+export interface GraphNodeMenuItem {
+  label: string;
+  danger?: boolean;
+  run: () => void;
+}
+
 export function createGraphView(
   container: HTMLElement,
-  opts?: { onNodeClick?: (nodeId: string) => void }
+  opts?: {
+    onNodeClick?: (nodeId: string) => void;
+    onNodeMenu?: (nodeId: string) => GraphNodeMenuItem[];
+  }
 ): GraphView {
   return new GraphViewImpl(container, opts || {});
 }
@@ -75,12 +88,25 @@ const CLICK_THRESH = 4;       // px movement under which a press is a "click"
 // Colour palette (dark canvas, see editor.css #view-graph bg #3a3a3a).
 const COL_BG = "#3a3a3a";
 const COL_NODE = "#8ab4f8";
+const COL_NODE_ISOLATED = "#5a5a5a";
 const COL_NODE_CURRENT = "#ffd166";
 const COL_NODE_PINNED = "#ffffff";
+const COL_NODE_HILITE = "#4ade80";   // search-highlight ring
 const COL_EDGE = "rgba(180,180,180,0.45)";
 const COL_EDGE_HILITE = "rgba(255,209,102,0.7)";
 const COL_LABEL = "#d8d8d8";
 const COL_LABEL_DIM = "rgba(216,216,216,0.55)";
+
+// Stable colour assignment for #tags (deterministic hash → palette slot).
+const TAG_PALETTE = [
+  "#4ade80", "#f87171", "#60a5fa", "#fbbf24", "#c084fc", "#34d399",
+  "#fb923c", "#e879f9", "#22d3ee", "#a3e635", "#f472b6", "#94a3b8",
+];
+function tagColor(tag: string): string {
+  let h = 0;
+  for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) | 0;
+  return TAG_PALETTE[Math.abs(h) % TAG_PALETTE.length];
+}
 
 class GraphViewImpl implements GraphView {
   private container: HTMLElement;
@@ -90,6 +116,7 @@ class GraphViewImpl implements GraphView {
   private dirSelect: HTMLSelectElement;
   private refreshBtn: HTMLElement;
   private onNodeClick?: (nodeId: string) => void;
+  private onNodeMenu?: (nodeId: string) => GraphNodeMenuItem[];
 
   // Graph data (full, unfiltered).
   private allNodes: GNode[] = [];
@@ -101,11 +128,21 @@ class GraphViewImpl implements GraphView {
   // Last inputs (so toolbar actions can re-render).
   private lastLinks: LinkEntry[] = [];
   private lastCurrent?: string;
+  private lastAllNotes: string[] | undefined;
 
   // View state.
   private mode: Mode = "full";
   private dir: DirFilter = "all";
   private curId?: string;
+
+  // Orphan nodes + degree counts (for grey orphan rendering + hover card).
+  private isolatedIds = new Set<string>();
+  private outDeg = new Map<string, number>();
+  private inDeg = new Map<string, number>();
+  private tooltip: HTMLElement | null = null;
+  private menu: HTMLElement | null = null;
+  private highlight: Set<string> | null = null;
+  private tagIndex: Map<string, Set<string>> = new Map();
 
   // Camera (world point under canvas centre + zoom).
   private view = { x: 0, y: 0, scale: 1 };
@@ -134,9 +171,10 @@ class GraphViewImpl implements GraphView {
   private ro: ResizeObserver | null = null;
   private destroyed = false;
 
-  constructor(container: HTMLElement, opts: { onNodeClick?: (nodeId: string) => void }) {
+  constructor(container: HTMLElement, opts: { onNodeClick?: (nodeId: string) => void; onNodeMenu?: (nodeId: string) => GraphNodeMenuItem[] }) {
     this.container = container;
     this.onNodeClick = opts.onNodeClick;
+    this.onNodeMenu = opts.onNodeMenu;
 
     const canvas = container.querySelector<HTMLCanvasElement>("#graphCanvas");
     const empty = container.querySelector<HTMLElement>("#graphEmpty");
@@ -157,6 +195,18 @@ class GraphViewImpl implements GraphView {
     this.bindToolbar();
     this.bindCanvas();
     this.bindResize();
+
+    const tip = document.createElement("div");
+    tip.className = "graph-tooltip";
+    tip.hidden = true;
+    container.appendChild(tip);
+    this.tooltip = tip;
+
+    const menu = document.createElement("div");
+    menu.className = "graph-menu";
+    menu.hidden = true;
+    container.appendChild(menu);
+    this.menu = menu;
   }
 
   // ---- Event wiring ----
@@ -169,7 +219,7 @@ class GraphViewImpl implements GraphView {
       if (!m || m === this.mode) return;
       this.mode = m;
       modeBtns.forEach((b) => b.classList.toggle("active", b === btn));
-      this.render(this.lastLinks, this.lastCurrent);
+      this.render(this.lastLinks, this.lastCurrent, this.lastAllNotes);
     };
     modeBtns.forEach((b) => {
       b.addEventListener("click", onMode);
@@ -178,14 +228,14 @@ class GraphViewImpl implements GraphView {
 
     const onDir = () => {
       this.dir = this.dirSelect.value as DirFilter;
-      this.render(this.lastLinks, this.lastCurrent);
+      this.render(this.lastLinks, this.lastCurrent, this.lastAllNotes);
     };
     this.dirSelect.addEventListener("change", onDir);
     this.cleanups.push(() => this.dirSelect.removeEventListener("change", onDir));
 
     const onRefresh = () => {
       // Re-render from cached inputs; reheats the simulation for a fresh layout.
-      this.render(this.lastLinks, this.lastCurrent);
+      this.render(this.lastLinks, this.lastCurrent, this.lastAllNotes);
     };
     this.refreshBtn.addEventListener("click", onRefresh);
     this.cleanups.push(() => this.refreshBtn.removeEventListener("click", onRefresh));
@@ -198,19 +248,22 @@ class GraphViewImpl implements GraphView {
     const onUp = (e: MouseEvent) => this.onPointerUp(e);
     const onWheel = (e: WheelEvent) => this.onWheel(e);
     const onDbl = (e: MouseEvent) => this.onDblClick(e);
+    const onCtx = (e: MouseEvent) => this.onContextMenu(e);
 
     c.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     c.addEventListener("wheel", onWheel, { passive: false });
     c.addEventListener("dblclick", onDbl);
+    c.addEventListener("contextmenu", onCtx);
 
     this.cleanups.push(
       () => c.removeEventListener("mousedown", onDown),
       () => window.removeEventListener("mousemove", onMove),
       () => window.removeEventListener("mouseup", onUp),
       () => c.removeEventListener("wheel", onWheel),
-      () => c.removeEventListener("dblclick", onDbl)
+      () => c.removeEventListener("dblclick", onDbl),
+      () => c.removeEventListener("contextmenu", onCtx)
     );
   }
 
@@ -261,10 +314,12 @@ class GraphViewImpl implements GraphView {
 
   // ---- Render entry (rebuild + restart) ----
 
-  render(links: LinkEntry[], currentFile?: string): void {
+  render(links: LinkEntry[], currentFile?: string, allNotes?: string[], tagIndex?: Map<string, Set<string>>): void {
     if (this.destroyed) return;
     this.lastLinks = links || [];
     this.lastCurrent = currentFile;
+    this.lastAllNotes = allNotes;
+    this.tagIndex = tagIndex || new Map();
     this.curId = currentFile ? nodeIdOf(currentFile) : undefined;
     this.dir = (this.dirSelect.value as DirFilter) || "all";
 
@@ -272,6 +327,16 @@ class GraphViewImpl implements GraphView {
     const ids = new Set<string>();
     const edges: GEdge[] = [];
     const edgeSet = new Set<string>();
+
+    // Include every note (even link-less ones) so orphan notes appear as
+    // grey nodes — makes "full vault" mode show the whole folder.
+    if (allNotes) {
+      for (const name of allNotes) {
+        const id = nodeIdOf(name);
+        if (id) ids.add(id);
+      }
+    }
+
     for (const l of this.lastLinks) {
       const from = nodeIdOf(l.source);
       const to = l.target; // already extension-less
@@ -282,6 +347,21 @@ class GraphViewImpl implements GraphView {
       edgeSet.add(from + "\u0000" + to);
     }
     this.edgeSet = edgeSet;
+
+    // Degree counts + orphan set (for grey rendering + hover card).
+    const outDeg = new Map<string, number>();
+    const inDeg = new Map<string, number>();
+    for (const e of edges) {
+      outDeg.set(e.from, (outDeg.get(e.from) || 0) + 1);
+      inDeg.set(e.to, (inDeg.get(e.to) || 0) + 1);
+    }
+    this.outDeg = outDeg;
+    this.inDeg = inDeg;
+    const isolated = new Set<string>();
+    for (const id of ids) {
+      if ((outDeg.get(id) || 0) === 0 && (inDeg.get(id) || 0) === 0) isolated.add(id);
+    }
+    this.isolatedIds = isolated;
 
     // Reuse cached positions across renders (smooth filter/mode switches);
     // new nodes spawn near the centre with a little jitter.
@@ -375,12 +455,18 @@ class GraphViewImpl implements GraphView {
 
     this.visibleEdges = visEdges;
 
-    // Nodes: show those incident to a visible edge, plus the current node.
+    // Nodes: show those incident to a visible edge, plus the current node,
+    // plus orphan nodes (no edges) in full mode so the whole vault renders.
     const vis = new Set<string>();
     if (cur && nodeIds.has(cur)) vis.add(cur);
     for (const e of visEdges) {
       vis.add(e.from);
       vis.add(e.to);
+    }
+    if (this.mode === "full") {
+      for (const id of this.isolatedIds) {
+        if (nodeIds.has(id)) vis.add(id);
+      }
     }
     this.visibleNodes = vis;
 
@@ -575,10 +661,35 @@ class GraphViewImpl implements GraphView {
       if (!this.visibleNodes.has(n.id)) continue;
       const isCur = n.id === this.curId;
       const isPinned = n.fx !== null;
-      ctx.fillStyle = isPinned ? COL_NODE_PINNED : isCur ? COL_NODE_CURRENT : COL_NODE;
+      const isIsolated = this.isolatedIds.has(n.id);
+      const tags = this.tagIndex.get(n.id);
+      const tag = tags && tags.size ? (tags.values().next().value as string) : null;
+      // Search-highlight: fade non-matches (current node stays vivid).
+      if (this.highlight && !this.highlight.has(n.id) && !isCur) {
+        ctx.globalAlpha = 0.18;
+      }
+      ctx.fillStyle = isPinned
+        ? COL_NODE_PINNED
+        : isCur
+          ? COL_NODE_CURRENT
+          : tag
+            ? tagColor(tag)
+            : isIsolated
+              ? COL_NODE_ISOLATED
+              : COL_NODE;
       ctx.beginPath();
       ctx.arc(n.x, n.y, NODE_R / this.view.scale, 0, Math.PI * 2);
       ctx.fill();
+      // Highlight ring on matched nodes.
+      if (this.highlight && this.highlight.has(n.id)) {
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = COL_NODE_HILITE;
+        ctx.lineWidth = 2 / this.view.scale;
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, (NODE_R + 4) / this.view.scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
 
     // Labels (constant size, in screen space).
@@ -624,6 +735,7 @@ class GraphViewImpl implements GraphView {
   }
 
   private onPointerDown(e: MouseEvent): void {
+    this.hideMenu();
     if (this.visibleNodes.size === 0) return;
     const node = this.pickNode(e.clientX, e.clientY);
     this.downX = e.clientX;
@@ -674,6 +786,78 @@ class GraphViewImpl implements GraphView {
       this.lastPy = e.clientY;
       this.requestRedraw();
     }
+
+    // Hover tooltip (only when idle).
+    if (!this.dragging && !this.panning) {
+      this.updateHover(e.clientX, e.clientY);
+    } else if (this.tooltip) {
+      this.tooltip.hidden = true;
+    }
+  }
+
+  private updateHover(clientX: number, clientY: number): void {
+    const tip = this.tooltip;
+    if (!tip) return;
+    const node = this.visibleNodes.size > 0 ? this.pickNode(clientX, clientY) : null;
+    if (!node) {
+      tip.hidden = true;
+      return;
+    }
+    const out = this.outDeg.get(node.id) || 0;
+    const inn = this.inDeg.get(node.id) || 0;
+    tip.textContent = `${node.id}  ·  出链 ${out} / 入链 ${inn}`;
+    const rect = this.container.getBoundingClientRect();
+    const x = Math.max(0, Math.min(clientX - rect.left + 16, rect.width - 200));
+    const y = Math.max(0, Math.min(clientY - rect.top + 16, rect.height - 40));
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
+    tip.hidden = false;
+  }
+
+  /** Highlight a set of node ids (e.g. search matches); null clears. */
+  setHighlight(ids: Set<string> | null): void {
+    this.highlight = ids && ids.size ? ids : null;
+    this.requestRedraw();
+  }
+
+  private onContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+    const node = this.pickNode(e.clientX, e.clientY);
+    if (!node || !this.onNodeMenu) {
+      this.hideMenu();
+      return;
+    }
+    const items = this.onNodeMenu(node.id);
+    if (!items.length) {
+      this.hideMenu();
+      return;
+    }
+    const menu = this.menu;
+    if (!menu) return;
+    menu.innerHTML = items
+      .map((it, i) => {
+        const cls = it.danger ? "graph-menu-item danger" : "graph-menu-item";
+        return `<div class="${cls}" data-i="${i}"></div>`;
+      })
+      .join("");
+    menu.querySelectorAll<HTMLElement>(".graph-menu-item").forEach((el) => {
+      const it = items[Number(el.dataset.i)];
+      el.textContent = it.label;
+      el.addEventListener("click", () => {
+        this.hideMenu();
+        it.run();
+      });
+    });
+    const rect = this.container.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width - 180));
+    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height - 40));
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    menu.hidden = false;
+  }
+
+  private hideMenu(): void {
+    if (this.menu) this.menu.hidden = true;
   }
 
   private onPointerUp(e: MouseEvent): void {
@@ -748,5 +932,13 @@ class GraphViewImpl implements GraphView {
     this.nodeById.clear();
     this.visibleNodes.clear();
     this.visibleEdges = [];
+    if (this.tooltip) {
+      this.tooltip.remove();
+      this.tooltip = null;
+    }
+    if (this.menu) {
+      this.menu.remove();
+      this.menu = null;
+    }
   }
 }

@@ -52,6 +52,37 @@ export function buildLinkIndex(files: { path: string; content: string }[]): Link
   return index;
 }
 
+/** Extract #tags from markdown text. Skips markdown headings (`# 标题`,
+ *  `##`), and URL fragments (`url#anchor`) by requiring a word/CJK char right
+ *  after `#`. A tag then continues with word chars, CJK, `-`, `/` or `.`.
+ *  Fenced code blocks are stripped first so `#` inside code isn't a tag. */
+const TAG_RE = /(?:^|[\s>])#([\w\u4e00-\u9fa5][\w\u4e00-\u9fa5\-/.]*)/g;
+
+export function extractTags(text: string): string[] {
+  const stripped = text.replace(/```[\s\S]*?```/g, "");
+  const out = new Set<string>();
+  let m: RegExpExecArray | null;
+  TAG_RE.lastIndex = 0;
+  while ((m = TAG_RE.exec(stripped)) !== null) {
+    out.add(m[1]);
+  }
+  return Array.from(out);
+}
+
+/** Build a whole-vault tag index: note name (basename sans extension) →
+ *  set of tags found in that note. Only .md / .markdown files are scanned. */
+export function buildTagIndex(files: { path: string; content: string }[]): Map<string, Set<string>> {
+  const index = new Map<string, Set<string>>();
+  for (const f of files) {
+    if (!MD_EXT_RE.test(f.path)) continue;
+    const base = f.path.split("/").pop() || f.path;
+    const key = base.replace(MD_EXT_RE, "");
+    const tags = extractTags(f.content);
+    if (tags.length) index.set(key, new Set(tags));
+  }
+  return index;
+}
+
 /** Find all backlinks pointing at `title`.
  *  A link entry matches if its target equals `title` verbatim OR equals
  *  `title` with a .md/.markdown extension stripped. So both "note2" and

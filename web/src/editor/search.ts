@@ -87,6 +87,19 @@ async function runGlobalSearch(term: string): Promise<void> {
     '<div class="fp-search-count">找到 ' + hits.length + (truncated ? "+ 个结果（仅显示前 " + MAX + "）" : " 个结果") + "</div>";
   // Append rows via a DocumentFragment to avoid a layout pass per row.
   const frag = document.createDocumentFragment();
+  // Graph-view bridge: highlight matching notes in the knowledge graph.
+  const hitNames = Array.from(new Set(hits.map((r) => (r.path.split("/").pop() || r.path).replace(/\.(md|markdown)$/i, ""))));
+  const graphBtn = document.createElement("div");
+  graphBtn.className = "fp-graph-btn";
+  graphBtn.textContent = "📍 图谱查看";
+  graphBtn.onclick = () => {
+    const hl = (window as unknown as Record<string, unknown>).highlightGraph;
+    if (typeof hl === "function") {
+      closeSearchAllPanel();
+      (hl as (n: string[]) => void)(hitNames);
+    }
+  };
+  frag.appendChild(graphBtn);
   for (const r of hits) {
     const row = document.createElement("div");
     row.className = "fp-item";
