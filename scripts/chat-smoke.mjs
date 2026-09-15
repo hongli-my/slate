@@ -402,6 +402,121 @@ check("msgText: blocks join text", VM.msgText([...think("r"), ...text("a"), ...t
 check("msgText: object JSON stringify", VM.msgText({ k: 1 }) === '{"k":1}');
 check("msgText: null safe", VM.msgText(null) === "" && VM.msgText(undefined) === "");
 
+// ============================================================
+// 7)【端到端】SSE 事件序列 → handleStreamEvent → msgs 形态（chat.js 集成）
+// 模拟真实一轮：thinking → toolcall_end → message_end → tool_execution
+// start/update/end → 新 partial → text_delta → message_end → agent_settled
+// → onStreamComplete。断言 msgs 始终保持 pi 原生形态、与 DB reFetch 等价。
+// ============================================================
+let chatLoaded = false;
+try {
+  globalThis.document.getElementById = () => null;
+  globalThis.addEventListener = () => {}; // chat.js 顶层可能有 window 监听
+  await import(pathToFileURL(resolve(base, "api.js")).href);
+  await import(pathToFileURL(resolve(base, "chat.js")).href);
+  chatLoaded = !!H().handleStreamEvent;
+} catch (e) {
+  console.error("chat.js load failed (e2e sequence skipped):", e.message);
+}
+if (chatLoaded) {
+  console.log("\n[7] end-to-end SSE event sequence (handleStreamEvent)");
+  const sid = "e2e-1";
+  // 焦点指向别的会话 → scheduleRender 焦点隔离直接 return（不触 DOM）
+  H().state.focusedSessionId = "somewhere-else";
+  H().state.sessionMessages[sid] = { messages: [{ role: "user", content: "跑", _localId: "U1", timestamp: 1 }], version: 1, isStale: false, loadedAt: Date.now() };
+  const stream = {
+    abortController: null, sessionId: sid, userInput: "跑", preStreamCount: 1, finished: false,
+    partial: null, text: "", reasoning: "", toolCalls: [], runningTools: {},
+    approval: null, approvalResolved: false, error: null, aborted: false,
+    _settledReceived: false, _errorReceived: false, _watchdogAborted: false, _retriedAfterBusy: false,
+  };
+  H().state.activeStreams[sid] = stream;
+  const ev = H().handleStreamEvent;
+  const msgs = () => H().state.sessionMessages[sid].messages;
+  const localId = (i) => msgs()[i]._localId;
+
+  // 1) thinking_delta
+  ev(stream, sid, { type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "思考A" } });
+  check("e2e: eager partial created (content:[])", msgs().length === 2 && Array.isArray(msgs()[1].content) && msgs()[1].content.length === 0);
+  const p1 = msgs()[1];
+  check("e2e: reasoning accumulated", stream.reasoning === "思考A" && stream.partial === p1);
+
+  // 2) toolcall_end（先于 tool_execution_start）
+  ev(stream, sid, { type: "message_update", assistantMessageEvent: { type: "toolcall_end", toolCall: { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } } } });
+  check("e2e: toolCall accumulated", stream.toolCalls.length === 1 && stream.toolCalls[0].id === "c1");
+
+  // 3) message_end：权威消息原地替换 partial
+  ev(stream, sid, { type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "思考A" }, { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } }], usage: { input: 9, output: 9, totalTokens: 18 }, timestamp: 5 } });
+  check("e2e: partial replaced in place", msgs().length === 2 && msgs()[1] !== p1 && msgs()[1].content.length === 2);
+  check("e2e: _localId grafted", msgs()[1]._localId === p1._localId);
+  check("e2e: accumulators reset for next message", stream.partial === null && stream.toolCalls.length === 0);
+
+  // 4) tool_execution_start / update / end
+  ev(stream, sid, { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: { cmd: "ls" } });
+  check("e2e: runningTools entry", stream.runningTools.c1 && stream.runningTools.c1.name === "bash");
+  ev(stream, sid, { type: "tool_execution_update", toolCallId: "c1", partialResult: { content: [{ type: "text", text: "file-a" }] } });
+  check("e2e: preview updated", stream.runningTools.c1.preview === "file-a");
+  ev(stream, sid, { type: "tool_execution_end", toolCallId: "c1", toolName: "bash", result: { content: [{ type: "text", text: "file-a\nfile-b" }] }, isError: false });
+  check("e2e: toolResult pushed as native msg", msgs().length === 3 && msgs()[2].role === "toolResult" && msgs()[2].toolCallId === "c1");
+  check("e2e: runningTools cleared", stream.runningTools.c1 === undefined);
+
+  // 5) 新 partial：text_delta → message_end
+  ev(stream, sid, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "最终" } });
+  ev(stream, sid, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "答案" } });
+  check("e2e: second partial created + text accumulated", stream.partial && stream.text === "最终答案");
+  ev(stream, sid, { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "最终答案" }], usage: { input: 10, output: 20, totalTokens: 30 }, timestamp: 9 } });
+
+  // 6) agent_settled → onStreamComplete
+  ev(stream, sid, { type: "agent_settled" });
+  check("e2e: settled flag", stream._settledReceived === true);
+  H().onStreamComplete(sid);
+  check("e2e: stream removed from activeStreams", H().state.activeStreams[sid] === undefined);
+
+  // 7) 最终形态 ⟺ DB reFetch 原生形态
+  const finalMsgs = msgs();
+  check("e2e: msgs = [user, assistant(tools), toolResult, assistant(final)]",
+    finalMsgs.length === 4 && finalMsgs[1].role === "assistant" && finalMsgs[2].role === "toolResult" && finalMsgs[3].role === "assistant");
+  const turnE2E = VM.buildTurns(finalMsgs)[0];
+  check("e2e: 2 steps (tool + final)", turnE2E.steps.length === 2 && turnE2E.steps[0].toolCalls.length === 1 && turnE2E.steps[1].assistant.content === "最终答案");
+  check("e2e: no live after completion", !turnE2E.live);
+  const dbTurn = VM.buildTurns([
+    { role: "user", content: "跑", _localId: "U1", timestamp: 1 },
+    { role: "assistant", content: [{ type: "thinking", thinking: "思考A" }, { type: "toolCall", id: "c1", name: "bash", arguments: { cmd: "ls" } }], usage: { input: 9, output: 9, totalTokens: 18 }, timestamp: 5 },
+    { role: "toolResult", toolCallId: "c1", content: [{ type: "text", text: "file-a\nfile-b" }], isError: false },
+    { role: "assistant", content: [{ type: "text", text: "最终答案" }], usage: { input: 10, output: 20, totalTokens: 30 }, timestamp: 9 },
+  ])[0];
+  eq("e2e: turnSig identical to DB native form", VM.turnSig(turnE2E), VM.turnSig(dbTurn));
+  check("e2e: turn key identical (user _localId)", turnE2E.key === dbTurn.key);
+
+  // 8) 错误中断物化：thinking + text 无 message_end → finalizeLiveStream
+  const sid2 = "e2e-2";
+  H().state.sessionMessages[sid2] = { messages: [{ role: "user", content: "q", _localId: "V1", timestamp: 1 }], version: 1, isStale: false, loadedAt: Date.now() };
+  const st2 = { partial: null, text: "", reasoning: "", toolCalls: [], runningTools: {}, finished: false };
+  H().state.activeStreams[sid2] = st2;
+  ev(st2, sid2, { type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "想" } });
+  ev(st2, sid2, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "半截" } });
+  H().finalizeLiveStream(sid2, { error: "network" });
+  const m2 = H().state.sessionMessages[sid2].messages;
+  eq("e2e: aborted materialized blocks", m2[1].content, [{ type: "thinking", thinking: "想" }, { type: "text", text: "半截" }]);
+  check("e2e: error marker", m2[1]._error === "network");
+
+  // 9) 流结束后的 in-flight 事件丢弃（finished guard）
+  const st3 = { partial: null, text: "x", reasoning: "", toolCalls: [], runningTools: {}, finished: true };
+  const before = JSON.stringify(st3);
+  ev(st3, "e2e-3", { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "LATE" } });
+  check("e2e: finished stream drops in-flight events", JSON.stringify(st3) === before);
+
+  // 清理 + 停 live timer
+  if (H()._stopLiveTimer) H()._stopLiveTimer();
+  delete H().state.sessionMessages[sid];
+  delete H().state.sessionMessages[sid2];
+  delete H().state.activeStreams[sid];
+  delete H().state.activeStreams[sid2];
+  H().state.focusedSessionId = null;
+} else {
+  console.log("\n[7] end-to-end sequence SKIPPED (chat.js failed to load)");
+}
+
 console.log("\n==== smoke summary: " + passed + " passed, " + failures + " failed ====");
 if (failures > 0) process.exit(1);
 process.exit(0);

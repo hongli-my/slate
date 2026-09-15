@@ -8148,6 +8148,7 @@ ${p2.text}
       return slashState;
     };
     window.Hermes.abortCurrentStream = abortCurrentStream;
+    window.Hermes.handleStreamEvent = handleStreamEvent;
     window.Hermes.renderCurrentChat = renderCurrentChat;
     window.Hermes.currentMsgs = currentMsgs;
     window.Hermes.updateChatUIState = updateChatUIState;

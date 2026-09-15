@@ -1161,6 +1161,7 @@ window.Hermes = window.Hermes || {};
   window.Hermes.slashSelect = slashSelect;
   window.Hermes.slashState = function() { return slashState; };
   window.Hermes.abortCurrentStream = abortCurrentStream;
+  window.Hermes.handleStreamEvent = handleStreamEvent;
   window.Hermes.renderCurrentChat = renderCurrentChat;
   window.Hermes.currentMsgs = currentMsgs;
   window.Hermes.updateChatUIState = updateChatUIState;
