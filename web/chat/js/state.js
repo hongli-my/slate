@@ -15,7 +15,6 @@ window.Hermes = window.Hermes || {};
 
   // ---- Configuration ----
   H.API_BASE = 'http://127.0.0.1:8643';
-  H.HERMES_API = 'http://127.0.0.1:8643';
 
   // ---- MessageCache 工厂 ----
   // sessionMessages[sid] 不再是裸数组，而是缓存对象
@@ -41,53 +40,6 @@ window.Hermes = window.Hermes || {};
     projects: [],               // [{ id, name, path, created_at, session_count }]
     currentProjectId: null,     // 当前选中项目 ID (null = 默认项目)
   };
-
-  // 兼容旧引用的 getter（只读）
-  Object.defineProperty(H.state, 'currentSessionId', {
-    get: function() { return this.focusedSessionId; },
-    set: function(v) { this.focusedSessionId = v; },
-    enumerable: true,
-  });
-  Object.defineProperty(H.state, 'activeSessionId', {
-    get: function() { return this.focusedSessionId; },
-    set: function(v) { this.focusedSessionId = v; },
-    enumerable: true,
-  });
-  Object.defineProperty(H.state, 'chatSessionId', {
-    get: function() { return this.focusedSessionId; },
-    set: function(v) { this.focusedSessionId = v; },
-    enumerable: true,
-  });
-  Object.defineProperty(H.state, 'chatMode', {
-    get: function() { return this.viewMode === 'chat'; },
-    set: function(v) { this.viewMode = v ? 'chat' : 'list'; },
-    enumerable: true,
-  });
-  // 兼容旧引用 state.messages (session view 的消息)
-  Object.defineProperty(H.state, 'messages', {
-    get: function() {
-      var sid = this.focusedSessionId;
-      if (!sid) return [];
-      var cache = this.sessionMessages[sid];
-      return cache ? cache.messages : [];
-    },
-    set: function(v) {
-      var sid = this.focusedSessionId;
-      if (sid) {
-        // 使用 setMsgs 语义：更新版本号、清除 isStale
-        var cache = this.sessionMessages[sid];
-        if (cache) {
-          cache.messages = v;
-          cache.version++;
-          cache.isStale = false;
-          cache.loadedAt = Date.now();
-        } else {
-          this.sessionMessages[sid] = createCache(v);
-        }
-      }
-    },
-    enumerable: true,
-  });
 
   // ---- DOM Helpers ----
   H.$ = function(sel) { return document.querySelector(sel); };

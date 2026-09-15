@@ -492,8 +492,18 @@ window.Hermes = window.Hermes || {};
     if (msgs.length === 0) { addSystemMessage('当前对话为空，无法导出'); return; }
     let md = `# Hermes 对话导出\n\n`;
     msgs.forEach(m => {
-      const role = m.role === 'user' ? '👤 用户' : '🤖 助手';
-      md += `### ${role}\n\n${m.content}\n\n---\n\n`;
+      if (m.role === 'user') {
+        md += `### 👤 用户\n\n${H.msgText(m.content)}\n\n---\n\n`;
+      } else if (m.role === 'assistant') {
+        // pi 原生 blocks：text/thinking/toolCall 经 extractAssistantParts 归一
+        const p = H.extractAssistantParts(m);
+        if (p.reasoning) md += `> 💭 思考\n> ${p.reasoning.replace(/\n/g, '\n> ')}\n\n`;
+        p.toolCalls.forEach(tc => { md += `**🔧 ${tc.name}**\n\n`; });
+        if (p.text) md += `### 🤖 助手\n\n${p.text}\n\n---\n\n`;
+      } else if (m.role === 'toolResult') {
+        const r = H.msgText(m.content);
+        md += `> 🔧 工具结果${m.isError ? '（出错）' : ''}: ${r.length > 500 ? r.slice(0, 500) + '…' : r}\n\n`;
+      }
     });
     const blob = new Blob([md], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);

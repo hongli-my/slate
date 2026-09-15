@@ -3907,7 +3907,6 @@ $$` : `${n}$$`;
     "use strict";
     var H4 = window.Hermes;
     H4.API_BASE = "http://127.0.0.1:8643";
-    H4.HERMES_API = "http://127.0.0.1:8643";
     function createCache(messages) {
       return {
         messages: messages || [],
@@ -3934,65 +3933,6 @@ $$` : `${n}$$`;
       currentProjectId: null
       // 当前选中项目 ID (null = 默认项目)
     };
-    Object.defineProperty(H4.state, "currentSessionId", {
-      get: function() {
-        return this.focusedSessionId;
-      },
-      set: function(v3) {
-        this.focusedSessionId = v3;
-      },
-      enumerable: true
-    });
-    Object.defineProperty(H4.state, "activeSessionId", {
-      get: function() {
-        return this.focusedSessionId;
-      },
-      set: function(v3) {
-        this.focusedSessionId = v3;
-      },
-      enumerable: true
-    });
-    Object.defineProperty(H4.state, "chatSessionId", {
-      get: function() {
-        return this.focusedSessionId;
-      },
-      set: function(v3) {
-        this.focusedSessionId = v3;
-      },
-      enumerable: true
-    });
-    Object.defineProperty(H4.state, "chatMode", {
-      get: function() {
-        return this.viewMode === "chat";
-      },
-      set: function(v3) {
-        this.viewMode = v3 ? "chat" : "list";
-      },
-      enumerable: true
-    });
-    Object.defineProperty(H4.state, "messages", {
-      get: function() {
-        var sid = this.focusedSessionId;
-        if (!sid) return [];
-        var cache = this.sessionMessages[sid];
-        return cache ? cache.messages : [];
-      },
-      set: function(v3) {
-        var sid = this.focusedSessionId;
-        if (sid) {
-          var cache = this.sessionMessages[sid];
-          if (cache) {
-            cache.messages = v3;
-            cache.version++;
-            cache.isStale = false;
-            cache.loadedAt = Date.now();
-          } else {
-            this.sessionMessages[sid] = createCache(v3);
-          }
-        }
-      },
-      enumerable: true
-    });
     H4.$ = function(sel) {
       return document.querySelector(sel);
     };
@@ -7619,14 +7559,38 @@ ${step.assistant.content}
 
 `;
       msgs.forEach((m3) => {
-        const role = m3.role === "user" ? "\u{1F464} \u7528\u6237" : "\u{1F916} \u52A9\u624B";
-        md += `### ${role}
+        if (m3.role === "user") {
+          md += `### \u{1F464} \u7528\u6237
 
-${m3.content}
+${H4.msgText(m3.content)}
 
 ---
 
 `;
+        } else if (m3.role === "assistant") {
+          const p2 = H4.extractAssistantParts(m3);
+          if (p2.reasoning) md += `> \u{1F4AD} \u601D\u8003
+> ${p2.reasoning.replace(/\n/g, "\n> ")}
+
+`;
+          p2.toolCalls.forEach((tc) => {
+            md += `**\u{1F527} ${tc.name}**
+
+`;
+          });
+          if (p2.text) md += `### \u{1F916} \u52A9\u624B
+
+${p2.text}
+
+---
+
+`;
+        } else if (m3.role === "toolResult") {
+          const r = H4.msgText(m3.content);
+          md += `> \u{1F527} \u5DE5\u5177\u7ED3\u679C${m3.isError ? "\uFF08\u51FA\u9519\uFF09" : ""}: ${r.length > 500 ? r.slice(0, 500) + "\u2026" : r}
+
+`;
+        }
       });
       const blob = new Blob([md], { type: "text/markdown" });
       const url = URL.createObjectURL(blob);
