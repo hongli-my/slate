@@ -62,17 +62,11 @@ window.Hermes = window.Hermes || {};
         _stopLiveTimer();
         return;
       }
-      // 只在有 running 步骤时重渲染
-      var msgs = getMsgs(sid);
-      if (!msgs) { _stopLiveTimer(); return; }
-      var hasRunning = false;
-      for (var i = msgs.length - 1; i >= 0; i--) {
-        var m = msgs[i];
-        if (m._streaming && m._toolSteps) {
-          if (m._toolSteps.some(function(ts) { return ts.running; })) { hasRunning = true; break; }
-        }
+      // 只在有 running 工具时重渲染（秒数跳动；renderer L3.5 只 patch 耗时徽标）
+      var stream = state.activeStreams[sid];
+      if (stream && stream.runningTools && Object.keys(stream.runningTools).length > 0) {
+        scheduleRender(sid, false);
       }
-      if (hasRunning) scheduleRender(sid, false);
     }, 1000);
   }
   function _stopLiveTimer() {
@@ -80,11 +74,6 @@ window.Hermes = window.Hermes || {};
   }
   window.Hermes._startLiveTimer = _startLiveTimer;
   window.Hermes._stopLiveTimer = _stopLiveTimer;
-
-  // 从 content blocks 提取纯文本（统一委托 view-model.msgText，消除双实现 D1）
-  function _extractText(content) {
-    return window.Hermes.msgText(content);
-  }
 
   /** 清除指定会话的 render timer（不触发渲染） */
   function _clearRenderTimer(sid) {
@@ -177,12 +166,10 @@ window.Hermes = window.Hermes || {};
   // 流结束/中止/错误的终态转换（原 finalizeStreamingTurn 已删除）
   //
   // 根治 R1：不再在流结束后 splice/拆分 msgs 数组，也不再 out-of-band 改 DOM。
-  // 终态转换完全由 renderer 承担：
-  //   1. 数据侧（session-manager onStreamComplete / abort / 错误路径）只置标记：
-  //      _streaming=false + 清 running + 清流式 md 缓存；
-  //   2. 残留消息由 view-model buildTurns 的 isStreamRemnant → decomposeStreaming
-  //      归一化为与 DB 持久化形态等价的 steps（工具卡片保留）；
-  //   3. renderCurrentChat → renderDiff 检测到 turn 从 live 变 static →
+  // 终态转换完全由 renderer 承担（形态统一）：
+  //   1. 数据侧（session-manager onStreamComplete / abort / 错误路径）经
+  //      finalizeLiveStream 把 live 累积器物化为 pi 原生 blocks 消息（或删除空 partial）；
+  //   2. renderCurrentChat → renderDiff 检测到 turn 从 live 变 static →
   //      render.js _applyStatic 整 turn 重渲为终态（走 renderMarkdown 净化兜底，B4）。
   // 效果：无数组结构突变、无 DOM 旁路写入、无“找不到对象”类的定位脆弱性。
   // ----------------------------------------------------------
@@ -637,6 +624,179 @@ window.Hermes = window.Hermes || {};
     }
   }
 
+  // ============================================================
+  // 流式事件处理（pi AgentSession SSE 事件 → live 累积器 / pi 原生消息）
+  // 正常事件顺序：message_update(delta…/toolcall_end) → message_end →
+  // tool_execution_start/update/end → （多轮工具则下一条消息重复）→ agent_settled。
+  // toolcall_end 与 tool_execution_start 到达顺序不保证 → 两侧均幂等。
+  // ============================================================
+
+  /** 确保当前进行中的 partial assistant 消息存在（每条 assistant 消息一个 partial） */
+  function _beginPartial(stream, sid) {
+    if (stream.partial) return stream.partial;
+    var m = { role: 'assistant', content: [], timestamp: Math.floor(Date.now() / 1000), _localId: window.Hermes.uid() };
+    var msgs = getMsgs(sid);
+    if (msgs) msgs.push(m);
+    stream.partial = m;
+    stream.text = '';
+    stream.reasoning = '';
+    stream.toolCalls = [];
+    return m;
+  }
+
+  /**
+   * message_end：用事件携带的权威 AssistantMessage（pi 原生 blocks）原地替换 partial。
+   * 嫁接 _localId 保持 turn key 稳定 → live→static 平滑 morph（不重建 DOM）。
+   */
+  function _finalizePartialWithMessage(stream, sid, message) {
+    var msgs = getMsgs(sid);
+    var partial = stream.partial;
+    if (msgs) {
+      if (partial) {
+        message._localId = partial._localId;
+        var idx = msgs.indexOf(partial);
+        if (idx >= 0) msgs[idx] = message;
+        else msgs.push(message);
+      } else {
+        message._localId = window.Hermes.uid();
+        msgs.push(message);
+      }
+    }
+    stream.partial = null;
+    stream.text = '';
+    stream.reasoning = '';
+    stream.toolCalls = [];
+  }
+
+  /** SSE 事件统一入口（onEvent 调用；流已结束/中止后的 in-flight 事件直接丢弃） */
+  function handleStreamEvent(stream, sid, evt) {
+    if (stream.finished) return;
+    const _t = evt.type;
+
+    if (_t === 'message_update') {
+      const _ae = evt.assistantMessageEvent;
+      if (!_ae) return;
+      if (_ae.type === 'text_delta') {
+        _beginPartial(stream, sid);
+        stream.text += (_ae.delta || '');
+        scheduleRender(sid, false);
+      } else if (_ae.type === 'thinking_delta') {
+        _beginPartial(stream, sid);
+        stream.reasoning += (_ae.delta || '');
+        scheduleRender(sid, false);
+      } else if (_ae.type === 'start') {
+        _beginPartial(stream, sid);
+      } else if (_ae.type === 'toolcall_end' && _ae.toolCall) {
+        // pi 原生 ToolCall block（tool_execution_start 可能尚未到达 → 幂等入表）
+        _beginPartial(stream, sid);
+        stream.toolCalls.push(_ae.toolCall);
+      }
+      return;
+    }
+
+    if (_t === 'message_end' && evt.message && evt.message.role === 'assistant') {
+      _finalizePartialWithMessage(stream, sid, evt.message);
+      scheduleRender(sid, false);
+      return;
+    }
+
+    if (_t === 'tool_execution_start') {
+      stream.runningTools[evt.toolCallId] = {
+        name: evt.toolName || 'unknown',
+        args: evt.args || null,
+        startTime: Date.now(),
+        preview: '',
+      };
+      _startLiveTimer();
+      scheduleRender(sid, false);
+      return;
+    }
+
+    if (_t === 'tool_execution_update') {
+      var rt = stream.runningTools[evt.toolCallId];
+      if (rt && evt.partialResult) {
+        var pv = window.Hermes.msgText(evt.partialResult.content);
+        if (pv) rt.preview = pv;
+        scheduleRender(sid, false);
+      }
+      return;
+    }
+
+    if (_t === 'tool_execution_end') {
+      delete stream.runningTools[evt.toolCallId];
+      // pi 原生 ToolResultMessage（与 DB / REST /messages 同构，reFetch 后无差异）
+      var msgs = getMsgs(sid);
+      if (msgs) {
+        msgs.push({
+          role: 'toolResult',
+          toolCallId: evt.toolCallId,
+          toolName: evt.toolName || 'unknown',
+          content: (evt.result && evt.result.content !== undefined) ? evt.result.content : (evt.result != null ? evt.result : []),
+          isError: !!evt.isError,
+          timestamp: Math.floor(Date.now() / 1000),
+          _localId: window.Hermes.uid(),
+        });
+      }
+      scheduleRender(sid, false);
+      return;
+    }
+
+    if (_t === 'extension_ui_request') {
+      stream.approval = evt;
+      stream.approvalResolved = false;
+      scheduleRender(sid, true);
+      return;
+    }
+
+    if (_t === 'error') {
+      // SSE error 事件视为终态：置错误态 + 标记终止 + 调度渲染，由读取循环
+      // 检测 _errorReceived 后 break 走 onStreamComplete 收尾（否则会空转到 60s 看门狗）。
+      stream.error = evt.error || 'unknown error';
+      stream._errorReceived = true;
+      scheduleRender(sid, false);
+      return;
+    }
+
+    if (_t === 'agent_settled') {
+      // 标记 agent 已正常完成。即便后续 chunked 流被异常截断
+      // （ERR_INCOMPLETE_CHUNKED_ENCODING / network error），内容也是完整的，
+      // catch 时走正常收尾而非误报“重连”
+      stream._settledReceived = true;
+      return;
+    }
+
+    // ---- 上下文压缩事件（自动压缩 threshold/overflow 经 SSE 透传）----
+    if (_t === 'compaction_start') {
+      var _cmsgs = getMsgs(sid);
+      if (_cmsgs) {
+        _cmsgs.push({ role: 'system', content: '✂️ 正在压缩上下文…（' + (evt.reason || '') + '）', _isCompaction: true, _compactionPending: true, _localId: window.Hermes.uid() });
+        scheduleRender(sid, true);
+      }
+      return;
+    }
+    if (_t === 'compaction_end') {
+      var _cmsgs2 = getMsgs(sid);
+      if (_cmsgs2) {
+        // 移除 compaction_start 插入的 pending 占位
+        for (var _j = _cmsgs2.length - 1; _j >= 0; _j--) {
+          if (_cmsgs2[_j]._compactionPending) { _cmsgs2.splice(_j, 1); break; }
+        }
+        _pushCompactionResult(_cmsgs2, evt.reason, evt.result, evt.aborted, evt.errorMessage);
+        scheduleRender(sid, true);
+      }
+      // 标记刚压缩过：阻止 backgroundReFetch 用后端精简版 messages 覆盖前端完整历史
+      // （压缩后 session.messages 被替换为 [system]+[summary]+[保留消息]，比前端少）
+      var _cache = window.Hermes.state.sessionMessages[sid];
+      if (_cache) _cache._compactedAt = Date.now();
+      // 压缩后 token 骤降，强制刷新用量条（绕过 5s 防抖）
+      if (window.Hermes.loadContextInfo) {
+        setTimeout(function() { window.Hermes.loadContextInfo(sid, true); }, 300);
+      }
+      return;
+    }
+    // agent_start / turn_* / agent_end 等无需特殊处理
+  }
+
   // ---- 发送消息 ----
   async function sendMessage() {
     const state = window.Hermes.state;
@@ -692,29 +852,27 @@ window.Hermes = window.Hermes || {};
     const preStreamCount = msgs ? msgs.length : 0;
     if (msgs) msgs.push(userMsg);
 
-    // 2. 创建 _streaming assistant 消息
-    const streamAssistantMsg = {
-      role: 'assistant',
-      content: '',
-      reasoning: '',
-      _streaming: true,
-      _toolSteps: [],
-      _toolCallCount: 0,
-      _stepNum: 0,
-      _localId: window.Hermes.uid(),
-    };
-    if (msgs) msgs.push(streamAssistantMsg);
-
-    // 3. 构建 streamState（key 直接用 sid，不再用临时 key）
-    const streamState = {
+    // 2. 创建 live 流状态（累积器 + 瞬态；不进消息主数据——msgs 只存 pi 原生形态）。
+    //    eager 创建 partial（空 blocks assistant 消息）：立即渲染“思考中”占位，
+    //    且首个事件丢失时后续内容仍能落 msgs。
+    const stream = {
       abortController,
-      assistantMsg: streamAssistantMsg,
-      finished: false,
       sessionId: sid,
       userInput: input,
       preStreamCount: preStreamCount,
+      finished: false,
+      // ---- live 累积器（当前进行中的 assistant 消息）----
+      partial: null,        // msgs 中的占位 assistant 消息（content:[]），message_end 时被权威消息原地替换
+      text: '', reasoning: '',  // text_delta / thinking_delta 累积
+      toolCalls: [],        // 当前 partial 的 ToolCall blocks（toolcall_end 事件）
+      runningTools: {},     // callId → { name, args, startTime, preview }（实时耗时/预览）
+      approval: null, approvalResolved: false,
+      error: null, aborted: false,
+      _settledReceived: false, _errorReceived: false,
+      _watchdogAborted: false, _retriedAfterBusy: false,
     };
-    state.activeStreams[sid] = streamState;
+    state.activeStreams[sid] = stream;
+    _beginPartial(stream, sid);
 
     // 4. 渲染新 turn（renderer 按稳定 key 尾部追加，等价旧 appendNewTurn 但走单一渲染路径）
     //    清流式 markdown 稳定段缓存，防 'sf'/'tm' 跨轮串内容
@@ -723,9 +881,6 @@ window.Hermes = window.Hermes || {};
     window.Hermes.updateStreamingHints();
     // 发送后直接钉到底（与旧 appendNewTurn 语义一致：用户刚发送，聚焦新 turn）
     if (dom.chatMessages) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
-
-    // 有 session_id 时，只发当前消息
-    const messagesToSend = [{ role: 'user', content: input }];
 
     try {
       const res = await fetch(window.Hermes.API_BASE + '/chat/stream', {
@@ -740,8 +895,8 @@ window.Hermes = window.Hermes || {};
         const errText = await res.text();
         // 409 busy：后端仍在跑上一轮（常见于刷新页面后前端丢失流状态）。
         // 自动中止后端那一轮并重发一次（此时新消息尚未被处理，重发不会产生重复 turn）。
-        if (res.status === 409 && !streamState._retriedAfterBusy) {
-          streamState._retriedAfterBusy = true;
+        if (res.status === 409 && !stream._retriedAfterBusy) {
+          stream._retriedAfterBusy = true;
           try {
             await fetch(window.Hermes.API_BASE + '/abort', {
               method: 'POST',
@@ -754,21 +909,19 @@ window.Hermes = window.Hermes || {};
           // 否则 H.sendMessage() 会再 push 一个 userMsg，与残留的旧 userMsg 重复。
           var _msgs = getMsgs(sid);
           if (_msgs) {
-            var _i = _msgs.indexOf(streamAssistantMsg);
-            if (_i >= 0) _msgs.splice(_i, 1);
+            if (stream.partial) { var _i = _msgs.indexOf(stream.partial); if (_i >= 0) _msgs.splice(_i, 1); }
             var _ui = _msgs.indexOf(userMsg);
             if (_ui >= 0) _msgs.splice(_ui, 1);
           }
           delete state.activeStreams[sid];
-          dom.chatInput.value = streamState.userInput;
+          dom.chatInput.value = stream.userInput;
           dom.chatInput.disabled = false;
           H.sendMessage();
           return;
         }
         const currentMsgs = getMsgs(sid);
         if (currentMsgs) {
-          const idx = currentMsgs.indexOf(streamAssistantMsg);
-          if (idx >= 0) currentMsgs.splice(idx, 1);
+          if (stream.partial) { const idx = currentMsgs.indexOf(stream.partial); if (idx >= 0) currentMsgs.splice(idx, 1); }
           currentMsgs.push({ role: 'system', content: 'API 错误: ' + errText, _isSystemDisplay: true, _localId: window.Hermes.uid() });
         }
         delete state.activeStreams[sid];
@@ -780,141 +933,13 @@ window.Hermes = window.Hermes || {};
         return;
       }
 
-      // 使用 eventsource-parser 解析 SSE 流
+      // 使用 eventsource-parser 解析 SSE 流（事件处理统一走 handleStreamEvent）
       const parser = EventSourceParser.createParser({
         onEvent(event) {
-          const eventType = event.event || '';
           const jsonStr = event.data;
           if (jsonStr === '[DONE]') return;
           try {
-            const evt = JSON.parse(jsonStr);
-            const _t = evt.type;
-            // P3: abort 后 in-flight 事件防御——不往已中止的消息继续写数据
-            if (streamAssistantMsg._aborted) return;
-            // ---- pi AgentSession 事件处理（透传协议）----
-            if (_t === 'tool_execution_start') {
-              streamAssistantMsg._stepNum++;
-              streamAssistantMsg._toolCallCount = (streamAssistantMsg._toolCallCount || 0) + 1;
-              streamAssistantMsg._toolSteps.push({
-                name: evt.toolName || 'unknown',
-                emoji: '⚡',
-                running: true,
-                toolCallId: evt.toolCallId || null,
-                args: evt.args || null,
-                startTime: Date.now(),
-              });
-              _startLiveTimer();
-              scheduleRender(sid, false);
-              return;
-            }
-            if (_t === 'tool_execution_update') {
-              var _step = (streamAssistantMsg._toolSteps || []).find(function(s) { return s.toolCallId === evt.toolCallId; });
-              if (_step && evt.partialResult) _step.result = _extractText(evt.partialResult.content);
-              scheduleRender(sid, false);
-              return;
-            }
-            if (_t === 'tool_execution_end') {
-              var _step2 = (streamAssistantMsg._toolSteps || []).find(function(s) { return s.toolCallId === evt.toolCallId; });
-              if (_step2) {
-                _step2.running = false;
-                _step2.endTime = Date.now();
-                if (evt.result) _step2.result = _extractText(evt.result.content);
-                if (evt.isError) _step2.error = true;
-              }
-              // H1: 不再向 msgs 数组 push toolResult —— 结果保留在 _toolSteps[].result，
-              // 渲染层从残留消息统一派生（decomposeStreaming），reFetch 后由 DB 提供真实
-              // toolResult。避免同一结果双源（双写）导致重复渲染/状态分裂。
-              scheduleRender(sid, false);
-              return;
-            }
-            if (_t === 'message_update') {
-              var _ae = evt.assistantMessageEvent;
-              if (!_ae) return;
-              if (_ae.type === 'text_delta') {
-                (streamAssistantMsg._toolSteps || []).forEach(function(s) { s.running = false; });
-                streamAssistantMsg.content += (_ae.delta || '');
-                scheduleRender(sid, false);
-              } else if (_ae.type === 'thinking_delta') {
-                streamAssistantMsg.reasoning += (_ae.delta || '');
-                scheduleRender(sid, false);
-              } else if (_ae.type === 'toolcall_end' && _ae.toolCall) {
-                // pi 原生 ToolCall block：同步到 _toolSteps（tool_execution_start 可能还未到达）
-                var _tc = _ae.toolCall;
-                var _tcId = _tc.toolCallId || _tc.id || null;
-                var _existing = _tcId ? (streamAssistantMsg._toolSteps || []).find(function(s) { return s.toolCallId === _tcId; }) : null;
-                if (!_existing) {
-                  _existing = { name: _tc.name || 'unknown', toolCallId: _tcId, args: _tc.input != null ? _tc.input : (_tc.arguments != null ? _tc.arguments : null), running: false, startTime: null };
-                  streamAssistantMsg._toolSteps.push(_existing);
-                  streamAssistantMsg._toolCallCount = (streamAssistantMsg._toolCallCount || 0) + 1;
-                } else {
-                  if (!_existing.name || _existing.name === 'unknown') _existing.name = _tc.name || _existing.name;
-                  if (!_existing.toolCallId && _tcId) _existing.toolCallId = _tcId;
-                  if (_existing.args == null && _tc.input != null) _existing.args = _tc.input;
-                }
-              }
-              return;
-            }
-            if (_t === 'message_end' && evt.message && evt.message.role === 'assistant') {
-              // pi 原生 AssistantMessage：content 是 blocks 数组，已通过 delta 累积到 streamAssistantMsg.content/reasoning
-              // 这里只取 usage，不覆盖 content（blocks ≠ string）
-              if (evt.message.usage) streamAssistantMsg._usage = evt.message.usage;
-              return;
-            }
-            if (_t === 'extension_ui_request') {
-              streamAssistantMsg._approval = evt;
-              scheduleRender(sid, true);
-              return;
-            }
-            if (_t === 'queue_update') {
-              streamAssistantMsg._queue = evt;
-              scheduleRender(sid, false);
-              return;
-            }
-            if (_t === 'error') {
-              // SSE error 事件视为终态：置错误态 + 标记终止 + 调度渲染，由读取循环
-              // 检测 _errorReceived 后 break 走 onStreamComplete 收尾（否则会空转到 60s 看门狗）。
-              streamAssistantMsg._error = evt.error || 'unknown error';
-              streamState._errorReceived = true;
-              scheduleRender(sid, false);
-              return;
-            }
-            if (_t === 'agent_settled') {
-              // 标记 agent 已正常完成。即便后续 chunked 流被异常截断
-              // （ERR_INCOMPLETE_CHUNKED_ENCODING / network error），内容也是完整的，
-              // catch 时走正常收尾而非误报"重连"
-              streamState._settledReceived = true;
-            }
-            // ---- 上下文压缩事件（自动压缩 threshold/overflow 经 SSE 透传）----
-            if (_t === 'compaction_start') {
-              var _cmsgs = getMsgs(sid);
-              if (_cmsgs) {
-                _cmsgs.push({ role: 'system', content: '✂️ 正在压缩上下文…（' + (evt.reason || '') + '）', _isCompaction: true, _compactionPending: true, _localId: window.Hermes.uid() });
-                scheduleRender(sid, true);
-              }
-              return;
-            }
-            if (_t === 'compaction_end') {
-              var _cmsgs2 = getMsgs(sid);
-              if (_cmsgs2) {
-                // 移除 compaction_start 插入的 pending 占位
-                for (var _j = _cmsgs2.length - 1; _j >= 0; _j--) {
-                  if (_cmsgs2[_j]._compactionPending) { _cmsgs2.splice(_j, 1); break; }
-                }
-                _pushCompactionResult(_cmsgs2, evt.reason, evt.result, evt.aborted, evt.errorMessage);
-                scheduleRender(sid, true);
-              }
-              // 标记刚压缩过：阻止 backgroundReFetch 用后端精简版 messages 覆盖前端完整历史
-              // （压缩后 session.messages 被替换为 [system]+[summary]+[保留消息]，比前端少）
-              var _cache = state.sessionMessages[sid];
-              if (_cache) _cache._compactedAt = Date.now();
-              // 压缩后 token 骤降，强制刷新用量条（绕过 5s 防抖）
-              if (window.Hermes.loadContextInfo) {
-                setTimeout(function() { window.Hermes.loadContextInfo(sid, true); }, 300);
-              }
-              return;
-            }
-            // agent_start / turn_* / agent_end 等无需特殊处理
-            // ---- 旧 Hermes/OpenAI 兼容逻辑已删除（新后端只发 pi 原生事件）----
+            handleStreamEvent(stream, sid, JSON.parse(jsonStr));
           } catch(e) {
             // S#4: SSE 解析错误不再静默吞掉，记录到 console 帮助排查
             if (window.console && console.warn) {
@@ -933,7 +958,7 @@ window.Hermes = window.Hermes || {};
       var _watchdog = setInterval(function() {
         if (Date.now() - lastByteAt > 60000) {
           console.warn('[sendMessage] no data for 60s, stream considered dead');
-          streamState._watchdogAborted = true;
+          stream._watchdogAborted = true;
           try { abortController.abort(); } catch {}
         }
       }, 10000);
@@ -952,14 +977,14 @@ window.Hermes = window.Hermes || {};
           for (let i = 0; i < text.length; i += SUB) {
             parser.feed(text.slice(i, i + SUB));
             // SSE error 事件已处理 → 中止剩余子块，直接走收尾
-            if (streamState._errorReceived) break;
+            if (stream._errorReceived) break;
             await new Promise(function(resolve) { setTimeout(resolve, 0); });
           }
         } else {
           parser.feed(text);
         }
         // error 事件视为终态：跳出读取循环，走与正常完成一致的收尾（onStreamComplete）
-        if (streamState._errorReceived) break;
+        if (stream._errorReceived) break;
       }
 
       // 流正常结束：清理看门狗，统一收尾
@@ -975,7 +1000,7 @@ window.Hermes = window.Hermes || {};
 
       // 看门狗判死：当作网络错误处理（保留部分内容 + 重连按钮）
       // 用户主动 abort（非看门狗）：abortStream 已处理，静默返回
-      var isWatchdog = !!streamState._watchdogAborted;
+      var isWatchdog = !!stream._watchdogAborted;
       console.error('[sendMessage] SSE catch:', e.name || 'Error', e.message || e, '| isWatchdog=', isWatchdog);
       if (e.name === 'AbortError' && !isWatchdog) {
         return;
@@ -985,7 +1010,7 @@ window.Hermes = window.Hermes || {};
       // 时，若 agent_settled 已到达，说明 agent 正常完成、内容完整，只是流终止符缺失。
       // 此时按正常完成处理（onStreamComplete 会 backgroundReFetch 拉取服务端最终消息覆盖），
       // 不再保留中断标记、不弹"重连"按钮，避免对用户造成误导性重连提示。
-      if (streamState._settledReceived) {
+      if (stream._settledReceived) {
         console.log('[sendMessage] network error after agent_settled, treat as complete:', e.message || e);
         try { window.Hermes.onStreamComplete(sid); } catch (ce) { console.warn('[sendMessage] onStreamComplete fallback failed', ce); }
         // 与正常完成路径对齐：解锁输入框 + 停止按钮归位，防止收尾异常导致 UI 卡在"响应中"
@@ -993,63 +1018,58 @@ window.Hermes = window.Hermes || {};
         return;
       }
 
-      // S#5: 网络错误（或看门狗判死）时保留已接收的部分内容，而非删除整个 streaming msg
-      const currentMsgs = getMsgs(sid);
-      if (currentMsgs) {
-        const idx = currentMsgs.indexOf(streamAssistantMsg);
-        if (idx >= 0) {
-          // 如果已有部分内容，保留并标记中断
-          if (streamAssistantMsg.content || streamAssistantMsg.reasoning) {
-            streamAssistantMsg._streaming = false;
-            streamAssistantMsg._aborted = true;
-            streamAssistantMsg._error = isWatchdog ? '响应超时（60s 无数据）' : e.message;
-          } else {
-            // 没有内容，直接删除
-            currentMsgs.splice(idx, 1);
-          }
+      // S#5: 网络错误（或看门狗判死）时保留已接收的部分内容，而非删除整个流式消息。
+      // 有内容 → finalizeLiveStream 物化为 pi 原生 blocks（附 _error/_aborted 标记）；
+      // 无内容 → 删除空 partial + 流状态。
+      const hasContent = !!(stream.text || stream.reasoning || (stream.toolCalls && stream.toolCalls.length));
+      if (hasContent) {
+        window.Hermes.finalizeLiveStream(sid, { error: isWatchdog ? '响应超时（60s 无数据）' : e.message });
+      } else {
+        const currentMsgs = getMsgs(sid);
+        if (currentMsgs && stream.partial) {
+          const idx = currentMsgs.indexOf(stream.partial);
+          if (idx >= 0) currentMsgs.splice(idx, 1);
         }
         delete state.activeStreams[sid];
-        if (state.focusedSessionId === sid && state.viewMode === 'chat') {
-          if (streamAssistantMsg.content || streamAssistantMsg.reasoning) {
-            // 残留消息 → renderer 静态终态渲染（B4：终态路径走 renderMarkdown 净化，
-            // 流式窗口期未净化的 HTML 不滞留）
-            if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
-            if (window.Hermes._stopLiveTimer) window.Hermes._stopLiveTimer();
-            renderCurrentChat();
-          } else {
-            var failMsg = isWatchdog
-              ? '响应超时：60 秒内未收到数据，连接可能已断开。'
-              : '连接失败: ' + e.message;
-            addSystemMessage(failMsg + '\n\n请确认 pi-bridge 已启动: cd piweb-bridge && ./start.sh');
-            renderCurrentChat();
-          }
-          updateChatUIState();
-          dom.chatInput.focus({ preventScroll: true });
+      }
+      if (state.focusedSessionId === sid && state.viewMode === 'chat') {
+        if (hasContent) {
+          // 残留消息 → renderer 静态终态渲染（B4：终态路径走 renderMarkdown 净化，
+          // 流式窗口期未净化的 HTML 不滞留）
+          if (window.Hermes.clearStreamingMdCache) window.Hermes.clearStreamingMdCache();
+          if (window.Hermes._stopLiveTimer) window.Hermes._stopLiveTimer();
+          renderCurrentChat();
+        } else {
+          var failMsg = isWatchdog
+            ? '响应超时：60 秒内未收到数据，连接可能已断开。'
+            : '连接失败: ' + e.message;
+          addSystemMessage(failMsg + '\n\n请确认 pi-bridge 已启动: cd piweb-bridge && ./start.sh');
+          renderCurrentChat();
         }
+        updateChatUIState();
+        dom.chatInput.focus({ preventScroll: true });
         // S#7: 显示重连按钮
-        if (state.focusedSessionId === sid && state.viewMode === 'chat') {
-          var reconBtn = document.createElement('button');
-          reconBtn.className = 'reconnect-btn';
-          reconBtn.textContent = isWatchdog ? '🔄 重连(响应超时)' : '🔄 重连(连接断开)';
-          reconBtn.onclick = function() {
-            reconBtn.remove();
-            // 移除上一轮失败残留的 _aborted assistant（保留了部分内容但已中断）。
-            // 否则 sendMessage 的新 preStreamCount 会把它算进 slice(0, offset)，
-            // backgroundReFetch 保留前缀 → 中断的半截回复永远卡在新回复上方不被替换。
-            // 注意：不动 user 消息（重发/已存在取决于流程，留给 sendMessage 处理）。
-            var _reconMsgs = getMsgs(sid);
-            if (_reconMsgs) {
-              for (var _r = _reconMsgs.length - 1; _r >= 0; _r--) {
-                var _rm = _reconMsgs[_r];
-                if (_rm && _rm.role === 'assistant' && _rm._aborted) _reconMsgs.splice(_r, 1);
-              }
+        var reconBtn = document.createElement('button');
+        reconBtn.className = 'reconnect-btn';
+        reconBtn.textContent = isWatchdog ? '🔄 重连(响应超时)' : '🔄 重连(连接断开)';
+        reconBtn.onclick = function() {
+          reconBtn.remove();
+          // 移除上一轮失败残留的 _aborted/_error assistant（保留了部分内容但已中断）。
+          // 否则 sendMessage 的新 preStreamCount 会把它算进 slice(0, offset)，
+          // backgroundReFetch 保留前缀 → 中断的半截回复永远卡在新回复上方不被替换。
+          // 注意：不动 user 消息（重发/已存在取决于流程，留给 sendMessage 处理）。
+          var _reconMsgs = getMsgs(sid);
+          if (_reconMsgs) {
+            for (var _r = _reconMsgs.length - 1; _r >= 0; _r--) {
+              var _rm = _reconMsgs[_r];
+              if (_rm && _rm.role === 'assistant' && (_rm._aborted || _rm._error)) _reconMsgs.splice(_r, 1);
             }
-            dom.chatInput.value = input;
-            H.sendMessage();
-          };
-          var inputArea = document.querySelector('.chat-input-area');
-          if (inputArea) inputArea.appendChild(reconBtn);
-        }
+          }
+          dom.chatInput.value = input;
+          H.sendMessage();
+        };
+        var inputArea = document.querySelector('.chat-input-area');
+        if (inputArea) inputArea.appendChild(reconBtn);
       }
       return;
     }
@@ -1061,7 +1081,7 @@ window.Hermes = window.Hermes || {};
     window.Hermes.debouncedLoadSessions();
     try { window.Hermes.renderQuickStats(); } catch(e) { console.warn('[sendMessage] 刷新统计失败', e); }
 
-    const effectiveSid = streamState.sessionId;
+    const effectiveSid = sid;
 
     // 如果当前正在看这个 session，补充 UI 更新
     if (state.focusedSessionId === effectiveSid && state.viewMode === 'chat') {
@@ -1092,15 +1112,12 @@ window.Hermes = window.Hermes || {};
       window.Hermes.toast('审批已提交: ' + choice);
       // 标记已处理，防止重复渲染
       const sid = window.Hermes.state.focusedSessionId;
-      if (sid) {
-        const msgs = window.Hermes.getMsgs(sid);
-        if (msgs) {
-          const streamingMsg = msgs.find(m => m._streaming && m._approval);
-          if (streamingMsg) {
-            streamingMsg._approvalResolved = true;
-            streamingMsg._approvalChoice = choice;
-            window.Hermes.renderCurrentChat();
-          }
+      if (sid && window.Hermes.getStream) {
+        const stream = window.Hermes.getStream(sid);
+        if (stream && stream.approval) {
+          stream.approvalResolved = true;
+          stream.approvalChoice = choice;
+          window.Hermes.renderCurrentChat();
         }
       }
     } catch(e) {

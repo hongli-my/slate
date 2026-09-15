@@ -1,11 +1,7 @@
 /* ============================================================
    Hermes WebUI - Renderer Module (keyed element-map reconciler)
 
-   对话渲染层重构 P2 核心交付。替代 chat.js 旧 renderCurrentChat 的手拼
-   结构签名 + out-of-band DOM 更新，替代 session.js renderMessages 的
-   innerHTML 全量重建（保留其对外签名）。
-
-   核心思想：
+   对话渲染层 keyed reconciler：
    - container.__rdx 保存本容器当前渲染快照：sid + Map<turnKey → 渲染状态>
    - 每帧只对比签名：未变 turn 零 DOM 操作；变化 turn 按需 L2（结构）或 L3（流式正文微 patch）
    - turn 身份 = buildTurns 的稳定 key（element-map，不依赖 morphdom keyed）
@@ -13,6 +9,11 @@
    - 结构性大改（切会话/删除/压缩/全量加载）→ renderFull 全量重建
    - 设计不变式：签名漏字段只导致过度重渲（损性能不损正确性）；等长内容替换等
      "漏渲"由结构性改写路径的强制 renderFull/签名比对封死。
+
+   流式判定（形态统一后）：turn.live（由 buildTurns 挂载，来自
+   state.activeStreams[sid] 的 live 累积器）替代旧 streaming step 标记。
+   渲染优先级：L2 结构变化（_liveStructSig）→ L3.5 running 工具耗时徽标 →
+   L3 流式正文/思考微 patch → 零操作。
 
    HTML 构建器仍由 session.js/markdown.js 提供（renderSingleTurnHTML /
    renderTurnStepsHTML / renderThinkingMargin / initCollapsible / scheduleIdleHighlight），
@@ -58,31 +59,47 @@ window.Hermes = window.Hermes || {};
     return tmp.firstElementChild;
   }
 
+  /** 取会话的活跃流状态（live 累积器）；无活跃流 / 已结束 → null */
+  function _getLive(sid) {
+    if (!sid || !H.state || !H.state.activeStreams) return null;
+    var s = H.state.activeStreams[sid];
+    return (s && !s.finished) ? s : null;
+  }
+
   // ------------------------------------------------------------
   // 流式结构签名：只反映"结构"，不含正文文本长度/内容。
-  // 语义 = 旧 chat.js _lastSig（tc/ts/hr/hc/ap/sa/ab/er/us/qu），
-  // 但由 renderer 统一维护，且只对含 streaming step 的 turn 使用。
-  // running 工具不计 result（partialResult 更新不触发结构重渲）；
-  // 非 running 工具计 result 长度（结果出现/替换属结构变化）。
+  // running 工具的 preview 以长度计入（partialResult 更新触发 L2 展示）；
+  // 非 running 工具计 result 存在性（结果出现/替换属结构变化）。
+  // P: 前缀标记 partial step（message_end 物化时 P:A→A 翻转强制 L2）。
   // ------------------------------------------------------------
-  function _streamStructSig(sm) {
-    var _ts = sm._toolSteps || [];
-    var _toolSig = _ts.map(function(s) {
-      var base = (s.running ? 'r' : (s.result !== undefined ? 'd' : 'p')) + '|' + (s.toolCallId || '') + '|' + (s.name || '');
-      return s.running ? base : (base + '|' + (s.result != null ? String(s.result).length : 0));
-    }).join(',');
-    return [
-      'tc=' + _ts.length,
-      'ts=' + _toolSig,
-      'hr=' + !!(sm.reasoning && sm.reasoning.trim()),
-      'hc=' + !!(sm.content && sm.content.trim()),
-      'ap=' + !!(sm._approval && !sm._approvalResolved),
-      'sa=' + (sm._subagents ? sm._subagents.length : 0),
-      'ab=' + !!sm._aborted,
-      'er=' + !!sm._error,
-      'us=' + !!(sm._usage && (sm._usage.total_tokens || sm._usage.prompt_tokens)),
-      'qu=' + !!(sm._queue)
-    ].join(';');
+  function _liveStructSig(turn) {
+    var live = turn.live || {};
+    var parts = [];
+    var steps = turn.steps || [];
+    for (var i = 0; i < steps.length; i++) {
+      var s = steps[i];
+      if (s.system) { parts.push('sy:' + (s.system._compactionHtml ? 'h' : '-') + ':' + (s.system._isCompaction ? 'c' : '-')); continue; }
+      if (s.orphan) { parts.push('or'); continue; }
+      var tcs = s.toolCalls || [];
+      var txt = s.assistant ? (s.assistant.content || '') : '';
+      var thk = s.assistant ? (s.assistant.reasoning || '') : '';
+      parts.push((s.partial ? 'P:' : 'A:') + tcs.length + '/' + (thk.trim() ? 1 : 0) + '/' + (txt.trim() ? 1 : 0));
+      var trs = s.toolResults || [];
+      for (var j = 0; j < tcs.length; j++) {
+        var tc = tcs[j];
+        var cid = tc.id || tc.toolCallId || tc.call_id || '';
+        var rt = live.runningTools ? live.runningTools[cid] : null;
+        var hasRes = false;
+        for (var k = 0; k < trs.length; k++) {
+          if ((trs[k].toolCallId || trs[k].tool_call_id) === cid) { hasRes = true; break; }
+        }
+        parts.push(cid + '|' + (tc.name || '') + '|' + (rt ? 'r' + (rt.preview ? rt.preview.length : 0) : (hasRes ? 'd' : 'p')));
+      }
+    }
+    parts.push('ap=' + !!(live.approval && !live.approvalResolved));
+    parts.push('ab=' + !!live.aborted);
+    parts.push('er=' + !!live.error);
+    return parts.join(';');
   }
 
   // ------------------------------------------------------------
@@ -90,23 +107,25 @@ window.Hermes = window.Hermes || {};
   // （长回复从 O(n) 降到 O(活跃块)；保留 DOM identity 消除重排闪烁）
   // 返回是否有文本内容变化。
   // ------------------------------------------------------------
-  function _l3Patch(turnEl, sm, lastContent, lastReasoning) {
+  function _l3Patch(turnEl, turn, lastContent, lastReasoning) {
+    var live = turn.live;
+    if (!live) return false;
     var changed = false;
-    var curContent = sm.content != null ? sm.content : '';
-    var curReasoning = sm.reasoning != null ? sm.reasoning : '';
+    var curContent = live.text || '';
+    var curReasoning = live.reasoning || '';
 
-    // 正文（.step-final .step-answer 内的 md-stable/md-active）
-    if (lastContent !== curContent && sm.content != null) {
-      var _finalBody = turnEl.querySelector('.step-final .step-answer');
+    // 正文（.step-final.streaming-content .step-answer 内的 md-stable/md-active）
+    if (lastContent !== curContent && live.text) {
+      var _finalBody = turnEl.querySelector('.step-final.streaming-content .step-answer');
       if (_finalBody) {
-        var _sfSplit = H.renderStreamingMarkdownSplit(sm.content, 'sf');
+        var _sfSplit = H.renderStreamingMarkdownSplit(live.text, 'sf');
         var _stableEl = _finalBody.querySelector('.md-stable');
         var _activeEl = _finalBody.querySelector('.md-active');
         if (_activeEl) {
           if (_sfSplit.stableChanged && _stableEl) _morph(_stableEl, _sfSplit.stableHtml);
           _morph(_activeEl, _sfSplit.activeHtml);
         } else {
-          // 兼容旧 DOM（未拆分容器，如 finalize 后残留）
+          // 兼容旧 DOM（未拆分容器）
           _morph(_finalBody, _sfSplit.fullHtml);
         }
         changed = true;
@@ -114,12 +133,12 @@ window.Hermes = window.Hermes || {};
     }
 
     // 思考气泡（.turn-margin 内 .tm-active .tm-body）
-    if (lastReasoning !== curReasoning && sm.reasoning) {
+    if (lastReasoning !== curReasoning && live.reasoning) {
       var _tmBody = turnEl.querySelector('.tm-active .tm-body');
       if (_tmBody) {
         var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
         var _tmStick = _tmOff < 24;
-        _morph(_tmBody, H.renderStreamingMarkdown(sm.reasoning.trim(), 'tm'));
+        _morph(_tmBody, H.renderStreamingMarkdown(live.reasoning.trim(), 'tm'));
         _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
         changed = true;
       }
@@ -129,13 +148,13 @@ window.Hermes = window.Hermes || {};
 
   // ------------------------------------------------------------
   // L3.5：结构未变但有 running 工具 → 只刷新实时耗时徽标，跳过 L2 全量 morphdom。
-  // live timer 每秒触发一次：旧实现 running 即 L2（重建整个 .turn-steps + morphdom），
-  // 仅为让 "3.2s→4.2s" 耗时跳动。此处直接改 .ow-tl-dur-live 的 textContent，零结构重建。
+  // live timer 每秒触发一次：直接改 .ow-tl-dur-live 的 textContent，零结构重建。
   // ------------------------------------------------------------
-  function _l35PatchDurations(turnEl, sm) {
+  function _l35PatchDurations(turnEl, turn) {
+    var live = turn.live;
+    if (!live || !live.runningTools) return;
     var fmtDur = H.fmtTimelineDur;
     if (!fmtDur) return;
-    var steps = sm._toolSteps || [];
     var liveEls = turnEl.querySelectorAll('.ow-tl-dur-live');
     if (liveEls.length === 0) return;
     var now = Date.now();
@@ -143,20 +162,17 @@ window.Hermes = window.Hermes || {};
       // 徽标所在的 .ow-tl-item / .ow-ep 均带 data-call-id（renderToolCard 输出）
       var item = el.closest('[data-call-id]');
       var cid = item ? item.getAttribute('data-call-id') : null;
-      var ts = null;
-      for (var i = 0; i < steps.length; i++) {
-        if (steps[i].toolCallId === cid) { ts = steps[i]; break; }
-      }
-      if (ts && ts.running && ts.startTime) {
-        el.textContent = fmtDur((now - ts.startTime) / 1000);
+      var rt = cid ? live.runningTools[cid] : null;
+      if (rt && rt.startTime) {
+        el.textContent = fmtDur((now - rt.startTime) / 1000);
       }
     });
   }
 
   // ------------------------------------------------------------
   // L2（结构变化）：重建一个 turn 的内容。
-  //   streaming（含 streaming step）→ 只重建 .turn-steps 子树 + 同步思考气泡骨架；
-  //   终态/残留 → 整体重建 .turn 子节点（renderSingleTurnHTML）。
+  //   live（turn.live 存在）→ 只重建 .turn-steps 子树 + 同步思考气泡骨架；
+  //   终态 → 整体重建 .turn 子节点（renderSingleTurnHTML）。
   // 两者都在重建前捕获、重建后恢复该 turn 的 UI 瞬态。
   // ------------------------------------------------------------
 
@@ -227,11 +243,11 @@ window.Hermes = window.Hermes || {};
     }
   }
 
-  /** 同步思考气泡骨架（.turn-margin）：出现时插入、消失时移除、存在则保留 body 让 L3 patch） */
+  /** 同步思考气泡骨架（.turn-margin）：出现时插入、消失时移除、存在则保留 body 让 L3 patch */
   function _syncThinkingMargin(turnEl, turn) {
     var marginHtml = '';
     if (H.renderThinkingMargin) {
-      try { marginHtml = H.renderThinkingMargin(turn, true) || ''; } catch (e) { marginHtml = ''; }
+      try { marginHtml = H.renderThinkingMargin(turn) || ''; } catch (e) { marginHtml = ''; }
     }
     var agentBody = turnEl.querySelector('.turn-agent-body');
     var margin = null;
@@ -252,7 +268,7 @@ window.Hermes = window.Hermes || {};
   }
 
   /** 重建"流式 live"turn：morph .turn-steps + 同步思考气泡（骨架），保留用户气泡与外层属性 */
-  function _applyStreaming(turnEl, turn, sm) {
+  function _applyStreaming(turnEl, turn) {
     var ui = _captureTurnUI(turnEl);
     var stepsHtml = '';
     try { stepsHtml = H.renderTurnStepsHTML(turn) || ''; } catch (e) { stepsHtml = ''; }
@@ -263,13 +279,13 @@ window.Hermes = window.Hermes || {};
     if (!turnEl.hasAttribute('data-streaming')) turnEl.setAttribute('data-streaming', 'true');
   }
 
-  /** 重建"终态/残留"turn：整体 morph 子节点（renderSingleTurnHTML 决定 data-streaming） */
+  /** 重建"终态"turn：整体 morph 子节点（renderSingleTurnHTML 决定 data-streaming） */
   function _applyStatic(turnEl, turn) {
     var ui = _captureTurnUI(turnEl);
     var html = '';
     try { html = H.renderSingleTurnHTML(turn) || ''; } catch (e) { html = ''; }
     if (html) _morph(turnEl, html);
-    // 终态 turn 无 streaming step → 移除 data-streaming（renderSingleTurnHTML 不会输出它）
+    // 终态 turn 无 live → 移除 data-streaming（renderSingleTurnHTML 不会输出它）
     if (turnEl.hasAttribute('data-streaming')) turnEl.removeAttribute('data-streaming');
     _restoreTurnUI(turnEl, ui);
     if (H.initCollapsible) {
@@ -287,21 +303,18 @@ window.Hermes = window.Hermes || {};
   function _updateTurn(container, entry, turn) {
     var sig = H.turnSig(turn);
 
-    // ---- 流式 live 状态机（先于静态签名比对：running 工具即使签名不变也需每秒刷新耗时）----
-    var streamingStep = turn.steps.find(function(s) { return s.streaming; });
-    var newLive = !!streamingStep;
-    if (newLive) {
-      var sm = streamingStep.streaming;
-      var struct = _streamStructSig(sm);
-      var running = (sm._toolSteps || []).some(function(ts) { return ts.running; });
+    // ---- live 状态机（先于静态签名比对：running 工具即使签名不变也需每秒刷新耗时）----
+    if (turn.live) {
+      var struct = _liveStructSig(turn);
+      var running = turn.live.runningTools && Object.keys(turn.live.runningTools).length > 0;
+      var curContent = turn.live.text || '';
+      var curReasoning = turn.live.reasoning || '';
       if (entry.live) {
         // 上次也是 live。优先级：结构变化 → L2；结构未变但有 running → L3.5（仅刷耗时）；
         // 仅文本变 → L3；全等 → 不动。
-        var curContent = sm.content != null ? sm.content : '';
-        var curReasoning = sm.reasoning != null ? sm.reasoning : '';
         if (entry.struct !== struct) {
-          // 结构变化（新工具步/工具完成/正文开始或停止/思考→正文切换）→ L2 全量重建
-          _applyStreaming(entry.el, turn, sm);
+          // 结构变化（新工具步/工具完成/正文开始或停止/思考→正文切换/partial 物化）→ L2 全量重建
+          _applyStreaming(entry.el, turn);
           entry.struct = struct;
           entry.sig = sig;
           entry.lastContent = curContent;
@@ -310,11 +323,10 @@ window.Hermes = window.Hermes || {};
         }
         if (running) {
           // L3.5：结构未变但有 running 工具 → 只刷新 .ow-tl-dur-live 实时耗时，跳过 L2 morphdom。
-          // live timer 每秒触发走此路径（旧实现 running 即 L2，每秒重建整个 .turn-steps）。
-          _l35PatchDurations(entry.el, sm);
           // running 期间可能并发 text_delta → 继续走 L3 文本 patch
+          _l35PatchDurations(entry.el, turn);
           if (entry.lastContent !== curContent || entry.lastReasoning !== curReasoning) {
-            _l3Patch(entry.el, sm, entry.lastContent, entry.lastReasoning);
+            _l3Patch(entry.el, turn, entry.lastContent, entry.lastReasoning);
             entry.lastContent = curContent;
             entry.lastReasoning = curReasoning;
           }
@@ -323,7 +335,7 @@ window.Hermes = window.Hermes || {};
         }
         if (entry.lastContent !== curContent ||
             entry.lastReasoning !== curReasoning) {
-          var changedText = _l3Patch(entry.el, sm, entry.lastContent, entry.lastReasoning);
+          var changedText = _l3Patch(entry.el, turn, entry.lastContent, entry.lastReasoning);
           if (changedText) {
             entry.sig = sig;
             entry.lastContent = curContent;
@@ -340,24 +352,19 @@ window.Hermes = window.Hermes || {};
         return false;
       }
       // 旧状态非 live → 新 live（罕见，直接按 live 渲染）
-      _applyStreaming(entry.el, turn, sm);
+      _applyStreaming(entry.el, turn);
       entry.live = true;
       entry.struct = struct;
       entry.sig = sig;
-      entry.lastContent = sm.content != null ? sm.content : '';
-      entry.lastReasoning = sm.reasoning != null ? sm.reasoning : '';
+      entry.lastContent = curContent;
+      entry.lastReasoning = curReasoning;
       return true;
     }
 
-    // ---- 终态 / 流式残留 ----
+    // ---- 终态 ----
     if (entry.sig === sig) return false;
-    if (entry.live) {
-      // live → final 过渡（流结束 finalize 的 DOM 等价物：整 turn 重渲为终态）
-      _applyStatic(entry.el, turn);
-    } else {
-      // 历史 turn 内容变化（reFetch 数据订正等）→ 整 turn 重渲
-      _applyStatic(entry.el, turn);
-    }
+    // live → final 过渡（流结束 finalize）与历史 turn 内容变化（reFetch 订正）都整 turn 重渲
+    _applyStatic(entry.el, turn);
     entry.live = false;
     entry.sig = sig;
     entry.struct = null;
@@ -374,7 +381,7 @@ window.Hermes = window.Hermes || {};
   var MAX_RENDERED_TURNS = 200; // 超长对话 DOM 上限：只渲染最近 N 个 turn，旧 turn 用占位保留滚动高度
 
   function renderFull(container, msgs, sid) {
-    var allTurns = H.buildTurns(msgs);
+    var allTurns = H.buildTurns(msgs, _getLive(sid));
     // 虚拟化：turns 超上限时只渲染最近 N 个，顶部插占位 div 保留滚动位置。
     // 占位高度用 contain-intrinsic-size 估算（每个 turn ~500px），避免滚动条跳变。
     // __rdx.map 只含已渲染 turn；renderDiff 的尾部追加逻辑天然兼容（占位不计入 map）。
@@ -412,14 +419,14 @@ window.Hermes = window.Hermes || {};
       var key = turns[i].key;
       var keyStr = String(key == null ? '' : key);
       var el = elByKey[keyStr] || null;
-      var streamingStep = turns[i].steps.find(function(s) { return s.streaming; });
+      var isLive = !!turns[i].live;
       var entry = {
         el: el,
         sig: H.turnSig(turns[i]),
-        live: !!streamingStep,
-        struct: streamingStep ? _streamStructSig(streamingStep.streaming) : null,
-        lastContent: streamingStep ? (streamingStep.streaming.content != null ? streamingStep.streaming.content : '') : null,
-        lastReasoning: streamingStep ? (streamingStep.streaming.reasoning != null ? streamingStep.streaming.reasoning : '') : null,
+        live: isLive,
+        struct: isLive ? _liveStructSig(turns[i]) : null,
+        lastContent: isLive ? (turns[i].live.text || '') : null,
+        lastReasoning: isLive ? (turns[i].live.reasoning || '') : null,
       };
       map.set(key, entry);
     }
@@ -443,9 +450,9 @@ window.Hermes = window.Hermes || {};
     if (!rdx || rdx.sid !== sid) {
       return renderFull(container, msgs, sid);
     }
-    var allTurns = H.buildTurns(msgs);
+    var allTurns = H.buildTurns(msgs, _getLive(sid));
     // 虚拟化对齐：只比对已渲染窗口（跳过 droppedCount 个旧 turn）。
-    // 若总数未超上限 droppedCount=0，逻辑与旧实现一致。
+    // 若总数未超上限 droppedCount=0，逻辑与全量路径一致。
     var dropped = rdx.droppedCount || 0;
     // 若需要渲染的窗口超出已渲染范围（dropped 变化或总数回落到上限下）→ 全量回退重算
     if (allTurns.length > MAX_RENDERED_TURNS && dropped !== allTurns.length - Math.min(allTurns.length, MAX_RENDERED_TURNS)) {
@@ -487,14 +494,14 @@ window.Hermes = window.Hermes || {};
       var nEl = _elFromHtml(htmlStr);
       if (!nEl) continue;
       container.appendChild(nEl);
-      var streamingStep2 = nTurn.steps.find(function(s) { return s.streaming; });
+      var nLive = !!nTurn.live;
       rdx.map.set(nKey, {
         el: nEl,
         sig: H.turnSig(nTurn),
-        live: !!streamingStep2,
-        struct: streamingStep2 ? _streamStructSig(streamingStep2.streaming) : null,
-        lastContent: streamingStep2 ? (streamingStep2.streaming.content != null ? streamingStep2.streaming.content : '') : null,
-        lastReasoning: streamingStep2 ? (streamingStep2.streaming.reasoning != null ? streamingStep2.streaming.reasoning : '') : null,
+        live: nLive,
+        struct: nLive ? _liveStructSig(nTurn) : null,
+        lastContent: nLive ? (nTurn.live.text || '') : null,
+        lastReasoning: nLive ? (nTurn.live.reasoning || '') : null,
       });
       changed = true;
     }

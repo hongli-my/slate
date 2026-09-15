@@ -152,23 +152,52 @@ window.Hermes = window.Hermes || {};
       }).catch(function() {});
     } catch(e) {}
 
-    // 标记 _streaming 消息为已中止；同时清 _toolSteps running 状态（L1: 让中止的工具卡片显示而非消失）
-    var cache = state.sessionMessages[sid];
-    if (cache) {
-      var msgs = cache.messages;
-      for (var i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i]._streaming) {
-          msgs[i]._streaming = false;
-          msgs[i]._aborted = true;
-          if (msgs[i]._toolSteps) msgs[i]._toolSteps.forEach(function(s) { s.running = false; });
-          break;
-        }
-      }
-      cache.isStale = true;  // 标记过期，下次进入时 re-fetch
-    }
-
-    delete state.activeStreams[sid];
+    // 物化 live 累积器为 pi 原生 blocks 消息（附 _aborted 标记；工具卡保留显示，L1）
+    finalizeLiveStream(sid, { aborted: true });
     return true;
+  }
+
+  /**
+   * 终结 live 流：把累积器物化为 pi 原生 blocks 消息（msgs 只存 pi 原生形态）。
+   * - partial 存在且有内容 → 原地替换为 blocks 消息（thinking/toolCall/text 顺序由
+   *   累积器近似还原；若 message_end 已到达则 partial 已被权威消息替换，此处无操作），
+   *   附 _aborted/_error 标记（中断横幅 + 重连按钮清理依据）；
+   * - partial 无内容（或不存在）→ 从 msgs 删除。
+   * 幂等：stream 已被移除时直接返回。opts: { aborted, error }
+   */
+  function finalizeLiveStream(sid, opts) {
+    var stream = state.activeStreams[sid];
+    if (!stream) return;
+    opts = opts || {};
+
+    var cache = state.sessionMessages[sid];
+    var msgs = cache && cache.messages;
+    var partial = stream.partial;
+    if (partial && msgs) {
+      var idx = msgs.indexOf(partial);
+      var hasContent = !!(stream.text || stream.reasoning || (stream.toolCalls && stream.toolCalls.length));
+      if (hasContent) {
+        var blocks = [];
+        if (stream.reasoning) blocks.push({ type: 'thinking', thinking: stream.reasoning });
+        // toolCalls 来自 toolcall_end 事件的 toolCall block（pi 原生平铺形态
+        // {type:'toolCall', id, name, arguments}）；防御性归一非平铺形态
+        (stream.toolCalls || []).forEach(function(tc) {
+          if (tc && tc.type === 'toolCall') blocks.push(tc);
+          else blocks.push({ type: 'toolCall', id: tc.id || tc.toolCallId, name: tc.name, arguments: tc.arguments != null ? tc.arguments : tc.input });
+        });
+        if (stream.text) blocks.push({ type: 'text', text: stream.text });
+        var m = { role: 'assistant', content: blocks, timestamp: partial.timestamp, _localId: partial._localId };
+        if (opts.aborted) m._aborted = true;
+        if (opts.error) m._error = opts.error;
+        if (idx >= 0) msgs[idx] = m; else msgs.push(m);
+      } else if (idx >= 0) {
+        msgs.splice(idx, 1);
+      }
+    }
+    // running 瞬态清空（防御渲染层残留 running 徽标）
+    stream.runningTools = {};
+    if (cache) cache.isStale = true;  // 标记过期，下次进入时 re-fetch
+    delete state.activeStreams[sid];
   }
 
   /** 流结束回调（不依赖当前焦点判断） */
@@ -179,26 +208,16 @@ window.Hermes = window.Hermes || {};
     // S#4: 任何步骤抛错也必须 delete activeStreams[sid]，否则流永久"活跃"→
     // 清理定时器只驱逐 finished 流，该 sid 永不被驱逐且无法重新流式。
     try {
-      // 标记流已完成
+      // 标记流已完成（in-flight 事件丢弃）+ 物化残留 partial（错误中断兜底）。
+      // finalize 会删 activeStreams[sid]，先捕获 preStreamCount 供 reFetch 增量拼接。
       stream.finished = true;
       stream.finishedAt = Date.now();
-
-      // 标记 streaming 消息完成（保留流式数据用于渲染）
-      var cache = state.sessionMessages[sid];
-      if (cache) {
-        var msgs = cache.messages;
-        for (var i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i]._streaming) {
-            msgs[i]._streaming = false;
-            msgs[i]._toolSteps && msgs[i]._toolSteps.forEach(function(s) { s.running = false; });
-            break;
-          }
-        }
-        cache.isStale = true;
-      }
+      var preStreamCount = stream.preStreamCount != null ? stream.preStreamCount : 0;
+      var streamError = stream.error || null;
+      finalizeLiveStream(sid, { error: streamError || undefined });
 
       // 如果用户正在看这个会话：清残留 render timer/实时计时器/流式 md 缓存后渲染一次，
-      // renderer 检测到 turn 由 live 变 static（残留归一化）自动重渲为终态（B4 净化兜底）
+      // renderer 检测到 turn 由 live 变 static 自动重渲为终态（B4 净化兜底）
       if (state.focusedSessionId === sid && state.viewMode === 'chat') {
         if (H._clearRenderTimer) H._clearRenderTimer(sid);
         if (H._stopLiveTimer) H._stopLiveTimer();
@@ -206,8 +225,8 @@ window.Hermes = window.Hermes || {};
         H.renderCurrentChat();
       }
 
-      // 后台静默 re-fetch，让缓存与 DB 同步
-      backgroundReFetch(sid);
+      // 后台静默 re-fetch，让缓存与 DB 同步（offset 参数化：finalize 后 stream 已删）
+      backgroundReFetch(sid, preStreamCount);
     } finally {
       delete state.activeStreams[sid];
     }
@@ -217,7 +236,7 @@ window.Hermes = window.Hermes || {};
   // S#2: 使用 reFetchSeq 防止多个并发 re-fetch 互相覆盖
   var _reFetchSeq = {};
 
-  async function backgroundReFetch(sid) {
+  async function backgroundReFetch(sid, offsetParam) {
     try {
       // 等待 DB 写入完成
       await new Promise(function(r) { setTimeout(r, 800); });
@@ -237,8 +256,8 @@ window.Hermes = window.Hermes || {};
 
       // 增量：流式前的消息数。只拉取流式期间新增的部分（DB 的 pi 原生结构），
       // 替换前端流式临时结构，避免长会话每次流结束后全量拉取。
-      var stream = state.activeStreams[sid];
-      var offset = (stream && stream.preStreamCount != null) ? stream.preStreamCount : 0;
+      // （offset 由调用方传入：onStreamComplete 在 finalize 删除 stream 前捕获 preStreamCount）
+      var offset = (offsetParam != null) ? offsetParam : 0;
       // 防御：删除消息等操作可能使缓存变短，offset 超界则退回全量
       if (offset > cache.messages.length) offset = 0;
       var url = '/sessions/' + sid + '/messages' + (offset > 0 ? '?offset=' + offset : '');
@@ -369,12 +388,9 @@ window.Hermes = window.Hermes || {};
         if (H.updateChatUIState) H.updateChatUIState();
         // P2: 切回有 running 工具步骤的会话时重启实时计时器（秒数跳动）
         if (H._startLiveTimer && hasActiveStream(sid)) {
-          var _msgs = getMsgs(sid);
-          if (_msgs) {
-            var _hasRunning = _msgs.some(function(m) {
-              return m._streaming && m._toolSteps && m._toolSteps.some(function(ts) { return ts.running; });
-            });
-            if (_hasRunning) H._startLiveTimer();
+          var _stream = getStream(sid);
+          if (_stream && _stream.runningTools && Object.keys(_stream.runningTools).length > 0) {
+            H._startLiveTimer();
           }
         }
         H.loadContextInfo(sid, true);
@@ -608,6 +624,7 @@ window.Hermes = window.Hermes || {};
     }
   }
 
+  H.finalizeLiveStream = finalizeLiveStream;
   H.cleanupSession = cleanupSession;
   H.purgeStaleCaches = purgeStaleCaches;
 

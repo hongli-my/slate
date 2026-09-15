@@ -1,19 +1,25 @@
 /* ============================================================
    Hermes WebUI - View Model Module (pure functions)
 
-   对话渲染层重构 P1 核心交付：把"消息数组"归一化为"带稳定 key 的
-   turn 视图"，全部为**纯函数**（加载期零 DOM / 零外部依赖，node 可单测）。
+   把"消息数组"归一化为"带稳定 key 的 turn 视图"，全部为**纯函数**
+   （加载期零 DOM / 零外部依赖，node 可单测）。
 
-   设计目标（对应 PLAN-chat-render-refactor.md）：
-   - buildTurns 语义与 session.js groupIntoTurns **完全一致**（view 分组、
-     流式/中止/pi 原生三种 assistant 形态、压缩卡片、孤儿跳过），仅增加 key；
-   - 流式单消息形态 → decomposeStreaming 分解出的 steps 与"持久化双消息
-     形态"在 buildTurns 里归组的结果**结构等价**（根治 R1/R3：流结束拆消息）；
+   形态统一（本轮重构核心）：
+   - 流式与历史共用 **pi 原生消息形态**（content blocks + 独立 toolResult 消息）。
+     流式期前端只维护累积器（text/reasoning/toolCalls/runningTools），
+     message_end 到达时用事件携带的权威消息原地替换 partial（嫁接 _localId
+     保持 turn key 稳定）。不再有 Hermes 遗留的 content:string + _toolSteps
+     双形态，不再需要 decomposeStreaming / isStreamRemnant 归一化。
+   - buildTurns(messages, live) 第二参数为可选的活跃流状态（live）：
+     含 partial 的 step 用累积器覆盖 content/reasoning 并标记 step.partial，
+     turn 级挂 turn.live 供渲染层做流式装饰（spinner/实时耗时/审批卡）。
    - turnSig 为廉价结构签名，供渲染器逐 turn 判定是否需重渲。
 
    实测数据契约（2026-09-08 真实 sidecar 验证）：
    - pi 原生 thinking block 的正文在 **.thinking** 字段（非 .text）；
-   - REST /messages 返回的消息**没有 id 字段**，key 主要靠 _localId / 序号兜底。
+   - REST /messages 返回的消息**没有 id 字段**，key 主要靠 _localId / 序号兜底；
+   - ToolCall block：{type:'toolCall', id, name, arguments}；
+   - Usage：{input, output, cacheRead, cacheWrite, totalTokens, ...}。
    ============================================================ */
 
 window.Hermes = window.Hermes || {};
@@ -22,12 +28,12 @@ window.Hermes = window.Hermes || {};
   'use strict';
 
   // ---- 本地消息身份 ----
-  /** 短随机 id：本地创建的消息（user / SSE 合成 system 等）在创建时分配 */
+  /** 短随机 id：本地创建的消息（user / 流式 partial 等）在创建时分配 */
   function uid() {
     return 'l' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
   }
 
-  // ---- 纯文本提取（合并 chat.js _extractText 与 session.js _extractContentText）----
+  // ---- 纯文本提取 ----
   /** 任意 content 形态 → 纯文本：string 直返；blocks 数组取 text 块拼接；对象 JSON.stringify */
   function msgText(content) {
     if (!content) return '';
@@ -51,9 +57,9 @@ window.Hermes = window.Hermes || {};
     return h.toString(36);
   }
 
-  // ---- assistant 消息分解（语义 = session.js extractAssistantParts + 兼容修正）----
+  // ---- assistant 消息分解 ----
   // pi 原生：content = (Text|Thinking|ToolCall)[] blocks，thinking 正文在 b.thinking。
-  // 兼容旧 Hermes：content:string + reasoning + tool_calls(可 string) + _toolSteps 兜底。
+  // 流式 partial 的 blocks 为空（正文在 live 累积器），由 buildTurns 覆盖。
   function extractAssistantParts(a) {
     var text = '', reasoning = '', toolCalls = [];
     if (Array.isArray(a.content)) {
@@ -67,40 +73,15 @@ window.Hermes = window.Hermes || {};
       text = tParts.join('');
       reasoning = rParts.join('');
     } else if (typeof a.content === 'string') {
+      // 兜底：物化前的本地消息 / 异常数据。正常路径不出现。
       text = a.content;
       reasoning = a.reasoning || '';
-      // 旧 Hermes 兼容
-      if (a.tool_calls) {
-        try {
-          var raw = typeof a.tool_calls === 'string' ? JSON.parse(a.tool_calls) : a.tool_calls;
-          toolCalls = (raw || []).map(function(tc) {
-            return { name: tc.function ? tc.function.name : undefined, arguments: tc.function ? tc.function.arguments : undefined, id: tc.id || tc.call_id };
-          });
-        } catch (e) { toolCalls = []; }
-      }
-      // streaming msg 结束后（_streaming=false）的 _toolSteps 兜底
-      if (!toolCalls.length && a._toolSteps && a._toolSteps.length > 0) {
-        toolCalls = a._toolSteps.map(function(ts) {
-          return { name: ts.name, arguments: ts.args, id: ts.toolCallId };
-        });
-      }
     }
     return { text: text, reasoning: reasoning, toolCalls: toolCalls };
   }
 
-  // ---- 流式残留判定（remnant）----
-  // 流结束/中止/出错后，_streaming 已置 false 但消息仍是"流式形态"
-  // （content:string + _toolSteps[]，尚未被 backgroundReFetch 换成 DB pi 原生形态）。
-  // 这类消息必须用 decomposeStreaming 归一化成与 DB 持久化形态等价的 steps，
-  // 而非旧代码的 groupIntoTurns _aborted 分支（后者把工具卡片全部丢掉）。
-  function isStreamRemnant(a) {
-    if (!a || a.role !== 'assistant' || a._streaming) return false;
-    if (typeof a.content !== 'string') return false; // 已是 blocks 形态 = DB 原生，走原生分支
-    return !!a._aborted || !!a._error || (Array.isArray(a._toolSteps) && a._toolSteps.length > 0);
-  }
-
-  // ---- 压缩/分支摘要卡片 HTML（唯一构造点，D3 收口）----
-  // summary 为纯文本，输出进 HTML 前必须转义（与旧 groupIntoTurns 内联版 esc() 语义一致）
+  // ---- 压缩/分支摘要卡片 HTML（唯一构造点）----
+  // summary 为纯文本，输出进 HTML 前必须转义
   var _escMap = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
   function escHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) { return _escMap[c]; });
@@ -114,25 +95,32 @@ window.Hermes = window.Hermes || {};
   }
 
   // ============================================================
-  // Turn 分组（语义与 session.js groupIntoTurns 完全一致，仅加 key）
+  // Turn 分组（唯一实现；流式与历史统一走原生形态）
   // ============================================================
   /**
-   * @param {Array} messages  消息数组（pi 原生 / 流式临时形态均可）
+   * @param {Array} messages  消息数组（pi 原生 / 流式 partial 均为原生形态）
+   * @param {Object} [live]   活跃流状态（streamState）：含 partial / text /
+   *                          reasoning / toolCalls / runningTools / approval /
+   *                          error / aborted。非焦点会话或流结束后传 null。
    * @returns {Array} turns，每项 { key, type, ... }：
-   *   - user turn: { key, type:'user', user:{content:纯文本,...}, steps:[...] }
-   *     steps 条目形态与 groupIntoTurns 完全一致：
-   *       { streaming: sm } / { assistant:normA, toolCalls, toolResults, hasMore } /
-   *       { system: m } / { orphan: m }
-   *   - 'other' turn: { key, type:'other', message:m }
+   *   - user turn: { key, type:'user', user, steps, live? }
+   *     steps 条目（单一形态）：
+   *       { assistant, toolCalls, toolResults, hasMore,
+   *         partial?, _reasoningActive?, _error?, _aborted? }
+   *       - partial: 该 step 的 assistant 消息是流式进行中的 partial，
+   *         content/reasoning 已用 live 累积器覆盖
+   *       - toolCalls: pi 原生 ToolCall block（partial 用 live.toolCalls）
+   *   - 'other' turn: { key, type:'other', message }
    * key 规则：user = user._localId || user.id || ('t'+分组序号)；
-   *           other = message._localId || message.id || hash(role+内容前24字符)（单次调用内去重后缀）。
+   *           other = message._localId || message.id || hash(role+内容前24字符)。
    */
-  function buildTurns(messages) {
+  function buildTurns(messages, live) {
     const turns = [];
     var usedOtherKeys = {}; // 单次调用内的 other-key 去重（保证同一输出内 key 唯一且确定性）
     var i = 0;
     var turnOrdinal = 0; // 分组序号（每产出一个 turn 递增；孤儿/other 也算）
     if (!messages) return turns;
+    var livePartial = live ? live.partial : null;
 
     function nextOtherKey(m, contentText) {
       var base = m._localId || m.id;
@@ -160,22 +148,26 @@ window.Hermes = window.Hermes || {};
         i++;
         while (i < messages.length && messages[i].role !== 'user') {
           const a = messages[i];
-          if (a.role === 'assistant' && a._streaming) {
-            // 活跃流式：渲染层按 streaming step 渲染（live 状态，不归一化）
-            turn.steps.push({ streaming: a });
-            i++;
-          } else if (a.role === 'assistant' && isStreamRemnant(a)) {
-            // 流式残留：结束/中止/出错但尚未被 reFetch 替换。归一化为与 DB
-            // 持久化形态等价的 steps（工具卡片保留 + 正文独立 final step）。
-            var dec = decomposeStreaming(a);
-            for (var di = 0; di < dec.steps.length; di++) turn.steps.push(dec.steps[di]);
-            i++;
-          } else if (a.role === 'assistant') {
-            // pi 原生 AssistantMessage：content 是 (Text|Thinking|ToolCall)[] blocks
+          if (a.role === 'assistant') {
+            // pi 原生 AssistantMessage：content 是 (Text|Thinking|ToolCall)[] blocks。
+            // partial（流式进行中）：blocks 为空，正文/思考/工具调用来自 live 累积器。
+            const isPartial = a === livePartial;
             var parts = extractAssistantParts(a);
             var normA = Object.assign({}, a, { content: parts.text, reasoning: parts.reasoning });
-            if (parts.toolCalls.length > 0) {
-              const step = { assistant: normA, toolCalls: parts.toolCalls, toolResults: [], hasMore: true };
+            if (isPartial && live) {
+              normA.content = live.text || '';
+              normA.reasoning = live.reasoning || '';
+            }
+            var tcs = parts.toolCalls;
+            if (!tcs.length && isPartial && live.toolCalls) tcs = live.toolCalls;
+            if (tcs.length > 0) {
+              const step = { assistant: normA, toolCalls: tcs, toolResults: [], hasMore: true };
+              if (isPartial) {
+                step.partial = true;
+                step.hasMore = !!(live.text && live.text.trim());
+              }
+              if (a._error) step._error = a._error;
+              if (a._aborted) step._aborted = true;
               i++;
               // pi 原生 toolResult（兼容旧 'tool'）
               while (i < messages.length && (messages[i].role === 'toolResult' || messages[i].role === 'tool')) {
@@ -192,11 +184,25 @@ window.Hermes = window.Hermes || {};
               }
               turn.steps.push(step);
             } else {
-              turn.steps.push({ assistant: normA, toolCalls: null, toolResults: [], hasMore: false });
+              const step = { assistant: normA, toolCalls: null, toolResults: [], hasMore: false };
+              if (isPartial) {
+                step.partial = true;
+                // 纯思考阶段（无正文无工具）：思考 item 显示为活跃态
+                if (live.reasoning && live.reasoning.trim() && !(live.text && live.text.trim())) {
+                  step._reasoningActive = true;
+                }
+              }
+              if (a._error) step._error = a._error;
+              if (a._aborted) step._aborted = true;
+              turn.steps.push(step);
               i++;
             }
           } else if (a.role === 'system') {
             turn.steps.push({ system: a });
+            i++;
+          } else if (a.role === 'compactionSummary') {
+            // turn 内尾随的压缩摘要（DB 加载形态）：归一为压缩卡片，避免 orphan 空渲染
+            turn.steps.push({ system: { role: 'system', _compactionHtml: compactionCardHtml(a.summary || ''), _isCompaction: true } });
             i++;
           } else {
             turn.steps.push({ orphan: a });
@@ -228,117 +234,37 @@ window.Hermes = window.Hermes || {};
         i++;
       }
     }
-    return turns;
-  }
 
-  // ============================================================
-  // 流式消息 → steps 唯一分解（语义 = session.js renderTurnStepsHTML 流式分支）
-  // ============================================================
-  /**
-   * 把一条 streaming assistant（content:string + _toolSteps[]）分解成与
-   * "持久化 pi 双消息形态"等价的 steps（供渲染层与测试断言共用）。
-   * @returns {{ steps: Array, flags: Object }}
-   *   steps:   toolStep(含 reasoning)/finalStep(含 content)/仅思考 step，
-   *            形态与 buildTurns 产出的 assistant step 一致；
-   *   flags:   { hasContent, hasReasoning, usage, aborted, runningSet, toolTimes }
-   *            —— running/toolTimes 边通道供 HTML 构建器算实时耗时（live timer）。
-   */
-  function decomposeStreaming(sm) {
-    var flags = {
-      hasContent: !!(sm.content && sm.content.trim()),
-      hasReasoning: !!(sm.reasoning && sm.reasoning.trim()),
-      usage: sm._usage || null,
-      aborted: !!sm._aborted,
-      runningSet: {},
-      toolTimes: {}
-    };
-    var steps = [];
-
-    // 有工具步骤 → 构建 toolStep（reasoning 跟着 toolStep，content 拆到 finalStep）
-    if (sm._toolSteps && sm._toolSteps.length > 0) {
-      var toolCalls = sm._toolSteps.map(function(ts, idx) {
-        return { name: ts.name || 'unknown', arguments: ts.args, id: ts.toolCallId || ('call_stream_' + idx) };
-      });
-      var toolResults = [];
-      sm._toolSteps.forEach(function(ts, idx) {
-        var tcId = ts.toolCallId || ('call_stream_' + idx);
-        if (ts.result !== undefined && ts.result !== null && ts.result !== '') {
-          toolResults.push({
-            role: 'toolResult',
-            toolCallId: tcId,
-            content: typeof ts.result === 'string' ? ts.result : JSON.stringify(ts.result),
-            isError: !!ts.error
-          });
+    // ---- live 挂载 ----
+    // partial 所在的 turn；无 partial（工具执行中 / 占位阶段）→ 最后一个 turn。
+    // 渲染层（render.js / session.js）用 turn.live 做流式装饰。
+    if (live) {
+      var target = null;
+      for (var ti = 0; ti < turns.length; ti++) {
+        var sts = turns[ti].steps || [];
+        for (var si = 0; si < sts.length; si++) {
+          if (sts[si].partial) { target = turns[ti]; break; }
         }
-        if (ts.running) flags.runningSet[tcId] = true;
-        flags.toolTimes[tcId] = {
-          startTime: ts.startTime || null,
-          endTime: ts.endTime || null,
-          running: !!ts.running
-        };
-      });
-      steps.push({
-        assistant: { reasoning: sm.reasoning || '', content: '', timestamp: sm.timestamp },
-        toolCalls: toolCalls,
-        toolResults: toolResults,
-        hasMore: flags.hasContent
-      });
-    }
-
-    // 有正文内容 → 构建 finalStep
-    if (flags.hasContent) {
-      var finalReasoning = (sm._toolSteps && sm._toolSteps.length > 0) ? '' : (sm.reasoning || '');
-      steps.push({
-        assistant: { content: sm.content, reasoning: finalReasoning, timestamp: sm.timestamp },
-        toolCalls: null, toolResults: [], hasMore: false
-      });
-    } else if (!sm._toolSteps || sm._toolSteps.length === 0) {
-      // 无工具、无正文，仅思考
-      if (flags.hasReasoning) {
-        steps.push({
-          assistant: { reasoning: sm.reasoning, content: '', timestamp: sm.timestamp },
-          toolCalls: null, toolResults: [], hasMore: false,
-          _reasoningActive: true
-        });
+        if (target) break;
       }
+      if (!target && turns.length > 0) target = turns[turns.length - 1];
+      if (target) target.live = live;
     }
-
-    // 透传 _error 到末步（供渲染层显示错误提示）；无任何 step 时推一个承载 _error 的空步。
-    // SSE error 事件 / 网络中断残留会带 _error，若不透传则 onStreamComplete 收尾后错误不可见。
-    if (sm._error) {
-      if (steps.length > 0) {
-        steps[steps.length - 1]._error = sm._error;
-      } else {
-        steps.push({
-          assistant: { content: '', reasoning: '', timestamp: sm.timestamp },
-          toolCalls: null, toolResults: [], hasMore: false,
-          _error: sm._error
-        });
-      }
-    }
-
-    // 透传 _aborted 到末步：用户中止后 onStreamComplete 收尾走残留归一化（非流式渲染分支），
-    // 若不透传则 .step-final 的 _aborted 视觉标记（降透明度 + "(已中断)"）在重塑后丢失。
-    if (sm._aborted && steps.length > 0) {
-      steps[steps.length - 1]._aborted = true;
-    }
-
-    return { steps: steps, flags: flags };
+    return turns;
   }
 
   // ============================================================
   // Turn 结构签名（廉价、保守：宁可过度重渲，不可漏渲）
   // ============================================================
   /**
-   * 设计不变式（oracle）：旧 _lastSig 漏字段 → 走错 patch → 渲染错误；
-   * 本签名漏字段 → 仅过度重渲（损性能不损正确性）。等长内容替换等"漏渲"
-   * 场景由结构性改写路径（delete/压缩/全量 load/merge）的强制重渲封死。
+   * 设计不变式：签名漏字段 → 仅过度重渲（损性能不损正确性）。等长内容替换等
+   * "漏渲"场景由结构性改写路径（delete/压缩/全量 load/merge）的强制重渲封死。
    * 注意：不含墙上时钟（running 步骤的每秒跳动由 live timer 显式触发重渲，
    * 不依赖签名变化）。
    */
   // contentMarker 结果缓存：流式期 renderDiff 每 tick 对全部 turn 调 turnSig→contentMarker，
   // 但只有最后一个（流式）turn 的内容在变，前序 turn 的 content 字符串值不变 → 命中缓存跳过 FNV-1a。
-  // 按"字符串值"作 key（同值不同引用也命中，因为前序 turn 的 content 来自同一 msgs 数组未变对象）。
+  // 按"字符串值"作 key（同值不同引用也命中）。
   // 容量上限避免长会话无界增长；LRU 式淘汰最旧项。
   var _cmCache = new Map();
   var _CM_CACHE_MAX = 1024;
@@ -346,8 +272,6 @@ window.Hermes = window.Hermes || {};
   function contentMarker(text) {
     var s = String(text == null ? '' : text);
     // 全量哈希（FNV-1a，复用 hashStr）：等长但内容不同的替换不会再撞签名导致漏渲。
-    // 旧实现 length+slice(0,12) 在"等长 + 前 12 字符相同"时误判未变，违背
-    // "宁可过度重渲，不可漏渲"的不变式。单趟扫描，开销与旧实现同量级。
     var cached = _cmCache.get(s);
     if (cached !== undefined) return cached;
     var m = s.length + ':' + hashStr(s);
@@ -362,28 +286,17 @@ window.Hermes = window.Hermes || {};
   function stepSig(step) {
     if (!step) return '?';
     var out = [];
-    if (step.streaming) {
-      var sm = step.streaming;
-      out.push('S');
-      out.push(contentMarker(sm.content));
-      out.push(contentMarker(sm.reasoning));
-      out.push('ab=' + (sm._aborted ? 1 : 0));
-      out.push('ap=' + (sm._approval && !sm._approvalResolved ? 1 : 0));
-      out.push('us=' + (sm._usage ? ((sm._usage.total_tokens || 0) + ':' + (sm._usage.prompt_tokens || 0)) : '-'));
-      var tss = sm._toolSteps || [];
-      out.push('ts=' + tss.length);
-      tss.forEach(function(ts) {
-        out.push((ts.toolCallId || '') + '|' + (ts.name || '') + '|r' + (ts.running ? 1 : 0) + '|e' + (ts.error ? 1 : 0) + '|' + contentMarker(ts.result));
-      });
-      return out.join('~');
-    }
     if (step.assistant) {
       var a = step.assistant;
       out.push('A');
       out.push(contentMarker(a.content));
       out.push(contentMarker(a.reasoning));
       out.push('hm=' + (step.hasMore ? 1 : 0));
+      if (step.partial) out.push('p=1');
       if (step._reasoningActive) out.push('ra=1');
+      if (step._error) out.push('er=1');
+      if (step._aborted) out.push('ab=1');
+      if (a.usage) out.push('us=' + (a.usage.input || 0) + '/' + (a.usage.output || 0) + '/' + (a.usage.totalTokens || 0));
       var tcs = step.toolCalls || [];
       out.push('tc=' + tcs.length);
       tcs.forEach(function(tc) {
@@ -427,8 +340,6 @@ window.Hermes = window.Hermes || {};
   window.Hermes.hashStr = hashStr;
   window.Hermes.buildTurns = buildTurns;
   window.Hermes.turnSig = turnSig;
-  window.Hermes.decomposeStreaming = decomposeStreaming;
-  window.Hermes.isStreamRemnant = isStreamRemnant;
   window.Hermes.compactionCardHtml = compactionCardHtml;
   window.Hermes.extractAssistantParts = extractAssistantParts;
 

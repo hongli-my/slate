@@ -210,54 +210,25 @@ window.Hermes = window.Hermes || {};
       '<div class="tm-body">' + window.Hermes.renderStreamingMarkdown(trimmed, 'tm') + '</div></div>';
   }
 
-  // 只渲染"正在思考"的气泡。非流式/思考已结束 → 返回空串（不占布局，气泡消失）。
-  function renderThinkingMargin(turn, isStreaming) {
-    if (!isStreaming) return '';  // 历史/非流式：无气泡，思考在时间线 item
-    var blocks = [];
-    (turn.steps || []).forEach(function(step) {
-      if (step.streaming) {
-        var sm = step.streaming;
-        if (sm.reasoning && sm.reasoning.trim()) {
-          var hasContent = !!(sm.content && sm.content.trim());
-          var hasTools = sm._toolSteps && sm._toolSteps.length > 0;
-          // 正在思考 = 有 reasoning 但还没开始输出正文/工具
-          if (!hasContent && !hasTools) blocks.push(sm.reasoning);
-        }
-      }
-    });
-    if (!blocks.length) return '';
-    var inner = blocks.map(function(r) { return renderThinkingMarginBlock(r); }).join('');
-    return '<div class="turn-margin">' + inner + '</div>';
+  // 只渲染"正在思考"的气泡：活跃流当前正在累积思考、且尚未输出正文/工具时。
+  // 非流式/思考已结束 → 返回空串（不占布局，气泡消失），思考留在时间线 item。
+  function renderThinkingMargin(turn) {
+    var live = turn.live;
+    if (!live || !live.reasoning || !live.reasoning.trim()) return '';
+    var hasContent = !!(live.text && live.text.trim());
+    var hasTools = (live.toolCalls && live.toolCalls.length > 0) ||
+      (turn.steps || []).some(function(s) { return s.toolCalls && s.toolCalls.length > 0; });
+    // 正在思考 = 有 reasoning 但还没开始输出正文/工具
+    if (hasContent || hasTools) return '';
+    return '<div class="turn-margin">' + renderThinkingMarginBlock(live.reasoning) + '</div>';
   }
 
   // (renderThinkingBlock / extractAssistantParts 已删除：死代码 + Hermes 兼容残留，
   // 分组委托给 view-model.buildTurns —— 其内同名纯函数是唯一实现，防双副本漂移)
 
-  // Turn 分组（委托给 view-model 的纯函数实现；本文件不再重复分组逻辑，
-  // 避免"两套分组语义"漂移。行为差异仅为两处有意修正，见 view-model.js：
-  //   1) thinking 块读 .thinking 字段（旧实现读 .text 丢思考）；
-  //   2) 流式残留消息（结束/中止/出错）用 decomposeStreaming 保留工具卡片，
-  //      替代旧 _aborted 分支的 toolCalls:null（丢弃工具）。）
-  function groupIntoTurns(messages) {
-    return window.Hermes.buildTurns(messages);
-  }
-
   // ---- 步骤耗时计算 ----
   // 耗时不渲染独立横轴，而是标到每个步骤卡片上（工具/思考/回答）。
   // 仅历史回放（非流式）时计算；流式中步骤还在增长，无意义。
-
-  // 工具名 → emoji 映射
-  function getToolEmoji(name) {
-    if (!name) return '🛠';
-    var n = String(name).toLowerCase();
-    if (n.indexOf('read') >= 0 || n === 'cat' || n === 'ls' || n.indexOf('view') >= 0 || n.indexOf('type') >= 0) return '📁';
-    if (n.indexOf('bash') >= 0 || n.indexOf('sh') >= 0 || n.indexOf('exec') >= 0 || n.indexOf('run') >= 0 || n.indexOf('command') >= 0) return '⚡';
-    if (n.indexOf('edit') >= 0 || n.indexOf('write') >= 0 || n.indexOf('patch') >= 0 || n.indexOf('apply') >= 0 || n.indexOf('create') >= 0) return '✏️';
-    if (n.indexOf('grep') >= 0 || n.indexOf('glob') >= 0 || n.indexOf('search') >= 0 || n.indexOf('find') >= 0) return '🔍';
-    if (n.indexOf('todo') >= 0 || n.indexOf('task') >= 0) return '📋';
-    if (n.indexOf('web') >= 0 || n.indexOf('fetch') >= 0 || n.indexOf('curl') >= 0) return '🌐';
-    return '🛠';
-  }
 
   // 秒级耗时格式化：3.2s / 1m20s / 瞬时(≤0)不显示
   function fmtTimelineDur(s) {
@@ -270,6 +241,8 @@ window.Hermes = window.Hermes || {};
 
   // 计算一个 turn 内每个步骤的耗时，返回 { toolDurs, thinkDurs, answerDur, totalDur }
   // toolDurs: Map(callId → dur)，thinkDurs: Array(按出现顺序)，answerDur: number
+  // partial（流式进行中）步骤耗时为 null 但保持索引对齐（渲染侧 running 工具由
+  // live.runningTools 实时覆盖）；时间戳取自 pi 原生消息/toolResult。
   function computeStepDurations(turn) {
     var steps = turn.steps || [];
     var prevTs = turn.user ? turn.user.timestamp : null;
@@ -279,7 +252,7 @@ window.Hermes = window.Hermes || {};
     var finalStep = null;
     var toolSteps = [];
     steps.forEach(function(step) {
-      if (step.system || step.orphan || step.streaming) return;
+      if (step.system || step.orphan) return;
       var hasTools = step.toolCalls && step.toolCalls.length > 0;
       var ac = step.assistant ? (step.assistant.content || '') : '';
       if (hasTools) toolSteps.push(step);
@@ -294,9 +267,9 @@ window.Hermes = window.Hermes || {};
       var a = step.assistant;
       if (!a) return;
       if (a.reasoning && String(a.reasoning).trim()) {
-        var thinkDur = (prevTs != null && a.timestamp) ? a.timestamp - prevTs : null;
+        var thinkDur = (step.partial || prevTs == null || !a.timestamp) ? null : (a.timestamp - prevTs);
         result.thinkDurs.push(thinkDur);
-        if (a.timestamp) { prevTs = a.timestamp; lastTs = a.timestamp; }
+        if (!step.partial && a.timestamp) { prevTs = a.timestamp; lastTs = a.timestamp; }
       }
       if (step.toolCalls && step.toolCalls.length > 0) {
         var resultMap = {};
@@ -307,10 +280,10 @@ window.Hermes = window.Hermes || {};
         step.toolCalls.forEach(function(tc, idx) {
           var callId = tc.id || tc.toolCallId || tc.call_id;
           var res = resultMap[callId] || (step.toolResults ? step.toolResults[idx] : null) || null;
-          var toolDur = (res && res.timestamp && a.timestamp) ? res.timestamp - a.timestamp : null;
+          var toolDur = (step.partial || !res || !res.timestamp || !a.timestamp) ? null : (res.timestamp - a.timestamp);
           result.toolDurs[callId] = toolDur;
-          if (res && res.timestamp) { prevTs = res.timestamp; lastTs = res.timestamp; }
-          else if (a.timestamp) { prevTs = a.timestamp; lastTs = a.timestamp; }
+          if (!step.partial && res && res.timestamp) { prevTs = res.timestamp; lastTs = res.timestamp; }
+          else if (!step.partial && a.timestamp) { prevTs = a.timestamp; lastTs = a.timestamp; }
         });
       }
     });
@@ -318,13 +291,13 @@ window.Hermes = window.Hermes || {};
     if (finalStep && finalStep.assistant) {
       var a = finalStep.assistant;
       if (a.reasoning && String(a.reasoning).trim()) {
-        var td = (prevTs != null && a.timestamp) ? a.timestamp - prevTs : null;
+        var td = (finalStep.partial || prevTs == null || !a.timestamp) ? null : (a.timestamp - prevTs);
         result.thinkDurs.push(td);
-        if (a.timestamp) { prevTs = a.timestamp; lastTs = a.timestamp; }
+        if (!finalStep.partial && a.timestamp) { prevTs = a.timestamp; lastTs = a.timestamp; }
       }
       if (a.content && String(a.content).trim()) {
-        result.answerDur = (prevTs != null && a.timestamp) ? a.timestamp - prevTs : null;
-        if (a.timestamp) lastTs = a.timestamp;
+        result.answerDur = (finalStep.partial || prevTs == null || !a.timestamp) ? null : (a.timestamp - prevTs);
+        if (!finalStep.partial && a.timestamp) lastTs = a.timestamp;
       }
     }
 
@@ -335,129 +308,33 @@ window.Hermes = window.Hermes || {};
   }
 
   // 渲染单个 turn 的 steps 内容（.turn-steps 内部）
-  // 流式和历史消息统一走此函数
+  // 流式与历史统一：steps 全部是 view-model 归一化的原生形态 step
+  // （ToolCall blocks / toolResult 消息），流式装饰（审批卡/实时耗时/
+  // spinner/占位）由 turn.live（活跃流状态）驱动。
   function renderTurnStepsHTML(turn) {
     let html = '';
-    const streamingStep = turn.steps.find(s => s.streaming);
+    const live = turn.live || null;
+    const steps = turn.steps || [];
 
-    // ---- 流式消息转换为和历史消息相同的 step 结构 ----
-    var steps;
-    var isStreaming = false;
-    var stFlags = {};  // streaming-specific flags
-
-    if (streamingStep) {
-      var sm = streamingStep.streaming;
-      isStreaming = true;
-      steps = [];
-      stFlags.runningSet = {};
-      stFlags.hasContent = !!(sm.content && sm.content.trim());
-      stFlags.hasReasoning = !!(sm.reasoning && sm.reasoning.trim());
-      stFlags.usage = sm._usage || null;
-      stFlags.aborted = !!sm._aborted;
-      stFlags.error = sm._error || '';
-
-      // 有工具步骤 → 构建 toolStep（reasoning 跟着 toolStep，content 拆到 finalStep）
-      if (sm._toolSteps && sm._toolSteps.length > 0) {
-        var toolCalls = sm._toolSteps.map(function(ts, idx) {
-          return { name: ts.name || 'unknown', arguments: ts.args, id: ts.toolCallId || ('call_stream_' + idx) };
-        });
-        var toolResults = [];
-        stFlags.toolTimes = {};  // tcId → { startTime, endTime, running }
-        sm._toolSteps.forEach(function(ts, idx) {
-          var tcId = ts.toolCallId || ('call_stream_' + idx);
-          if (ts.result !== undefined && ts.result !== null && ts.result !== '') {
-            toolResults.push({ role: 'toolResult', toolCallId: tcId, content: typeof ts.result === 'string' ? ts.result : JSON.stringify(ts.result), isError: !!ts.error });
-          }
-          if (ts.running) stFlags.runningSet[tcId] = true;
-          stFlags.toolTimes[tcId] = {
-            startTime: ts.startTime || null,
-            endTime: ts.endTime || null,
-            running: !!ts.running
-          };
-        });
-        steps.push({
-          assistant: { reasoning: sm.reasoning || '', content: '', timestamp: sm.timestamp },
-          toolCalls: toolCalls,
-          toolResults: toolResults,
-          hasMore: stFlags.hasContent
-        });
-      }
-
-      // 有正文内容 → 构建 finalStep
-      if (stFlags.hasContent) {
-        var finalReasoning = (sm._toolSteps && sm._toolSteps.length > 0) ? '' : (sm.reasoning || '');
-        steps.push({
-          assistant: { content: sm.content, reasoning: finalReasoning, timestamp: sm.timestamp },
-          toolCalls: null, toolResults: [], hasMore: false
-        });
-      } else if (!sm._toolSteps || sm._toolSteps.length === 0) {
-        // 无工具、无正文，仅思考
-        if (stFlags.hasReasoning) {
-          steps.push({
-            assistant: { reasoning: sm.reasoning, content: '', timestamp: sm.timestamp },
-            toolCalls: null, toolResults: [], hasMore: false,
-            _reasoningActive: true
-          });
-        }
-      }
-
-      // 流式专属：审批卡片
-      if (sm._approval && !sm._approvalResolved) {
-        var a = sm._approval;
-        var runId = esc(a.run_id || '');
-        var cmdPreview = esc((a.command || '').substring(0, 300));
-        var desc = esc(a.description || '');
-        var choices = a.choices || ['once', 'deny'];
-        html += '<div class="approval-card" data-run-id="' + runId + '">';
-        html += '<div class="approval-card-header">⚠️ 命令执行需要审批</div>';
-        html += '<div class="approval-card-body">';
-        html += '<div class="approval-card-desc">' + desc + '</div>';
-        if (cmdPreview) html += '<pre class="approval-card-cmd">' + cmdPreview + '</pre>';
-        html += '</div><div class="approval-card-actions">';
-        if (choices.includes('once')) html += '<button class="approval-btn approval-btn-once" data-choice="once">✅ 允许本次</button>';
-        if (choices.includes('session')) html += '<button class="approval-btn approval-btn-session" data-choice="session">✅ 本次会话</button>';
-        if (choices.includes('always')) html += '<button class="approval-btn approval-btn-always" data-choice="always">🔒 永久允许</button>';
-        if (choices.includes('deny')) html += '<button class="approval-btn approval-btn-deny" data-choice="deny">❌ 拒绝</button>';
-        html += '</div></div>';
-      }
-
-      // 流式专属：子代理过程
-      if (sm._subagents && sm._subagents.length > 0) {
-        html += '<div class="streaming-subagents">';
-        sm._subagents.forEach(function(sa) {
-          var si = sa.status === 'running' ? '⏳' : (sa.status === 'failed' ? '✗' : '✓');
-          var sc = sa.status === 'running' ? 'subagent-running' : (sa.status === 'failed' ? 'subagent-failed' : 'subagent-done');
-          var gs = sa.goal.length > 120 ? sa.goal.substring(0, 120) + '…' : sa.goal;
-          var dl = '';
-          if (sa.startedAt) {
-            var d = ((sa.completedAt || Date.now()) - sa.startedAt) / 1000;
-            if (d >= 1) dl = ' · ' + (d < 60 ? d.toFixed(0) + 's' : Math.floor(d/60) + 'm' + Math.floor(d%60) + 's');
-          }
-          html += '<div class="subagent-step ' + sc + '"><div class="subagent-header">';
-          html += '<span class="subagent-icon">🤖</span>';
-          html += '<span class="subagent-goal">' + esc(gs) + '</span>';
-          html += '<span class="subagent-status">' + si + '</span></div>';
-          if (sa.summary) {
-            var ss = sa.summary.length > 200 ? sa.summary.substring(0, 200) + '…' : sa.summary;
-            html += '<div class="subagent-summary">' + esc(ss) + esc(dl) + '</div>';
-          }
-          html += '</div>';
-        });
-        html += '</div>';
-      }
-
-      // 流式专属：思考中占位（无任何内容）。有错误时不提前返回，让末尾错误块渲染。
-      if (steps.length === 0 && sm._streaming && !stFlags.error) {
-        html += '<div class="step step-final streaming-content">';
-        html += '<div class="step-header"><span class="ow-spinner"></span><span class="step-label">思考中</span></div>';
-        html += '</div>';
-        return html;
-      }
-    } else {
-      steps = turn.steps;
+    // ---- 流式审批卡片 ----
+    if (live && live.approval && !live.approvalResolved) {
+      var ap = live.approval;
+      var runId = esc(ap.run_id || '');
+      var cmdPreview = esc((ap.command || '').substring(0, 300));
+      var desc = esc(ap.description || '');
+      var choices = ap.choices || ['once', 'deny'];
+      html += '<div class="approval-card" data-run-id="' + runId + '">';
+      html += '<div class="approval-card-header">⚠️ 命令执行需要审批</div>';
+      html += '<div class="approval-card-body">';
+      html += '<div class="approval-card-desc">' + desc + '</div>';
+      if (cmdPreview) html += '<pre class="approval-card-cmd">' + cmdPreview + '</pre>';
+      html += '</div><div class="approval-card-actions">';
+      if (choices.includes('once')) html += '<button class="approval-btn approval-btn-once" data-choice="once">✅ 允许本次</button>';
+      if (choices.includes('session')) html += '<button class="approval-btn approval-btn-session" data-choice="session">✅ 本次会话</button>';
+      if (choices.includes('always')) html += '<button class="approval-btn approval-btn-always" data-choice="always">🔒 永久允许</button>';
+      if (choices.includes('deny')) html += '<button class="approval-btn approval-btn-deny" data-choice="deny">❌ 拒绝</button>';
+      html += '</div></div>';
     }
-
-    // ---- 统一渲染（流式转换后 + 历史消息走同一段代码）----
 
     // system / orphan 消息
     steps.forEach((step) => {
@@ -476,7 +353,7 @@ window.Hermes = window.Hermes || {};
 
     // 分类：toolSteps（含工具或仅思考）+ finalStep（有正文）
     let finalStep = null;
-    let errorStep = null; // 首个携带 _error 的步（decomposeStreaming 透传，供末尾错误块渲染）
+    let errorStep = null; // 首个携带 _error 的步（中止/错误物化标记，供末尾错误块渲染）
     const toolSteps = [];
     steps.forEach((step) => {
       if (step.system || step.orphan) return;
@@ -497,22 +374,9 @@ window.Hermes = window.Hermes || {};
     const itemsArr = [];
     const panelsArr = [];
 
-    // 流式/历史 统一计算各步骤耗时
-    var stepDurs = isStreaming ? null : computeStepDurations(turn);
-    if (isStreaming && stFlags.toolTimes) {
-      // 从 toolTimes 构建 toolDurs 映射（callId → dur）
-      stepDurs = { toolDurs: {}, thinkDurs: [], answerDur: null, totalDur: null };
-      Object.keys(stFlags.toolTimes).forEach(function(cid) {
-        var tt = stFlags.toolTimes[cid];
-        if (tt.running) {
-          stepDurs.toolDurs[cid] = (Date.now() - (tt.startTime || 0)) / 1000;
-        } else if (tt.endTime && tt.startTime) {
-          stepDurs.toolDurs[cid] = (tt.endTime - tt.startTime) / 1000;
-        } else if (tt.startTime) {
-          stepDurs.toolDurs[cid] = null; // 有开始但无结束：…
-        }
-      });
-    }
+    // 流式/历史 统一计算各步骤耗时（partial 步骤耗时为 null，running 工具由下方实时覆盖）
+    var stepDurs = computeStepDurations(turn);
+    var liveRunning = (live && live.runningTools) || null;
     var thinkDurIdx = 0;
 
     toolSteps.forEach((step, ti) => {
@@ -522,7 +386,7 @@ window.Hermes = window.Hermes || {};
 
       // 思考 → 时间线 thinking item
       if (step.assistant?.reasoning) {
-        var rActive = isStreaming && !!step._reasoningActive;
+        var rActive = !!step._reasoningActive;
         var thinkDur = stepDurs ? (stepDurs.thinkDurs[thinkDurIdx] || null) : null;
         thinkDurIdx++;
         const thinkItem = renderThinkingItem(step.assistant.reasoning, rActive, thinkDur);
@@ -546,9 +410,13 @@ window.Hermes = window.Hermes || {};
       if (step.toolResults) step.toolResults.forEach(r => { if (r.toolCallId || r.tool_call_id) callIdMap[r.toolCallId || r.tool_call_id] = r; });
       if (step.toolCalls) step.toolCalls.forEach(tc => {
         const callId = tc.id || tc.toolCallId || tc.call_id;
-        const result = callIdMap[callId] || null;
-        const isRunning = isStreaming && stFlags.runningSet && stFlags.runningSet[callId];
-        var toolDur = stepDurs ? (stepDurs.toolDurs[callId] != null ? stepDurs.toolDurs[callId] : null) : null;
+        const rt = liveRunning ? liveRunning[callId] : null;
+        const isRunning = !!rt;
+        // 结果优先 toolResult 消息；running 中用 partialResult 预览
+        const result = callIdMap[callId] || (isRunning && rt.preview ? { content: rt.preview, isError: false } : null);
+        var toolDur;
+        if (isRunning) toolDur = rt.startTime ? (Date.now() - rt.startTime) / 1000 : null;
+        else toolDur = stepDurs ? (stepDurs.toolDurs[callId] != null ? stepDurs.toolDurs[callId] : null) : null;
         const card = renderToolCard(tc, result, ti + 1, !isRunning, false, isRunning, toolDur);
         itemsArr.push(card.item);
         panelsArr.push(card.panel);
@@ -565,10 +433,26 @@ window.Hermes = window.Hermes || {};
       }
     }
 
+    // 防御：running 中但尚无 toolCall block 的工具（事件乱序）→ 追加占位 item
+    if (liveRunning) {
+      Object.keys(liveRunning).forEach(function(cid) {
+        var known = steps.some(function(s) {
+          return (s.toolCalls || []).some(function(tc) { return (tc.id || tc.toolCallId || tc.call_id) === cid; });
+        });
+        if (known) return;
+        var rt = liveRunning[cid];
+        var tc = { id: cid, name: rt.name || 'unknown', arguments: rt.args };
+        var toolDur = rt.startTime ? (Date.now() - rt.startTime) / 1000 : null;
+        const card = renderToolCard(tc, rt.preview ? { content: rt.preview, isError: false } : null, toolSteps.length + 1, false, false, true, toolDur);
+        itemsArr.push(card.item);
+        panelsArr.push(card.panel);
+      });
+    }
+
     // 渲染时间线
     if (itemsArr.length > 0) {
       var tlClass = 'ow-tl';
-      if (isStreaming) tlClass += ' ow-tl-streaming ow-tl-scroll';
+      if (live) tlClass += ' ow-tl-streaming ow-tl-scroll';
       else if (itemsArr.length > 5) tlClass += ' ow-tl-scroll';
       html += '<div class="ow-tools">';
       html += '<div class="' + tlClass + '">' + itemsArr.join('') + '</div>';
@@ -579,13 +463,13 @@ window.Hermes = window.Hermes || {};
     // 最终回复
     if (finalStep) {
       const assistantContent = finalStep.assistant?.content || '';
-      if (isStreaming) {
-        // 结构与静态分支对齐（同 .step-answer-wrap + 按钮 + md-raw），让 live→static 时
-        // morphdom 只做 class 去除 + 按钮 opacity 过渡，而非整节点替换 → 消除单帧闪现。
+      if (finalStep.partial && live) {
+        // 流式最终回复：结构与静态分支对齐（同 .step-answer-wrap + 按钮 + md-raw），让
+        // live→static 时 morphdom 只做 class 去除 + 按钮 opacity 过渡，而非整节点替换。
         // 差异仅：streaming-content 类（border-left + 游标）、md-stable/md-active 拆分容器、
         // 按钮流式期 opacity:0（CSS .streaming-content .copy-md-btn/.collapse-btn 不可见）。
         var stepClass = 'step step-final streaming-content';
-        if (stFlags.aborted) stepClass += ' _aborted';
+        if (finalStep._aborted || live.aborted) stepClass += ' _aborted';
         html += '<div class="' + stepClass + '">';
         html += '<div class="step-header"><span class="step-num step-num-final">✦</span><span class="step-label">回复中</span></div>';
         // P#4: 拆分 md-stable/md-active 容器，让流式更新只 patch 活跃块 DOM。
@@ -600,33 +484,42 @@ window.Hermes = window.Hermes || {};
         html += '<button class="copy-md-btn" data-action="copy-markdown" data-target="' + _ansId + '" title="复制 Markdown 原文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg><span>复制</span></button>';
         html += '<textarea class="md-raw" readonly>' + esc(assistantContent) + '</textarea>';
         html += '</div>';
-        if (stFlags.usage && (stFlags.usage.total_tokens || stFlags.usage.prompt_tokens)) {
-          var u = stFlags.usage;
-          var tokInfo = '';
-          if (u.prompt_tokens) tokInfo += fmtTokens(u.prompt_tokens) + ' in';
-          if (u.completion_tokens) tokInfo += (tokInfo ? ' · ' : '') + fmtTokens(u.completion_tokens) + ' out';
-          if (u.total_tokens) tokInfo += (tokInfo ? ' · ' : '') + fmtTokens(u.total_tokens) + ' total';
-          html += '<div class="step-usage">📊 ' + esc(tokInfo) + '</div>';
-        }
         html += '</div>';
       } else {
         const agentTime = finalStep.assistant?.timestamp_fmt || fmtTime(finalStep.assistant?.timestamp);
         var totalBadge = (stepDurs && stepDurs.totalDur != null && stepDurs.totalDur > 0)
           ? '<span class="step-total-dur">总计 ' + esc(fmtTimelineDur(stepDurs.totalDur)) + '</span>' : '';
-        // 残留重塑后保留 _aborted 视觉标记（decomposeStreaming 透传 finalStep._aborted），
-        // 与流式分支 stFlags.aborted 一致：降透明度 + "(已中断)" 标签（chat.css 定义）。
+        // 中止/错误物化后保留 _aborted 视觉标记（finalizeLiveStream 置消息 _aborted）：
+        // 降透明度 + "(已中断)" 标签（chat.css 定义）。
         var staticFinalClass = 'step step-final' + (finalStep._aborted ? ' _aborted' : '');
         html += '<div class="' + staticFinalClass + '">';
         html += '<div class="step-header"><span class="step-num step-num-final">✦</span><span class="step-label">回复</span><span class="step-time">' + esc(agentTime) + '</span>' + totalBadge + '</div>';
         html += window.Hermes.renderAnswerBlock(assistantContent);
+        // token 用量（pi Usage：input/output/totalTokens；message_end 权威消息携带）
+        var _u = finalStep.assistant?.usage;
+        if (_u && (_u.totalTokens || _u.input || _u.output)) {
+          var tokInfo = '';
+          if (_u.input) tokInfo += fmtTokens(_u.input) + ' in';
+          if (_u.output) tokInfo += (tokInfo ? ' · ' : '') + fmtTokens(_u.output) + ' out';
+          if (_u.totalTokens) tokInfo += (tokInfo ? ' · ' : '') + fmtTokens(_u.totalTokens) + ' total';
+          html += '<div class="step-usage">📊 ' + esc(tokInfo) + '</div>';
+        }
         html += '</div>';
       }
     }
 
-    // 错误提示（流式 SSE error 事件 / 网络中断残留）。
-    // 流式分支：sm._error 经 stFlags.error 可见；残留分支：_error 由 decomposeStreaming
-    // 透传到 errorStep。无正文时也需可见，否则用户只看到空回复或"思考中"无限转圈。
-    var _errMsg = (isStreaming && stFlags.error) ? stFlags.error : (errorStep ? errorStep._error : '');
+    // 流式占位：尚无任何可渲染内容（审批卡已在上方渲染）。有错误时不提前返回，让错误块渲染。
+    if (live && toolSteps.length === 0 && !finalStep && itemsArr.length === 0 && !live.error) {
+      html += '<div class="step step-final streaming-content">';
+      html += '<div class="step-header"><span class="ow-spinner"></span><span class="step-label">思考中</span></div>';
+      html += '</div>';
+      return html;
+    }
+
+    // 错误提示（SSE error 事件 / 中止与网络错误的物化标记）。
+    // 无正文时也需可见，否则用户只看到空回复或"思考中"无限转圈。
+    var _errMsg = live ? (live.error || '') : '';
+    if (!_errMsg && errorStep) _errMsg = errorStep._error;
     if (_errMsg) {
       html += '<div class="step step-error"><div class="step-header"><span class="step-label">⚠️ 出错</span></div><div class="step-error-msg">' + esc(String(_errMsg)) + '</div></div>';
     }
@@ -651,7 +544,7 @@ window.Hermes = window.Hermes || {};
 
     const userId = turn.user.id || '';
     const userTime = turn.user.timestamp_fmt || fmtTime(turn.user.timestamp);
-    const isStreamingTurn = turn.steps.some(s => s.streaming);
+    const isStreamingTurn = !!turn.live;
 
     let html = `<div class="turn" data-msg-id="${esc(String(userId))}" data-key="${esc(String(turn.key || ''))}"${isStreamingTurn ? ' data-streaming="true"' : ''}>
       <div class="turn-user">
@@ -668,7 +561,7 @@ window.Hermes = window.Hermes || {};
             ${renderTurnStepsHTML(turn)}
           </div>
         </div>
-        ${renderThinkingMargin(turn, isStreamingTurn)}
+        ${renderThinkingMargin(turn)}
       </div>`;
     }
     html += `</div>`;
@@ -1125,7 +1018,7 @@ window.Hermes = window.Hermes || {};
       let md = `# ${esc(session.title || 'Session ' + sessionId.substring(0, 16))}\n\n`;
       md += `> 模型: ${session.model || '-'} | 时间: ${fmtTime(session.started_at)} - ${fmtTime(session.ended_at)} | 消息: ${session.message_count || 0}\n\n---\n\n`;
 
-      const turns = groupIntoTurns(msgs);
+      const turns = window.Hermes.buildTurns(msgs);
       turns.forEach(turn => {
         if (turn.type === 'other') return;
         md += `### 👤 用户\n\n${turn.user.content || ''}\n\n`;
@@ -1162,7 +1055,6 @@ window.Hermes = window.Hermes || {};
   window.Hermes.searchSessions = searchSessions;
   window.Hermes.selectSession = selectSession;
   window.Hermes.renderMessages = renderMessages;
-  window.Hermes.groupIntoTurns = groupIntoTurns;
   window.Hermes.renderTurnStepsHTML = renderTurnStepsHTML;
   window.Hermes.renderSingleTurnHTML = renderSingleTurnHTML;
   window.Hermes.renderToolCard = renderToolCard;
@@ -1175,6 +1067,5 @@ window.Hermes = window.Hermes || {};
   window.Hermes.initMessageActions = initMessageActions;
   window.Hermes.deleteMessageRound = deleteMessageRound;
   window.Hermes.asyncConfirm = asyncConfirm;
-  window.Hermes.getToolEmoji = getToolEmoji;
 
 })();

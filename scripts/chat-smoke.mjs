@@ -1,22 +1,23 @@
 /* ============================================================
-   chat-smoke.mjs — 对话渲染层 view-model 冒烟测试（node 可独立跑）
+   chat-smoke.mjs — 对话渲染层 view-model / session-manager 冒烟测试（node 可独立跑）
 
    用法:  bun run scripts/chat-smoke.mjs      （package.json type:module）
 
-   覆盖（历史翻车场景 + P1 核心断言）：
-   1. buildTurns 与旧 session.js groupIntoTurns 逐项语义对照（真实/合成消息，
-      不含 thinking-block 的 fixture 必须严格相等）。
-   2. thinking 块 .thinking 字段读取（旧实现读 .text 丢思考 → 新实现保留）——
-      记录为**有意的行为修正**而非回归。
-   3. 流式单消息形态 decomposeStreaming ⟺ 持久化双消息形态 buildTurns 结果
-      结构等价（本轮核心断言，杜绝流结束拆消息/双形态分裂复发）。
-   4. 稳定 key：_localId 优先、id 次之、序号兜底；同输入两次调用 key 全等；
-      other 卡 key 同调用内不冲突。
-   5. compactionSummary/system _compactionHtml 孤儿跳过（fb12a52 场景）。
-   6. _aborted 部分内容保留。多轮工具切分。turnSig 稳定性与敏感性。
+   覆盖（历史翻车场景 + 本轮形态统一核心断言）：
+   1. pi 原生形态分组（buildTurns 唯一实现）：纯文本 / 工具轮 / 多轮工具 /
+      thinking 块（.thinking 字段）/ 孤儿跳过 / 压缩卡片。
+   2. 【核心】三段等价：live 累积器形态（step.partial + live 覆盖）→
+      message_end 嫁接（_localId 保持 turn key）→ DB reFetch 原生形态。
+      后两段 turnSig 全等 → renderDiff 零 DOM 操作（800ms reFetch 无跳动）。
+   3. 【核心】finalizeLiveStream 物化：中止/错误路径把累积器物化为
+      pi 原生 blocks（_aborted/_error 标记 + _localId 保持），空 partial 删除；
+      幂等；activeStreams 清理。
+   4. 稳定 key：_localId 优先、id 次之、序号兜底；other 卡 key 不冲突。
+   5. turnSig 敏感性（等长内容替换 / usage / 工具 / toolResult / partial 标记）。
+   6. compactionCardHtml 转义 + msgText 多形态。
 
    模块加载方式：global.window = global（IIFE 挂 window.Hermes），动态 import
-   state.js → session.js（只取旧 groupIntoTurns 做对照）→ view-model.js。
+   state.js → view-model.js → session-manager.js（finalizeLiveStream 集成）。
    state.js 顶层有 setInterval，测试结束必须 process.exit。
    ============================================================ */
 import { pathToFileURL } from "node:url";
@@ -29,7 +30,7 @@ globalThis.document = {
   querySelectorAll: () => [],
   createElement: () => ({ style: {}, classList: { add() {}, remove() {}, toggle() {} }, addEventListener() {}, appendChild() {}, remove() {}, setAttribute() {}, dataset: {} }),
   body: { appendChild() {}, insertBefore() {} },
-  addEventListener() {},
+  addEventListener: () => {},
 };
 globalThis.location = { hash: "", href: "" };
 globalThis.history = { replaceState() {} };
@@ -52,18 +53,6 @@ function eq(name, a, b) {
   const sb = typeof b === "string" ? b : JSON.stringify(b, null, 0);
   check(name, sa === sb, sa === sb ? "" : "\n    got:      " + String(sa).slice(0, 400) + "\n    expected: " + String(sb).slice(0, 400));
 }
-function canon(turn) {
-  // 保留（历史 fixture 需要时可用）；当前主断言不再依赖旧实现对照
-  const t = JSON.parse(JSON.stringify(turn));
-  delete t.key;
-  return t;
-}
-function stripThinkingBlocks(msgs) {
-  return msgs.map((m) => {
-    if (!Array.isArray(m.content)) return m;
-    return Object.assign({}, m, { content: m.content.filter((b) => b.type !== "thinking") });
-  });
-}
 
 // ---------- 加载模块 ----------
 const base = resolve(process.cwd(), "web/chat/js");
@@ -71,235 +60,258 @@ await import(pathToFileURL(resolve(base, "state.js")).href).catch((e) => {
   console.error("state.js load failed:", e.message);
   process.exit(2);
 });
-let oldLoaded = true;
-await import(pathToFileURL(resolve(base, "session.js")).href).catch((e) => {
-  console.error("session.js load failed (parity skipped):", e.message);
-  oldLoaded = false;
-});
 await import(pathToFileURL(resolve(base, "view-model.js")).href).catch((e) => {
   console.error("view-model.js load failed:", e.message);
   process.exit(2);
 });
+let smLoaded = true;
+await import(pathToFileURL(resolve(base, "session-manager.js")).href).catch((e) => {
+  console.error("session-manager.js load failed (finalize tests skipped):", e.message);
+  smLoaded = false;
+});
 
 const VM = H();
-console.log("== loaded: state.js session.js(" + (oldLoaded ? "ok" : "FAILED") + ") view-model.js ==");
+console.log("== loaded: state.js view-model.js session-manager.js(" + (smLoaded ? "ok" : "FAILED") + ") ==");
 
 const text = (s) => [{ type: "text", text: s }];
 const think = (s) => [{ type: "thinking", thinking: s }];
-const toolCall = (id, name, args) => [{ type: "toolCall", id, name, arguments: args || {} }];
+const tcBlock = (id, name, args) => ({ type: "toolCall", id, name, arguments: args || {} });
 const toolResultMsg = (id, out, isErr) => ({ role: "toolResult", toolCallId: id, content: text(out), isError: !!isErr });
 
 // ============================================================
-// 1) 与旧 groupIntoTurns 逐项语义对照（fixture 统一剥离 thinking 保证可比）
+// 1) pi 原生形态分组
 // ============================================================
-console.log("\n[1] parity vs old groupIntoTurns");
-const fixtures = {
-  "plain user->assistant text": [
+console.log("\n[1] native-form grouping (buildTurns)");
+{
+  const turns = VM.buildTurns([
     { role: "user", content: "hello", timestamp: 1 },
     { role: "assistant", content: text("hi there"), timestamp: 2 },
-  ],
-  "user with image/plain content blocks": [
+  ]);
+  check("plain: 1 turn, 1 step, text extracted", turns.length === 1 && turns[0].steps.length === 1 && turns[0].steps[0].assistant.content === "hi there");
+  check("plain: no toolCalls", turns[0].steps[0].toolCalls === null && turns[0].steps[0].hasMore === false);
+}
+{
+  const turns = VM.buildTurns([
     { role: "user", content: [{ type: "image", text: "ignored" }, { type: "text", text: "what is this" }] },
     { role: "assistant", content: text("a picture") },
-  ],
-  "tool round + toolResult + final answer": [
+  ]);
+  check("user content blocks normalized to text", turns[0].user.content === "what is this");
+  check("user blocks turn still keyed", typeof turns[0].key === "string" && turns[0].key.length > 0);
+}
+{
+  const turns = VM.buildTurns([
     { role: "user", content: "run it" },
-    { role: "assistant", content: toolCall("c1", "bash", { cmd: "ls" }) },
+    { role: "assistant", content: [tcBlock("c1", "bash", { cmd: "ls" })] },
     toolResultMsg("c1", "file1\nfile2"),
     { role: "assistant", content: text("done: file1") },
-  ],
-  "multi-round tools (two tool steps)": [
+  ]);
+  const st = turns[0].steps;
+  check("tool round: 2 steps", st.length === 2);
+  check("tool round: tool step shape", st[0].toolCalls.length === 1 && st[0].toolCalls[0].id === "c1" && st[0].toolCalls[0].name === "bash" && st[0].hasMore === true);
+  check("tool round: toolResult attached", st[0].toolResults.length === 1 && st[0].toolResults[0].toolCallId === "c1");
+  check("tool round: final step", st[1].assistant.content === "done: file1" && st[1].toolCalls === null);
+}
+{
+  const turns = VM.buildTurns([
     { role: "user", content: "go" },
-    { role: "assistant", content: toolCall("c1", "read", { path: "a.ts" }) },
+    { role: "assistant", content: [tcBlock("c1", "read", { path: "a.ts" })] },
     toolResultMsg("c1", "content-a"),
-    { role: "assistant", content: toolCall("c2", "edit", { path: "a.ts" }) },
+    { role: "assistant", content: [tcBlock("c2", "edit", { path: "a.ts" })] },
     toolResultMsg("c2", "edited"),
     { role: "assistant", content: text("finished") },
-  ],
-  "thinkingless assistant with reasoning-like text + note": [
-    { role: "user", content: "why?" },
-    { role: "assistant", content: text("short note before tool") },
-  ],
-  "two user turns": [
-    { role: "user", content: "q1" },
-    { role: "assistant", content: text("a1") },
-    { role: "user", content: "q2" },
-    { role: "assistant", content: text("a2") },
-  ],
-  "aborted streaming partial (no thinking)": [
-    { role: "user", content: "long task" },
-    { role: "assistant", content: "partial text", _aborted: true, _error: "network", _toolSteps: [] },
-  ],
-  "compactionSummary head + orphans skipped to next user": [
-    { role: "compactionSummary", summary: "我们把 <b>早期</b> 对话压缩了 & 保留要点" },
-    { role: "assistant", content: text("orphan old assistant") },
-    toolResultMsg("cOld", "orphan result"),
-    { role: "user", content: "继续" },
+  ]);
+  const st = turns[0].steps;
+  check("multi-round: 3 steps, 2 with tools", st.length === 3 && st[0].toolCalls.length === 1 && st[1].toolCalls.length === 1 && !st[2].toolCalls);
+}
+{
+  // thinking + text 混合 blocks（pi 原生：thinking 正文在 .thinking）
+  const turns = VM.buildTurns([
+    { role: "user", content: "q" },
+    { role: "assistant", content: [...think("secret reasoning here"), { type: "text", text: "answer" }] },
+  ]);
+  const st = turns[0].steps[0];
+  check("thinking .thinking field kept (not .text)", st.assistant.reasoning === "secret reasoning here");
+  check("text+thinking mixed parse", st.assistant.content === "answer");
+}
+
+// ============================================================
+// 2)【核心】三段等价：live 累积器 → message_end 嫁接 → DB 原生
+// ============================================================
+console.log("\n[2] three-stage equivalence: live accumulator -> graft -> DB native");
+const USER = { role: "user", content: "改文件", _localId: "L1", timestamp: 1 };
+const FINAL_TEXT = "最终正文：文件已改好";
+const REASONING = "思考中要先读文件…";
+
+// —— 阶段 A：live 累积（thinking_delta → text_delta 累积中）——
+const partial = { role: "assistant", content: [], timestamp: 10, _localId: "L2" };
+const live = { partial, text: FINAL_TEXT, reasoning: REASONING, toolCalls: [], runningTools: {}, approval: null, error: null, aborted: false };
+{
+  const turns = VM.buildTurns([USER, partial], live);
+  const st = turns[0].steps;
+  check("A: partial flagged", st.length === 1 && st[0].partial === true);
+  check("A: content from live accumulator", st[0].assistant.content === FINAL_TEXT && st[0].assistant.reasoning === REASONING);
+  check("A: turn.live mounted", turns[0].live === live);
+  check("A: reasoning-only phase marks _reasoningActive", (() => {
+    const l2 = Object.assign({}, live, { text: "" });
+    return VM.buildTurns([USER, partial], l2)[0].steps[0]._reasoningActive === true;
+  })());
+  check("A: with text _reasoningActive off", VM.buildTurns([USER, partial], live)[0].steps[0]._reasoningActive !== true);
+}
+{
+  // 阶段 A'：toolcall_end 先于 tool_execution_start 到达（toolCalls 在 live 累积器）
+  const liveTc = { partial, text: "", reasoning: REASONING, toolCalls: [tcBlock("c1", "read", { path: "a.ts" })], runningTools: {}, approval: null };
+  const st = VM.buildTurns([USER, partial], liveTc)[0].steps;
+  check("A': live toolCalls drive tool step", st[0].toolCalls && st[0].toolCalls.length === 1 && st[0].toolCalls[0].id === "c1" && st[0].hasMore === false);
+  check("A': partial tool step flagged", st[0].partial === true);
+}
+{
+  // 阶段 A''：partial 已被 message_end 替换、工具执行中（runningTools-only）→ live 挂最后 turn
+  const authTool = { role: "assistant", content: [tcBlock("c1", "read", { path: "a.ts" })], timestamp: 10, _localId: "L2" };
+  const liveRun = { partial: null, text: "", reasoning: "", toolCalls: [], runningTools: { c1: { name: "read", args: {}, startTime: Date.now(), preview: "" } }, approval: null };
+  const turns = VM.buildTurns([USER, authTool], liveRun);
+  check("A'': running-only live mounted on last turn", turns[0].live === liveRun);
+  check("A'': tool step from authoritative blocks", turns[0].steps[0].toolCalls[0].id === "c1");
+}
+
+// —— 阶段 B：message_end 嫁接（_localId 保持 → 原地替换）——
+const USAGE = { input: 120, output: 80, totalTokens: 200 };
+const grafted = { role: "assistant", content: [...think(REASONING), { type: "text", text: FINAL_TEXT }], usage: USAGE, timestamp: 12 };
+grafted._localId = partial._localId; // chat.js _finalizePartialWithMessage 嫁接
+const stageB = VM.buildTurns([USER, grafted]);
+{
+  const st = stageB[0].steps;
+  check("B: partial flag gone", st.length === 1 && !st[0].partial);
+  check("B: blocks parsed to text/reasoning", st[0].assistant.content === FINAL_TEXT && st[0].assistant.reasoning === REASONING);
+  check("B: turn key stable across morph (user _localId)", stageB[0].key === "L1");
+}
+
+// —— 阶段 C：DB reFetch 原生形态（无 id；boundary user 嫁接 _localId）——
+const userFromDb = { role: "user", content: "改文件", timestamp: 1 };
+userFromDb._localId = USER._localId; // backgroundReFetch H3 边界嫁接
+const dbAssistant = { role: "assistant", content: [...think(REASONING), { type: "text", text: FINAL_TEXT }], usage: USAGE, timestamp: 12 };
+const stageC = VM.buildTurns([userFromDb, dbAssistant]);
+{
+  eq("B ⟺ C: turnSig identical (reFetch no-jump gate)", VM.turnSig(stageB[0]), VM.turnSig(stageC[0]));
+  check("B ⟺ C: turn key identical", stageB[0].key === stageC[0].key);
+}
+{
+  // 工具轮的三段等价：live 工具步骤 → 嫁接（含 toolResult 独立消息）→ DB
+  const uMsg = { role: "user", content: "跑", _localId: "K1", timestamp: 1 };
+  const p2 = { role: "assistant", content: [], timestamp: 5, _localId: "K2" };
+  const live2 = { partial: p2, text: "", reasoning: "", toolCalls: [tcBlock("c9", "bash", { cmd: "ls" })], runningTools: { c9: { name: "bash", startTime: 1, preview: "" } }, approval: null };
+  const tLive = VM.buildTurns([uMsg, p2], live2);
+  check("tool live: running turn has live", tLive[0].live === live2);
+  check("tool live: step.partial on tool step", tLive[0].steps[0].partial === true);
+
+  // message_end：工具消息落定；tool_execution_end：独立 toolResult 消息 push
+  const authT = { role: "assistant", content: [tcBlock("c9", "bash", { cmd: "ls" })], timestamp: 5 };
+  authT._localId = "K2";
+  const trMsg = toolResultMsg("c9", "file-a");
+  trMsg._localId = "K3";
+  const stageB2 = VM.buildTurns([uMsg, authT, trMsg]);
+  // DB reFetch：同样三消息（无 id）
+  const stageC2 = VM.buildTurns([
+    Object.assign({ role: "user", content: "跑", timestamp: 1 }, { _localId: "K1" }),
+    { role: "assistant", content: [tcBlock("c9", "bash", { cmd: "ls" })], timestamp: 5 },
+    toolResultMsg("c9", "file-a"),
+  ]);
+  eq("tool B ⟺ C: turnSig identical", VM.turnSig(stageB2[0]), VM.turnSig(stageC2[0]));
+  check("tool B: toolResult attached to tool step", stageB2[0].steps[0].toolResults.length === 1 && stageB2[0].steps[0].toolResults[0].toolCallId === "c9");
+}
+
+// ============================================================
+// 3)【核心】finalizeLiveStream 物化（session-manager 集成）
+// ============================================================
+if (smLoaded) {
+  console.log("\n[3] finalizeLiveStream materialization");
+  const sid = "sm-test-1";
+  const pMsg = { role: "assistant", content: [], timestamp: 10, _localId: "F2" };
+  H().state.sessionMessages[sid] = { messages: [{ role: "user", content: "q", _localId: "F1", timestamp: 1 }, pMsg], version: 1, isStale: false, loadedAt: Date.now() };
+  H().state.activeStreams[sid] = { partial: pMsg, text: "部分正文", reasoning: "思考中", toolCalls: [], runningTools: { c1: {} }, finished: false, preStreamCount: 1 };
+  H().finalizeLiveStream(sid, { aborted: true });
+  const msgs = H().state.sessionMessages[sid].messages;
+  check("finalize: partial replaced in place (length stable)", msgs.length === 2);
+  eq("finalize: materialized pi native blocks", msgs[1].content, [{ type: "thinking", thinking: "思考中" }, { type: "text", text: "部分正文" }]);
+  check("finalize: _aborted marker", msgs[1]._aborted === true);
+  check("finalize: _localId grafted (turn key stable)", msgs[1]._localId === "F2");
+  check("finalize: activeStreams cleaned", H().state.activeStreams[sid] === undefined);
+  check("finalize: cache marked stale", H().state.sessionMessages[sid].isStale === true);
+  {
+    const st = VM.buildTurns(msgs)[0].steps;
+    check("finalize: static step renders content + abort flag", st[0].assistant.content === "部分正文" && st[0]._aborted === true && !st[0].partial);
+  }
+  // 幂等：stream 已删，再次调用无副作用
+  H().finalizeLiveStream(sid, { error: "again" });
+  check("finalize: idempotent", H().state.sessionMessages[sid].messages.length === 2 && H().state.activeStreams[sid] === undefined);
+
+  // 空 partial → 删除
+  const sid2 = "sm-test-2";
+  const pEmpty = { role: "assistant", content: [], timestamp: 10, _localId: "E2" };
+  H().state.sessionMessages[sid2] = { messages: [{ role: "user", content: "q", _localId: "E1" }, pEmpty], version: 1, isStale: false, loadedAt: Date.now() };
+  H().state.activeStreams[sid2] = { partial: pEmpty, text: "", reasoning: "", toolCalls: [], runningTools: {}, finished: false };
+  H().finalizeLiveStream(sid2, { error: "timeout" });
+  check("finalize: empty partial removed", H().state.sessionMessages[sid2].messages.length === 1);
+
+  // 工具累积 → 物化含 toolCall block
+  const sid3 = "sm-test-3";
+  const pTool = { role: "assistant", content: [], timestamp: 10, _localId: "T2" };
+  H().state.sessionMessages[sid3] = { messages: [{ role: "user", content: "q", _localId: "T1" }, pTool], version: 1, isStale: false, loadedAt: Date.now() };
+  H().state.activeStreams[sid3] = { partial: pTool, text: "跑了", reasoning: "", toolCalls: [tcBlock("c9", "bash", { cmd: "ls" })], runningTools: {}, finished: false };
+  H().finalizeLiveStream(sid3, { error: "network" });
+  const m3 = H().state.sessionMessages[sid3].messages[1];
+  eq("finalize: tool blocks materialized", m3.content, [{ type: "toolCall", id: "c9", name: "bash", arguments: { cmd: "ls" } }, { type: "text", text: "跑了" }]);
+  check("finalize: error marker kept", m3._error === "network");
+  {
+    const st = VM.buildTurns(H().state.sessionMessages[sid3].messages)[0].steps;
+    check("finalize: tool step preserved (L1: 卡片不消失)", st[0].toolCalls && st[0].toolCalls[0].id === "c9" && st[0].hasMore === true);
+    // 同一消息内 text+toolCall：文本保留在 step.assistant.content（渲染层按
+    // “触发旁白”规则展示——短文本作为工具卡片上下文，非独立 final step，与 DB 重载一致）
+    check("finalize: text kept in tool step content", st[0].assistant.content === "跑了");
+  }
+  // 清理测试残留
+  delete H().state.sessionMessages[sid];
+  delete H().state.sessionMessages[sid2];
+  delete H().state.sessionMessages[sid3];
+} else {
+  console.log("\n[3] finalizeLiveStream tests SKIPPED (session-manager failed to load)");
+}
+
+// ============================================================
+// 4) 孤儿跳过 / 压缩卡片 / 稳定 key
+// ============================================================
+console.log("\n[4] orphan skip, compaction cards, stable keys");
+{
+  const ts = VM.buildTurns([
+    { role: "compactionSummary", summary: "压缩了历史" },
+    { role: "assistant", content: text("orphan1") },
+    toolResultMsg("co", "orphan result"),
+    { role: "user", content: "新问题" },
     { role: "assistant", content: text("新回答") },
-  ],
-  "system _compactionHtml head + orphan skip": [
-    { role: "system", _compactionHtml: "<div class=\"compaction-result\">✂️</div>", _isCompaction: true },
+  ]);
+  check("compaction + orphans skipped -> exactly 2 turns", ts.length === 2);
+  check("orphans do not appear as extra turns", ts[1].type === "user" && ts[1].user.content === "新问题" && ts[1].steps.length === 1);
+  check("compactionSummary -> other turn with card html", ts[0].type === "other" && ts[0].message._isCompaction === true && !!ts[0].message._compactionHtml);
+}
+{
+  const ts = VM.buildTurns([
+    { role: "system", _compactionHtml: '<div class="compaction-result">✂️</div>', _isCompaction: true },
     { role: "assistant", content: text("orphan") },
     { role: "user", content: "hi" },
-  ],
-  "toolResult orphan at head (top-level other)": [
-    toolResultMsg("x1", "lonely"),
-    { role: "user", content: "q" },
-  ],
-  "trailing compactionSummary after a round (orphan inside turn)": [
+  ]);
+  check("system _compactionHtml head + orphan skip", ts.length === 2 && ts[0].type === "other" && ts[1].type === "user");
+}
+{
+  const ts = VM.buildTurns([toolResultMsg("x1", "lonely"), { role: "user", content: "q" }]);
+  check("toolResult orphan at head -> other turn first", ts.length === 2 && ts[0].type === "other");
+}
+{
+  const ts = VM.buildTurns([
     { role: "user", content: "q" },
     { role: "assistant", content: text("a") },
     { role: "compactionSummary", summary: "tail summary" },
-  ],
-  "streaming single message in array (parity of grouping)": [
-    { role: "user", content: "hi", _localId: "L1" },
-    { role: "assistant", content: "so far", reasoning: "thinking…", _streaming: true, _toolSteps: [] },
-  ],
-};
-
-for (const [name, msgs] of Object.entries(fixtures)) {
-  // groupIntoTurns 现已委托 buildTurns（同一实现），断言两入口收敛 + turn 带稳定 key
-  const clean = stripThinkingBlocks(msgs);
-  const viaAlias = VM.groupIntoTurns(clean);
-  const viaDirect = VM.buildTurns(clean);
-  eq("alias parity: " + name, JSON.stringify(viaAlias), JSON.stringify(viaDirect));
-  check("keyed turn: " + name, !!viaDirect[0] && typeof viaDirect[0].key === 'string' && viaDirect[0].key.length > 0);
+  ]);
+  check("trailing compactionSummary swallowed into turn steps", ts.length === 1 && ts[0].steps.some((s) => s.system));
 }
-
-// ============================================================
-// 2) thinking .thinking 字段读取（有意修正：旧实现读 .text 丢思考，现保留）
-// ============================================================
-console.log("\n[2] thinking block .thinking field (fixed: old read .text and dropped it)");
-{
-  const msgs = [
-    { role: "user", content: "q" },
-    { role: "assistant", content: think("secret reasoning here") },
-  ];
-  const st = VM.buildTurns(msgs)[0].steps;
-  check("thinking reasoning kept from .thinking", st[0].assistant.reasoning === "secret reasoning here");
-}
-const msgsThinkingOnly = [
-  { role: "user", content: "q" },
-  { role: "assistant", content: [...think("r1"), { type: "text", text: "answer" }] },
-];
-{
-  const st = VM.buildTurns(msgsThinkingOnly)[0].steps;
-  check("text+thinking mixed blocks parse", st[0].assistant.content === "answer" && st[0].assistant.reasoning === "r1");
-}
-
-// ============================================================
-// 3) 流式单消息 ⟺ 持久化双消息 结构等价（本轮核心断言）
-// ============================================================
-console.log("\n[3] streaming shape decomposeStreaming == persisted buildTurns shape");
-const sm = {
-  role: "assistant",
-  _streaming: true,
-  content: "最终正文：文件已改好",
-  reasoning: "思考中要先读文件…",
-  timestamp: 10,
-  _toolSteps: [
-    { name: "read", toolCallId: "c1", args: { path: "a.ts" }, running: false, startTime: 100, endTime: 500, result: "file contents here" },
-  ],
-};
-const streamMsgs = [{ role: "user", content: "改文件", _localId: "L1", timestamp: 1 }, sm];
-const persistMsgs = [
-  { role: "user", content: "改文件", id: "usr1", timestamp: 1 },
-  { role: "assistant", id: "a1", content: [{ type: "thinking", thinking: "思考中要先读文件…" }, toolCall("c1", "read", { path: "a.ts" })[0] ], timestamp: 5 },
-  toolResultMsg("c1", "file contents here"),
-  { role: "assistant", id: "a2", content: text("最终正文：文件已改好"), timestamp: 12 },
-];
-
-function canonSteps(steps) {
-  return steps.map((s) => {
-    if (s.streaming) return { kind: "streaming", content: s.streaming.content, reasoning: s.streaming.reasoning };
-    if (s.assistant) {
-      return {
-        kind: s.toolCalls && s.toolCalls.length ? "tool" : "final",
-        content: s.assistant.content,
-        reasoning: s.assistant.reasoning,
-        hasMore: !!s.hasMore,
-        reasoningActive: !!s._reasoningActive,
-        calls: (s.toolCalls || []).map((c) => ({ id: c.id, name: c.name })),
-        results: (s.toolResults || []).map((r) => {
-          const content = Array.isArray(r.content)
-            ? r.content.filter((b) => b && b.type === "text").map((b) => b.text).join("")
-            : String(r.content || "");
-          return { id: r.toolCallId, isError: !!r.isError, text: content };
-        }),
-      };
-    }
-    return { kind: "other" };
-  });
-}
-{
-  const dec = VM.decomposeStreaming(sm);
-  const streamTurn = VM.buildTurns(streamMsgs)[0];
-  const persistTurn = VM.buildTurns(persistMsgs)[0];
-  check("buildTurns keeps {streaming} step (parity with groupIntoTurns)", streamTurn.steps.length === 1 && !!streamTurn.steps[0].streaming);
-  eq("decomposed steps == persisted steps", canonSteps(dec.steps), canonSteps(persistTurn.steps));
-  check("flags.hasContent", dec.flags.hasContent === true);
-  check("flags.hasReasoning", dec.flags.hasReasoning === true);
-  check("flags.runningSet empty when done", Object.keys(dec.flags.runningSet).length === 0);
-  check("flags.toolTimes captured", dec.flags.toolTimes.c1 && dec.flags.toolTimes.c1.endTime === 500);
-  eq("final answer text matches", streamTurn.user.content, "改文件");
-}
-// 仅思考、无工具无正文
-{
-  const sm2 = { _streaming: true, content: "", reasoning: "正在想…", _toolSteps: [] };
-  const d2 = VM.decomposeStreaming(sm2);
-  check("thinking-only stream yields _reasoningActive step", d2.steps.length === 1 && d2.steps[0]._reasoningActive === true && d2.steps[0].assistant.reasoning === "正在想…");
-}
-// 仅正文、无思考无工具
-{
-  const sm3 = { _streaming: true, content: "plain answer", reasoning: "", _toolSteps: [] };
-  const d3 = VM.decomposeStreaming(sm3);
-  check("text-only stream yields final step", d3.steps.length === 1 && d3.steps[0].assistant.content === "plain answer" && d3.flags.hasContent);
-}
-
-// ============================================================
-// 3.5) 流式残留（remnant）归一化：tools 保留 + 终态渲染与 DB 形态同签名（本轮核心）
-// ============================================================
-console.log("\n[3.5] remnant normalization (stream ended / aborted, pre-reFetch)");
-{
-  // 流结束后（_streaming=false）未 reFetch 的残留消息
-  const remnantMsgs = [
-    { role: "user", content: "改文件", _localId: "Lr", timestamp: 1 },
-    { role: "assistant", _localId: "ra", _streaming: false, content: "最终正文：文件已改好", reasoning: "思考中要先读文件…", timestamp: 10,
-      _toolSteps: [
-        { name: "read", toolCallId: "c1", args: { path: "a.ts" }, running: false, startTime: 100, endTime: 500, result: "file contents here" },
-      ] },
-  ];
-  const persistMsgs2 = [
-    { role: "user", content: "改文件", id: "usr1", timestamp: 1 },
-    { role: "assistant", id: "a1", content: [{ type: "thinking", thinking: "思考中要先读文件…" }, toolCall("c1", "read", { path: "a.ts" })[0] ], timestamp: 5 },
-    toolResultMsg("c1", "file contents here"),
-    { role: "assistant", id: "a2", content: text("最终正文：文件已改好"), timestamp: 12 },
-  ];
-  const rt = VM.buildTurns(remnantMsgs);
-  const pt = VM.buildTurns(persistMsgs2);
-  check("remnant is not a {streaming} step anymore", rt[0].steps.length === 2 && !rt[0].steps.some((s) => s.streaming));
-  check("remnant keeps tool cards (L1 intent)", rt[0].steps[0].toolCalls.length === 1 && rt[0].steps[0].toolCalls[0].id === "c1");
-  check("remnant synthesizes toolResults from _toolSteps", rt[0].steps[0].toolResults.length === 1 && rt[0].steps[0].toolResults[0].toolCallId === "c1");
-  check("remnant split final content to own step", rt[0].steps[1].assistant.content === "最终正文：文件已改好" && !rt[0].steps[1].toolCalls);
-  eq("remnant canonical steps == persisted steps", JSON.stringify(canonSteps(rt[0].steps)), JSON.stringify(canonSteps(pt[0].steps)));
-  check("remnant turnSig == persisted turnSig (800ms reFetch no-jump gate)", VM.turnSig(rt[0]) === VM.turnSig(pt[0]));
-}
-// 中止且带工具的残留 → 工具保留 + 正文保留
-{
-  const abortedMsgs = [
-    { role: "user", content: "跑一下", _localId: "Lx" },
-    { role: "assistant", _localId: "ra2", content: "部分结果出来了", reasoning: "", _streaming: false, _aborted: true, _error: "network",
-      _toolSteps: [{ name: "bash", toolCallId: "c9", args: { cmd: "ls" }, running: false, startTime: 1, endTime: 2, result: "file-a" }] },
-  ];
-  const st = VM.buildTurns(abortedMsgs)[0].steps;
-  check("aborted remnant keeps tool card", st.length === 2 && st[0].toolCalls && st[0].toolCalls[0].id === "c9");
-  check("aborted remnant keeps partial content", st[1].assistant.content === "部分结果出来了");
-}
-
-// ============================================================
-// 4) 稳定 key
-// ============================================================
-console.log("\n[4] stable keys");
 {
   const msgs = [
     { role: "user", content: "q1" },
@@ -313,88 +325,82 @@ console.log("\n[4] stable keys");
   check("no-id users get distinct ordinal keys", t1[0].key !== t1[1].key && t1[0].key.startsWith("t") && t1[1].key.startsWith("t"));
 }
 {
-  const msgs = [
+  const ts = VM.buildTurns([
     { role: "user", content: "q", _localId: "Lx", id: "real1" },
     { role: "assistant", content: text("a") },
     { role: "user", content: "q2", id: "real2" },
-  ];
-  const ts = VM.buildTurns(msgs);
+  ]);
   check("_localId beats id", ts[0].key === "Lx");
   check("id used when no _localId", ts[1].key === "real2");
 }
 {
-  // 两个头部 system 消息（相同内容前缀，非 compaction）→ 两个 other turn，key 不冲突
-  // 注：两个连续 compactionSummary 在头部时第二个会被第一个的"跳过循环"吃掉（忠实语义），
-  // 无法用 compaction 构造同调用内冲突，改用 top-level else 分支可连坐的 system。
-  const msgs = [
+  const ts = VM.buildTurns([
     { role: "system", content: "完全相同的前缀内容 111", _isSystemDisplay: true },
     { role: "system", content: "完全相同的前缀内容 222", _isSystemDisplay: true },
-  ];
-  const ts = VM.buildTurns(msgs);
+  ]);
   check("other cards dedupe keys", ts.length === 2 && ts[0].key !== ts[1].key && ts[0].key.startsWith("o"));
-}
-{
-  const msgs = [
-    { role: "compactionSummary", summary: "压缩了历史" },
-  ];
-  const ts = VM.buildTurns(msgs);
-  check("compactionSummary -> other turn", ts.length === 1 && ts[0].type === "other" && ts[0].key.startsWith("o"));
-  check("compaction synthetic message", ts[0].message._isCompaction === true && !!ts[0].message._compactionHtml);
 }
 
 // ============================================================
-// 5) 孤儿跳过 + 6) abort / sig
+// 5) turnSig 敏感性（宁可过度重渲，不可漏渲）
 // ============================================================
-console.log("\n[5][6] orphan skip, aborted partial, turnSig");
+console.log("\n[5] turnSig sensitivity");
 {
-  const msgs = [
-    { role: "compactionSummary", summary: "压缩了历史" },
-    { role: "assistant", content: text("orphan1") },
-    toolResultMsg("co", "orphan result"),
-    { role: "user", content: "新问题" },
-    { role: "assistant", content: text("新回答") },
-  ];
-  const ts = VM.buildTurns(msgs);
-  check("compaction + orphans skipped -> exactly 2 turns", ts.length === 2);
-  check("orphans do not appear as extra turns", ts[1].type === "user" && ts[1].user.content === "新问题" && ts[1].steps.length === 1);
-}
-{
-  const msgs = [
+  const mk = (assistantContent, usage) => VM.buildTurns([
     { role: "user", content: "hi" },
-    { role: "assistant", content: "partial", _aborted: true, _error: "err" },
-  ];
-  const st = VM.buildTurns(msgs)[0].steps;
-  check("aborted partial content preserved", st.length === 1 && st[0].assistant.content === "partial");
+    Object.assign({ role: "assistant", content: assistantContent }, usage ? { usage } : {}),
+  ])[0];
+  const s1 = VM.turnSig(mk(text("same length!")));
+  check("sig: deterministic", VM.turnSig(mk(text("same length!"))) === s1);
+  check("sig: equal-length content change detected", VM.turnSig(mk(text("sami length?"))) !== s1);
+  check("sig: usage change detected", VM.turnSig(mk(text("same length!"), { input: 1, output: 2, totalTokens: 3 })) !== s1);
+  check("sig: toolCall block addition detected", VM.turnSig(mk([tcBlock("z", "bash", {}), ...text("same length!")])) !== s1);
+  {
+    // toolResult 数量变化
+    const baseMsgs = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: [tcBlock("c1", "read", {})] },
+    ];
+    const sa = VM.turnSig(VM.buildTurns(baseMsgs)[0]);
+    const sb = VM.turnSig(VM.buildTurns([...baseMsgs, toolResultMsg("c1", "out")])[0]);
+    check("sig: toolResult count change detected", sa !== sb);
+    const sc = VM.turnSig(VM.buildTurns([...baseMsgs, toolResultMsg("c1", "out", true)])[0]);
+    check("sig: toolResult isError change detected", sb !== sc);
+  }
+  {
+    // partial 标记变化（live→static morph 必须触发——渲染层 _updateTurn 显式比对）
+    const u = { role: "user", content: "hi", _localId: "P1" };
+    const pMsg = { role: "assistant", content: [], _localId: "P2" };
+    const live = { partial: pMsg, text: "ans", reasoning: "", toolCalls: [], runningTools: {} };
+    const sigLive = VM.turnSig(VM.buildTurns([u, pMsg], live)[0]);
+    const auth = { role: "assistant", content: text("ans"), _localId: "P2" };
+    const sigStatic = VM.turnSig(VM.buildTurns([u, auth])[0]);
+    check("sig: partial flag change detected (live->static)", sigLive !== sigStatic);
+  }
+  {
+    // _aborted 标记变化
+    const mkA = (ab) => VM.buildTurns([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: text("partial"), _aborted: ab },
+    ])[0];
+    check("sig: _aborted change detected", VM.turnSig(mkA(false)) !== VM.turnSig(mkA(true)));
+  }
 }
+
+// ============================================================
+// 6) compactionCardHtml 转义 + msgText 多形态
+// ============================================================
+console.log("\n[6] escaping & msgText");
 {
-  const base = [
-    { role: "user", content: "hi" },
-    { role: "assistant", content: "same length!", _streaming: true, reasoning: "", _toolSteps: [] },
-  ];
-  const a = VM.buildTurns(base);
-  const s1 = VM.turnSig(a[0]);
-  // content 长度相同内容不同 → 必须变化（保守：宁可过度渲染）
-  const b = JSON.parse(JSON.stringify(base));
-  b[1].content = "sami length?";
-  const s2 = VM.turnSig(VM.buildTurns(b)[0]);
-  check("turnSig: equal-length content change detected", s1 !== s2);
-  // 相同输入 sig 稳定
-  check("turnSig: deterministic", VM.turnSig(a[0]) === s1);
-  // usage 变化
-  const c = JSON.parse(JSON.stringify(base));
-  c[1]._usage = { total_tokens: 100 };
-  check("turnSig: usage change detected", VM.turnSig(VM.buildTurns(c)[0]) !== s1);
-  // 新增工具步骤
-  const d = JSON.parse(JSON.stringify(base));
-  d[1]._toolSteps = [{ name: "bash", toolCallId: "z", running: true }];
-  check("turnSig: tool step addition detected", VM.turnSig(VM.buildTurns(d)[0]) !== s1);
+  const html = VM.compactionCardHtml('我们把 <b>早期</b> 对话压缩了 & 保留要点');
+  check("card html escapes summary", html.includes("&lt;b&gt;") && html.includes("&amp;") && !html.includes("<b>早期"));
+  check("card html keeps structure", html.includes('class="compaction-result"') && html.includes("✂️ 上下文已压缩"));
+  check("empty summary -> no details block", !VM.compactionCardHtml("").includes("compaction-summary"));
 }
-{
-  // user 消息 content 为 blocks 数组时 → 归一为纯文本
-  const msgs = [{ role: "user", content: [{ type: "image", text: "no" }, { type: "text", text: "text-only" }] }];
-  const turn = VM.buildTurns(msgs)[0];
-  check("user content blocks normalized to text", turn.user.content === "text-only");
-}
+check("msgText: string passthrough", VM.msgText("abc") === "abc");
+check("msgText: blocks join text", VM.msgText([...think("r"), ...text("a"), ...text("b")]) === "ab");
+check("msgText: object JSON stringify", VM.msgText({ k: 1 }) === '{"k":1}');
+check("msgText: null safe", VM.msgText(null) === "" && VM.msgText(undefined) === "");
 
 console.log("\n==== smoke summary: " + passed + " passed, " + failures + " failed ====");
 if (failures > 0) process.exit(1);
