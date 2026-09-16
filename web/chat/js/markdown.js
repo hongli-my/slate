@@ -206,6 +206,16 @@ window.Hermes = window.Hermes || {};
 
   // 按块边界切分 markdown：双换行切段，代码围栏( ``` )内部保护不切。
   // 返回块数组；最后一块视为"活跃块"（可能尚未结束），前面的是已闭合稳定块。
+  /** 闭合的代码围栏块（首行 ``` 开头、末行 ``` 结尾）——内容已完整，可当稳定段 */
+  function isClosedFenceBlock(b) {
+    if (!b) return false;
+    var t = b.replace(/^\s+/, '').replace(/\s+$/, '');
+    if (t.slice(0, 3) !== '```') return false;
+    var lines = t.split('\n');
+    if (lines.length < 2) return false;
+    return lines[lines.length - 1].replace(/^\s+/, '').slice(0, 3) === '```';
+  }
+
   function splitMdBlocks(text) {
     var blocks = [];
     var lines = text.split('\n');
@@ -287,6 +297,13 @@ window.Hermes = window.Hermes || {};
       stableBlocks = blocks.slice(0, -1);
       activeBlock = blocks[blocks.length - 1];
     }
+    // 末尾块若已是**闭合的代码围栏**（``` 开头 + ``` 结尾），说明它内容已完整：
+    // 并入稳定段 ⇒ 闭围栏那一刻就异步上色（不必等整条回复结束），
+    // 且终态渲染时 morph 直接跳过已上色的 <code>（文本一致）⇒ 回复结束时不再"变一次色"。
+    if (activeBlock && isClosedFenceBlock(activeBlock)) {
+      stableBlocks = stableBlocks.concat([activeBlock]);
+      activeBlock = '';
+    }
     var stableText = stableBlocks.join('\n\n');
 
     var stableChanged = false;
@@ -322,6 +339,15 @@ window.Hermes = window.Hermes || {};
     var sh = htmlBlocks.map(function(b) { return b.html; }).join('\n');
     c = { text: null, stableText: stableText, stableHtml: sh, blocks: htmlBlocks };
     _mdStreamCache[cacheKey] = c;
+
+    // 无活跃内容（末尾是闭合围栏 / 刚切完块）：稳定段即全文，直接返回
+    if (!activeBlock) {
+      var _full = c.stableHtml || '';
+      c.text = text;
+      c.fullHtml = _full;
+      c.activeHtml = '';
+      return { stableHtml: _full, activeHtml: '', stableChanged: stableChanged, fullHtml: _full };
+    }
 
     // 活跃块每次重新解析（体积小，开销低）
     // 纯文本快路径：无 markdown 语法/HTML 标签 → 跳过 remend + marked（对纯文本
@@ -368,12 +394,28 @@ window.Hermes = window.Hermes || {};
 
   // 异步高亮：用 requestIdleCallback 分批处理 need-auto-highlight 的代码块，避免阻塞主线程
   // hljs 懒加载：首次调用时动态 <script> 加载 hljs.bundle.js，加载完再高亮。
+  //
+  // 幂等（关键）：同一帧里 `_applyStatic`→initCollapsible 与 renderDiff→initCollapsible
+  // 会重复调本函数，同一个 <code> 会被排进多个队列 → hljs 把 innerHTML 反复重写
+  // （实测一次回复结束连写 3 次），每次都是一次 layout+paint，就是"结束后再闪一下"。
+  // 用 _hlQueued（WeakSet）+ 写前重查 data-highlighted 封死重复。
+  var _hlQueued = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
   function scheduleIdleHighlight(container) {
     var scope = container || document;
     var pending = scope.querySelectorAll('code.need-auto-highlight');
     if (pending.length === 0) return;
-    // 转 Array（pending 是 live NodeList，延迟高亮期间可能变化）
-    var list = Array.prototype.slice.call(pending);
+    // 转 Array（pending 是 live NodeList，延迟高亮期间可能变化），同帧去重
+    var list = [];
+    for (var pi = 0; pi < pending.length; pi++) {
+      var el = pending[pi];
+      if (el.hasAttribute('data-highlighted')) continue;
+      if (_hlQueued) {
+        if (_hlQueued.has(el)) continue;
+        _hlQueued.add(el);
+      }
+      list.push(el);
+    }
+    if (list.length === 0) return;
     loadHljs().then(function (hljs) {
       if (!hljs) return; // 加载失败，代码块保持转义态
       var i = 0;
@@ -381,6 +423,9 @@ window.Hermes = window.Hermes || {};
         while (i < list.length) {
           if (deadline && deadline.timeRemaining && deadline.timeRemaining() <= 0) break;
           var codeEl = list[i];
+          i++;
+          // 写前重查：可能已被另一个队列（或上一次调度）处理过 → 直接跳过，不重写 DOM
+          if (codeEl.hasAttribute('data-highlighted') || !codeEl.isConnected) continue;
           try {
             var text = codeEl.textContent;
             // B2: 有 data-lang 用指定语言高亮（比 highlightAuto 快且准），否则回退 highlightAuto
@@ -395,7 +440,6 @@ window.Hermes = window.Hermes || {};
             codeEl.setAttribute('data-highlighted', 'yes');
           } catch(e) {}
           codeEl.classList.remove('need-auto-highlight');
-          i++;
         }
         if (i < list.length) {
           if (window.requestIdleCallback) window.requestIdleCallback(processOne);

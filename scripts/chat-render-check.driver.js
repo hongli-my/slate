@@ -58,6 +58,19 @@
   const liveTurn = () => { const t = c.querySelectorAll('.turn'); return t[t.length - 1]; };
   const dev = () => Math.round(c.scrollHeight - c.scrollTop - c.clientHeight);
 
+  // 观测 hljs 是否重复重写 <code>（消息结束后"再闪一下"的真凶之一）
+  let codeWrites = 0;
+  const codeWriteLog = [];
+  const _mo = new MutationObserver((list) => {
+    list.forEach((m) => {
+      if (m.type === 'childList' && m.target && m.target.nodeName === 'CODE') {
+        codeWrites++;
+        codeWriteLog.push(Math.round(performance.now()));
+      }
+    });
+  });
+  _mo.observe(c, { subtree: true, childList: true });
+
   const frames = [];
   function snap(tag) {
     const t = liveTurn();
@@ -111,6 +124,10 @@
     codeBefore ? codeBefore.className : 'null');
   ok('流式期代码块位于 md-stable(稳定段)', !!(codeBefore && codeBefore.closest('.md-stable')));
 
+  // ---------- finalize 前的高度（用于断言 finalize 帧不得有"陈旧尺寸"跳变） ----------
+  const heightBeforeFinalize = liveTurn().getBoundingClientRect().height;
+  const codeWritesAtFinalize = codeWrites;
+
   // ---------- finalize（onStreamComplete → finalizeLiveStream 的同一条消息形态） ----------
   const blocks = [{ type: 'thinking', thinking: stream.reasoning }]
     .concat(stream.toolCalls).concat([{ type: 'text', text: stream.text }]);
@@ -124,11 +141,29 @@
   step('finalize');
   const bodyNodeAfter = liveTurn().querySelector('.turn-agent-body');
   const codeAfter = liveTurn().querySelector('.step-answer pre code');
+  const heightAtFinalize = liveTurn().getBoundingClientRect().height;
   ok('finalize 前后 .turn-agent-body 节点身份保留', bodyNodeBefore === bodyNodeAfter);
   ok('finalize 前后 代码块节点身份保留（未重建）', !!codeBefore && codeBefore === codeAfter);
   ok('finalize 后代码高亮未被抹掉', !!(codeAfter && codeAfter.hasAttribute('data-highlighted') && /<span/.test(codeAfter.innerHTML)));
-  await frame(); await sleep(300);
+  await frame(); await frame(); await frame();
+  const heightAfterFinalize = liveTurn().getBoundingClientRect().height;
+  // 真凶：去掉 [data-streaming] 后 content-visibility 回落到 auto，浏览器用"上次记住的高度"
+  // 渲染一帧再换成真实高度 → finalize 那一帧之后还有一次高度变化（肉眼=抖一下）。
+  // 断言：finalize 帧之后的 3 帧内高度必须已稳定（不再变化）。
+  // 白盒守卫：最新一条 turn 必须常驻 content-visibility:visible。
+  // 否则去掉 [data-streaming] 后回落到 auto，浏览器会先用"上次记住的高度"渲染一帧
+  // 再换成真实高度（实测 520→536px）→ 回复结束时抖一下。
+  ok('最新一条 turn 不参与 content-visibility 跳过',
+    getComputedStyle(liveTurn()).contentVisibility === 'visible',
+    getComputedStyle(liveTurn()).contentVisibility);
+  ok('finalize 之后高度已稳定（无 content-visibility 陈旧尺寸跳变）',
+    Math.abs(heightAfterFinalize - heightAtFinalize) <= 1,
+    'before=' + Math.round(heightBeforeFinalize) + ' at=' + Math.round(heightAtFinalize) + ' after3frames=' + Math.round(heightAfterFinalize));
+  await sleep(300);
   step('idle');
+  ok('finalize 后代码块不再被 hljs 重写（无"结束后再闪一下"）', codeWrites === codeWritesAtFinalize,
+    'writes@finalize=' + codeWritesAtFinalize + ' now=' + codeWrites);
+  ok('代码块全流程只被 hljs 写一次（无重复队列重写）', codeWrites === 1, 'codeWrites=' + codeWrites + ' at=' + codeWriteLog.join(','));
 
   // ---------- reFetch：DB 形态（同文本、不同 block 切分）重渲 ----------
   msgs[msgs.length - 1] = {

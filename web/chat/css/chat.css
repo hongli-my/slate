@@ -17,6 +17,13 @@
   contain-intrinsic-size: auto 500px;
   contain: layout style;
 }
+/* 最新一条 turn（正在流式 / 刚结束）永不参与 content-visibility 跳过。
+   实测：去掉 [data-streaming] 那一帧会从 forced-visible 掉回 auto，浏览器先用
+   "上次记住的高度"渲染一帧（520px）再换成真实高度（536px）→ 回复结束时看到~16px
+   抽动 + 钉底追一次。占位符只会出现在开头，所以最后一条 .turn 就是最新那一轮。 */
+.message-list > .turn:last-child {
+  content-visibility: visible;
+}
 .turn[data-streaming="true"] {
   content-visibility: visible;
 }

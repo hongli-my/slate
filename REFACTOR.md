@@ -201,3 +201,27 @@ HTML 是双根（`.ow-tools` 时间线 + `.step-final` 正文）→ childrenOnly
 - P4 的"`_morph` 先解析进包裹 div 再 childrenOnly morph（多根/单根均安全）"——**单根不安全**，
   正是 R1。多根用 childrenOnly、单根必须**元素对元素** morph（`{root:true}`）。
 - P4 的"保留公开契约 …"里的 `renderThinkingMargin` / `renderStreamingMarkdown` 已删除（无调用方）。
+
+### P6.1 补修（2026-09）—— 回复结束后"再闪 2 次"
+
+用户反馈 P6 后效果已好，但**最新一条回复渲染结束后还会闪动两次**。同样先测后改
+（`Page.startScreencast` 逐呈现帧比对 + MutationObserver 全量 DOM 变更 + 逐帧布局指纹）：
+
+| # | 真因 | 实测证据 |
+|---|---|---|
+| F1 | **`content-visibility` 陈旧尺寸**：finalize 去掉 `[data-streaming]` 后，`.turn` 从 forced-visible 掉回 `auto`，浏览器先用"上次记住的高度"渲染一帧再换真实高度 | 同一帧序列：`turn = 520px`（finalize 帧 → 下一帧）`536px`，同时钉底偏差 `0 → 14 → 1`；把 `.turn{content-visibility:visible}` 强制后：finalize 帧直接 `536`、偏差全程 `0` |
+| F2 | **hljs 重复重写同一 `<code>`**：同一帧里 `_applyStatic`→`initCollapsible` 与 renderDiff→`initCollapsible` 各自调 `scheduleIdleHighlight`，同一元素排进多个队列 → 一次回复结束连写 **3 次** innerHTML（每次都是一次 layout+paint） | MutationObserver：`childList CODE` ×3（59/60/61ms）+ `data-highlighted yes→yes`；修后 = **1 次** |
+| F3 | 结尾是**闭合代码围栏**时，该块一直算"活跃块"（不上色），直到整条回复结束才并入稳定段 → 上色发生在"回复结束之后"（观感=结束后又变一次色） | 修前 finalize 帧才出现 `code-block` 从 `.md-active` 移到 `.md-stable` + 首次上色 |
+
+改法：
+- `chat.css`：`.message-list > .turn:last-child { content-visibility: visible }` —— 最新一轮永不参与跳过
+  （占位符只会在开头，所以最后一条 `.turn` 就是最新一轮）。`[data-streaming]` 规则保留。
+- `markdown.js` `scheduleIdleHighlight`：`_hlQueued`(WeakSet) 同帧去重 + 写前重查
+  `data-highlighted`/`isConnected` → 一个 `<code>` 只写一次（幂等，任意调用点重复调用都安全）。
+- `markdown.js` `renderStreamingMarkdownSplit`：末尾块若是**闭合围栏**（``` 开头且 ``` 结尾）
+  就并入稳定段 → 闭围栏那一刻即异步上色（同 deepseek/chatgpt：颜色在建码块闭合时出现），
+  终态 morph 因文本一致而跳过它 → 回复结束时零变化。
+
+验证：`node scripts/chat-render-check.mjs` 24 断言 @1100/1280/1440 全绿（新增 3 条：
+最新一条 turn 不参与 content-visibility 跳过、finalize 之后高度已稳定、代码块全流程只被 hljs 写一次）；
+finalize 后 100 帧布局指纹零变化；reFetch(+800ms) 零 DOM 变更。把新断言在"旧 CSS"下跑会 FAIL（灵敏度已验证）。
