@@ -14,9 +14,11 @@
    state.activeStreams[sid] 的 live 累积器）替代旧 streaming step 标记。
    渲染优先级：L2 结构变化（_liveStructSig）→ L3.5 running 工具耗时徽标 →
    L3 流式正文/思考微 patch → 零操作。
+   思考不做独立"右侧批注气泡"（那会挤压正文宽度 → 整篇重排），改为时间线内
+   就地展开的思考面板：思考中展开、正文/工具开始即自动收起（同 deepseek/chatgpt）。
 
    HTML 构建器仍由 session.js/markdown.js 提供（renderSingleTurnHTML /
-   renderTurnStepsHTML / renderThinkingMargin / initCollapsible / scheduleIdleHighlight），
+   renderTurnStepsHTML / renderThinkingItem / initCollapsible / scheduleIdleHighlight），
    render.js 只负责"何时、以何种粒度、把哪个 turn 的 DOM 更新成什么"。
    ============================================================ */
 
@@ -27,29 +29,75 @@ window.Hermes = window.Hermes || {};
 
   var H = window.Hermes;
 
-  function _morph(el, html) {
+  /**
+   * morph 前跳过判定（true = 不要动这个节点）。
+   * 1) 完全相同的节点直接跳过（流式高频路径的关键优化，避免无谓深比）；
+   * 2) 已高亮的 <code>：hljs 异步把 innerHTML 换成带 <span> 的 HTML，而新渲染出的
+   *    HTML 总是未上色版本。若照常 morph → 先掉色、data-highlighted 被清、再由
+   *    scheduleIdleHighlight 异步上色 → 肉眼看到一次"闪"。文本一致即保留现状
+   *    （文本变了才允许覆盖，保证正确性）。
+   */
+  function _skipMorph(fromEl, toEl) {
+    if (fromEl.isEqualNode(toEl)) return true;
+    if (fromEl.nodeName === 'CODE' && fromEl.hasAttribute('data-highlighted') &&
+        fromEl.textContent === toEl.textContent) return true;
+    return false;
+  }
+
+  /**
+   * morphdom 封装。两种语义必须显式区分，混用会造成"差一层"的结构错位：
+   *   _morph(el, fragmentHtml)              → el 的**子节点** 对 片段根节点（多根安全）
+   *   _morph(el, rootHtml, { root: true })  → html 单根，**元素本身** 对元素 morph
+   *
+   * 历史翻车（P4 引入）：_applyStatic 传的是单根 `<div class="turn">`，却按片段语义比 →
+   * morphdom 拿 .turn 的 children 对 [新 .turn]，于是第一个子元素（.turn-user）被就地
+   * morph 成一个重复的 .turn（嵌套 → padding/margin 翻倍、data-key 重复），其余子元素
+   * 被删除、新子树整棵重建（同步丢代码高亮、重启 CSS 动画）。表现为每次回复结束
+   * 整块跳一下 + 右移 20px + 代码块闪一次。
+   */
+  function _morph(el, html, opts) {
+    var asRoot = !!(opts && opts.root);
+    if (!el) return;
     if (window.morphdom) {
       try {
-        // 重要：morphdom 对字符串只取第一个根节点（template.content.childNodes[0]），
-        // 而 .turn-steps 的 html 是双根（.ow-tools 时间线 + .step-final 正文），字符串模式
-        // 会把 .step-final 兄弟节点静默丢弃 → 流式正文不显示。改为先解析进包裹 div，
-        // 以元素对元素 morph（childrenOnly），多根/单根均安全且保留 DOM identity。
         var tmp = document.createElement('div');
         tmp.innerHTML = html;
-        window.morphdom(el, tmp, {
-          childrenOnly: true,
+        var target = asRoot ? tmp.firstElementChild : tmp;
+        if (!target) return;
+        window.morphdom(el, target, {
+          childrenOnly: !asRoot,
           onBeforeElUpdated: function(fromEl, toEl) {
-            // 相同节点跳过：morph 整子树时避免无谓深比（流式高频路径关键优化）
-            if (fromEl.isEqualNode(toEl)) return false;
-            return true;
+            return !_skipMorph(fromEl, toEl);
           }
         });
         return;
       } catch (e) {
-        // 降级：morph 失败时退回 innerHTML 重建
+        // 降级：morph 失败时退回重建
       }
     }
-    el.innerHTML = html;
+    if (asRoot) {
+      var t = document.createElement('div');
+      t.innerHTML = html;
+      if (t.firstElementChild) el.replaceWith(t.firstElementChild);
+    } else {
+      el.innerHTML = html;
+    }
+  }
+
+  /**
+   * 渲染上下文：让 session.js 派生的元素 id 带上**容器前缀**。
+   * answer 块的 id 有两个互相牵制的要求：
+   *   1) 必须全局唯一 —— 聊天区(#chat-messages)与会话区(#message-list)可能同时
+   *      存在同一个 turn 的 DOM；
+   *   2) 必须对**同一容器的两次渲染保持稳定** —— morphdom 用 id 当匹配键
+   *      （getNodeKey），id 一变就把整棵 .step-answer-wrap 当新节点重建，
+   *      已异步上色的代码块会掉色重上色（可见闪）。
+   * 所以：id = ans-<容器id>-<turnKey>，两个要求同时满足。
+   */
+  function _withCtx(container, fn) {
+    var prev = H.__renderContainerId;
+    H.__renderContainerId = (container && container.id) || '';
+    try { return fn(); } finally { H.__renderContainerId = prev; }
   }
 
   /** 解析单根 HTML 字符串 → 真实元素（.turn / .msg-bubble） */
@@ -132,14 +180,22 @@ window.Hermes = window.Hermes || {};
       }
     }
 
-    // 思考气泡（.turn-margin 内 .tm-active .tm-body）
+    // 思考：时间线内思考面板（.ow-ep-think.ow-show）里的流式 md 容器
+    // （与正文同构：只 patch 稳定段/活跃段，不整块重建 → 无重排闪烁）
     if (lastReasoning !== curReasoning && live.reasoning) {
-      var _tmBody = turnEl.querySelector('.tm-active .tm-body');
-      if (_tmBody) {
-        var _tmOff = _tmBody.scrollHeight - _tmBody.scrollTop - _tmBody.clientHeight;
-        var _tmStick = _tmOff < 24;
-        _morph(_tmBody, H.renderStreamingMarkdown(live.reasoning.trim(), 'tm'));
-        _tmBody.scrollTop = _tmStick ? _tmBody.scrollHeight : Math.max(0, _tmBody.scrollHeight - _tmBody.clientHeight - _tmOff);
+      var _thinkBody = turnEl.querySelector('.ow-ep-think.ow-show .ow-ep-b-md');
+      if (_thinkBody) {
+        var _tmOff = _thinkBody.scrollHeight - _thinkBody.scrollTop - _thinkBody.clientHeight;
+        var _tmSplit = H.renderStreamingMarkdownSplit(live.reasoning.trim(), 'tm');
+        var _tmStable = _thinkBody.querySelector('.md-stable');
+        var _tmActive = _thinkBody.querySelector('.md-active');
+        if (_tmActive) {
+          if (_tmSplit.stableChanged && _tmStable) _morph(_tmStable, _tmSplit.stableHtml);
+          _morph(_tmActive, _tmSplit.activeHtml);
+        } else {
+          _morph(_thinkBody, _tmSplit.fullHtml);
+        }
+        if (_tmOff < 24) _thinkBody.scrollTop = _thinkBody.scrollHeight;
         changed = true;
       }
     }
@@ -171,7 +227,7 @@ window.Hermes = window.Hermes || {};
 
   // ------------------------------------------------------------
   // L2（结构变化）：重建一个 turn 的内容。
-  //   live（turn.live 存在）→ 只重建 .turn-steps 子树 + 同步思考气泡骨架；
+  //   live（turn.live 存在）→ 只重建 .turn-steps 子树；
   //   终态 → 整体重建 .turn 子节点（renderSingleTurnHTML）。
   // 两者都在重建前捕获、重建后恢复该 turn 的 UI 瞬态。
   // ------------------------------------------------------------
@@ -180,9 +236,14 @@ window.Hermes = window.Hermes || {};
   function _captureTurnUI(turnEl) {
     var openPanels = []; // { callId: string|null, index: number }
     var panels = turnEl.querySelectorAll('.ow-panels .ow-ep');
-    panels.forEach(function(p, idx) {
+    // 流式思考面板（data-live-think）的开合由数据驱动（思考中展开 / 正文开始收起），
+    // 不参与瞬态捕获，否则恢复时会把刚收起的思考面板又掀开。
+    var pIdx = -1;
+    panels.forEach(function(p) {
+      if (p.hasAttribute('data-live-think')) return;
+      pIdx++;
       if (p.classList.contains('ow-show')) {
-        openPanels.push({ callId: p.getAttribute('data-call-id') || null, index: idx });
+        openPanels.push({ callId: p.getAttribute('data-call-id') || null, index: pIdx });
       }
     });
     var collapsedAnswers = []; // 折叠的 .step-answer-wrap 序号
@@ -198,18 +259,17 @@ window.Hermes = window.Hermes || {};
       var tlOff = tl.scrollHeight - tl.scrollTop - tl.clientHeight;
       ui.tl = { stick: tlOff < 24, offset: tlOff };
     }
-    var tmb = turnEl.querySelector('.tm-body');
-    if (tmb) {
-      var tmOff = tmb.scrollHeight - tmb.scrollTop - tmb.clientHeight;
-      ui.tm = { stick: tmOff < 24, offset: tmOff };
-    }
     return ui;
   }
 
   /** 恢复 turn 内 UI 瞬态 */
   function _restoreTurnUI(turnEl, ui) {
     if (!ui) return;
-    var newPanels = turnEl.querySelectorAll('.ow-panels .ow-ep');
+    var newPanels = [];
+    turnEl.querySelectorAll('.ow-panels .ow-ep').forEach(function(p) {
+      if (p.hasAttribute('data-live-think')) return; // 与捕获端同规则过滤，保证 index 对齐
+      newPanels.push(p);
+    });
     ui.openPanels.forEach(function(op) {
       var target = null;
       if (op.callId) {
@@ -234,47 +294,15 @@ window.Hermes = window.Hermes || {};
         else tl.scrollTop = Math.max(0, tl.scrollHeight - tl.clientHeight - ui.tl.offset);
       }
     }
-    if (ui.tm) {
-      var tmb = turnEl.querySelector('.tm-body');
-      if (tmb) {
-        if (ui.tm.stick) tmb.scrollTop = tmb.scrollHeight;
-        else tmb.scrollTop = Math.max(0, tmb.scrollHeight - tmb.clientHeight - ui.tm.offset);
-      }
-    }
   }
 
-  /** 同步思考气泡骨架（.turn-margin）：出现时插入、消失时移除、存在则保留 body 让 L3 patch */
-  function _syncThinkingMargin(turnEl, turn) {
-    var marginHtml = '';
-    if (H.renderThinkingMargin) {
-      try { marginHtml = H.renderThinkingMargin(turn) || ''; } catch (e) { marginHtml = ''; }
-    }
-    var agentBody = turnEl.querySelector('.turn-agent-body');
-    var margin = null;
-    var kids = turnEl.children;
-    for (var i = 0; i < kids.length; i++) {
-      if (kids[i].classList && kids[i].classList.contains('turn-margin')) { margin = kids[i]; break; }
-    }
-    if (marginHtml) {
-      if (!margin && agentBody) {
-        var tmp = document.createElement('div');
-        tmp.innerHTML = marginHtml;
-        var m = tmp.firstElementChild;
-        if (m) agentBody.parentNode.insertBefore(m, agentBody.nextSibling);
-      }
-    } else if (margin) {
-      margin.remove();
-    }
-  }
-
-  /** 重建"流式 live"turn：morph .turn-steps + 同步思考气泡（骨架），保留用户气泡与外层属性 */
+  /** 重建"流式 live"turn：morph .turn-steps（思考面板已在内，开合由数据驱动），保留用户气泡与外层属性 */
   function _applyStreaming(turnEl, turn) {
     var ui = _captureTurnUI(turnEl);
     var stepsHtml = '';
-    try { stepsHtml = H.renderTurnStepsHTML(turn) || ''; } catch (e) { stepsHtml = ''; }
+    try { stepsHtml = _withCtx(turnEl.parentNode, function () { return H.renderTurnStepsHTML(turn) || ''; }); } catch (e) { stepsHtml = ''; }
     var stepsEl = turnEl.querySelector('.turn-steps');
     if (stepsEl && stepsHtml) _morph(stepsEl, stepsHtml);
-    _syncThinkingMargin(turnEl, turn);
     _restoreTurnUI(turnEl, ui);
     if (!turnEl.hasAttribute('data-streaming')) turnEl.setAttribute('data-streaming', 'true');
   }
@@ -283,8 +311,8 @@ window.Hermes = window.Hermes || {};
   function _applyStatic(turnEl, turn) {
     var ui = _captureTurnUI(turnEl);
     var html = '';
-    try { html = H.renderSingleTurnHTML(turn) || ''; } catch (e) { html = ''; }
-    if (html) _morph(turnEl, html);
+    try { html = _withCtx(turnEl.parentNode, function () { return H.renderSingleTurnHTML(turn) || ''; }); } catch (e) { html = ''; }
+    if (html) _morph(turnEl, html, { root: true });
     // 终态 turn 无 live → 移除 data-streaming（renderSingleTurnHTML 不会输出它）
     if (turnEl.hasAttribute('data-streaming')) turnEl.removeAttribute('data-streaming');
     _restoreTurnUI(turnEl, ui);
@@ -398,7 +426,7 @@ window.Hermes = window.Hermes || {};
       html += '<div class="turn-placeholder" data-dropped="' + droppedCount + '" style="height:' + placeholderHeight + 'px"></div>';
     }
     turns.forEach(function(turn) {
-      try { html += H.renderSingleTurnHTML(turn) || ''; } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); }
+      try { html += _withCtx(container, function () { return H.renderSingleTurnHTML(turn) || ''; }); } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); }
     });
     container.innerHTML = html;
 
@@ -490,7 +518,7 @@ window.Hermes = window.Hermes || {};
       var nTurn = turns[a];
       var nKey = nTurn.key;
       var htmlStr = '';
-      try { htmlStr = H.renderSingleTurnHTML(nTurn) || ''; } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); continue; }
+      try { htmlStr = _withCtx(container, function () { return H.renderSingleTurnHTML(nTurn) || ''; }); } catch (e) { console.warn('[render] renderSingleTurnHTML failed', e); continue; }
       var nEl = _elFromHtml(htmlStr);
       if (!nEl) continue;
       container.appendChild(nEl);

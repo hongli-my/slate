@@ -187,44 +187,29 @@ window.Hermes = window.Hermes || {};
         ${durBadge}
         <span class="ow-think-stat">${isActive ? '<div class="ow-spinner"></div>' : ''}</span>
       </div>`;
-    const panel = `<div class="ow-ep">
-        <div class="ow-ep-h"><span style="color:#af52de">💭</span><span class="ow-ep-name" style="color:#af52de">思考过程</span></div>
-        <div class="ow-ep-b ow-ep-b-md">${window.Hermes.renderMarkdown(reasoning)}</div>
+    // 流式中（isActive）：面板就地展开，正文用流式 md 拆分容器（md-stable/md-active），
+    // 供 render.js 的 L3 微 patch 逐帧只改活跃块，不整块重建；
+    // 历史回放：默认收起，点击 item 展开（renderMarkdown 完整渲染，含代码高亮）。
+    // data-live-think 标记：让它不参与 render.js 的 UI 瞬态捕获/恢复（开合由数据驱动）。
+    var bodyHtml;
+    if (isActive) {
+      var _split = window.Hermes.renderStreamingMarkdownSplit(trimmed, 'tm');
+      bodyHtml = '<div class="md-stable">' + _split.stableHtml + '</div><div class="md-active">' + _split.activeHtml + '</div>';
+    } else {
+      bodyHtml = window.Hermes.renderMarkdown(reasoning);
+    }
+    const panel = `<div class="ow-ep ow-ep-think${isActive ? ' ow-show' : ''}"${isActive ? ' data-live-think="1"' : ''}>
+        <div class="ow-ep-h"><span style="color:#af52de">💭</span><span class="ow-ep-name" style="color:#af52de">思考过程</span>${isActive ? '<div class="ow-spinner"></div>' : ''}</div>
+        <div class="ow-ep-b ow-ep-b-md">${bodyHtml}</div>
       </div>`;
     return { item, panel };
   }
 
-  // 思考气泡（Word 批注式右侧 margin）：只在"正在思考"时显示，作为实时预览窗。
-  // 独立于 .turn-steps，不被每帧 innerHTML 重建，避免工具重排闪烁连累思考。
-  // 思考结束/历史不显示气泡——思考留在时间线 item（原版折叠，点击展开）。
-  function renderThinkingMarginBlock(reasoning) {
-    if (!reasoning || !reasoning.trim()) return '';
-    var trimmed = reasoning.trim();
-    var header = '<div class="tm-header">' +
-      '<span class="tm-icon">💭</span>' +
-      '<span class="tm-label">思考中</span>' +
-      '<span class="ow-spinner tm-spin"></span>' +
-      '</div>';
-    // 多行展开，流式 markdown（跳过 hljs 保性能），钉底由 renderCurrentChat 处理
-    return '<div class="tm-block tm-active">' + header +
-      '<div class="tm-body">' + window.Hermes.renderStreamingMarkdown(trimmed, 'tm') + '</div></div>';
-  }
-
-  // 只渲染"正在思考"的气泡：活跃流当前正在累积思考、且尚未输出正文/工具时。
-  // 非流式/思考已结束 → 返回空串（不占布局，气泡消失），思考留在时间线 item。
-  function renderThinkingMargin(turn) {
-    var live = turn.live;
-    if (!live || !live.reasoning || !live.reasoning.trim()) return '';
-    var hasContent = !!(live.text && live.text.trim());
-    var hasTools = (live.toolCalls && live.toolCalls.length > 0) ||
-      (turn.steps || []).some(function(s) { return s.toolCalls && s.toolCalls.length > 0; });
-    // 正在思考 = 有 reasoning 但还没开始输出正文/工具
-    if (hasContent || hasTools) return '';
-    return '<div class="turn-margin">' + renderThinkingMarginBlock(live.reasoning) + '</div>';
-  }
-
-  // (renderThinkingBlock / extractAssistantParts 已删除：死代码 + Hermes 兼容残留，
-  // 分组委托给 view-model.buildTurns —— 其内同名纯函数是唯一实现，防双副本漂移)
+  // 思考展示：**不做独立右侧"批注气泡"**——它是一个 flex 兄弟列（clamp(280px,24vw,400px)），
+  // 出现/消失会把正文可用宽度拉来拉去（1280 窗口实测 760→634），整篇正文重排，
+  // 而且流式结束时才骤现/骤隐 → 典型"抖动"源。改为时间线内的思考面板：
+  // 思考中自动展开 + 贴底滚动，正文/工具一开始即自动收起（同 deepseek / chatgpt）。
+  // renderThinkingItem 负责该项（见下）。
 
   // ---- 步骤耗时计算 ----
   // 耗时不渲染独立横轴，而是标到每个步骤卡片上（工具/思考/回答）。
@@ -307,6 +292,15 @@ window.Hermes = window.Hermes || {};
     return result;
   }
 
+  // 稳定 answer 块 id：morphdom 用 id 做匹配键（getNodeKey），同一容器内同一 turn 的
+  // 流式/终态渲染必须拿到同一个 id，否则整棵 .step-answer-wrap 会被当新节点重建
+  // （已上色的代码块掉色→再上色 = 可见闪）。带容器前缀保证跨容器（聊天区/会话区）唯一。
+  function answerBlockId(turn) {
+    var cid = window.Hermes.__renderContainerId || '';
+    var k = String((turn && turn.key != null) ? turn.key : 'x').replace(/[^A-Za-z0-9_-]/g, '_');
+    return 'ans-' + (cid ? cid.replace(/[^A-Za-z0-9_-]/g, '_') + '-' : '') + k;
+  }
+
   // 渲染单个 turn 的 steps 内容（.turn-steps 内部）
   // 流式与历史统一：steps 全部是 view-model 归一化的原生形态 step
   // （ToolCall blocks / toolResult 消息），流式装饰（审批卡/实时耗时/
@@ -353,6 +347,7 @@ window.Hermes = window.Hermes || {};
 
     // 分类：toolSteps（含工具或仅思考）+ finalStep（有正文）
     let finalStep = null;
+    let lastToolContentStep = null; // 带工具又带正文的最后一步（中止/错误物化形态）
     let errorStep = null; // 首个携带 _error 的步（中止/错误物化标记，供末尾错误块渲染）
     const toolSteps = [];
     steps.forEach((step) => {
@@ -362,6 +357,7 @@ window.Hermes = window.Hermes || {};
       const assistantContent = step.assistant?.content || '';
       if (hasTools) {
         toolSteps.push(step);
+        if (assistantContent) lastToolContentStep = step;
       } else if (assistantContent) {
         finalStep = step;
       } else if (step.assistant?.reasoning) {
@@ -369,6 +365,12 @@ window.Hermes = window.Hermes || {};
         toolSteps.push(step);
       }
     });
+    // 工具步携带正文（中止/错误时 finalizeLiveStream 会把 thinking+toolCall+text 物化到**同一条**
+    // 消息，与 DB 回放形态不同）：如果整轮没有独立的正文步，就把最后一条带正文的工具步
+    // 同时当作最终回复。否则长回答会被塞进时间线折叠面板里（看不到正文），
+    // 且 reFetch 拿到 DB 形态后会换位置渲染 → 流结束后再跳一次。
+    if (!finalStep && lastToolContentStep) finalStep = lastToolContentStep;
+    const finalStepInTimeline = !!finalStep && toolSteps.indexOf(finalStep) >= 0;
 
     // 统一时间线：思考 + 旁白 + 工具
     const itemsArr = [];
@@ -396,8 +398,8 @@ window.Hermes = window.Hermes || {};
         }
       }
 
-      // 旁白（非触发文本）→ 时间线 note item
-      if (!isJustTrigger && assistantContent) {
+      // 旁白（非触发文本）→ 时间线 note item。已成为最终回复的步不再重复渲染一份。
+      if (!isJustTrigger && assistantContent && step !== finalStep) {
         const noteItem = renderNoteItem(assistantContent);
         if (noteItem) {
           itemsArr.push(noteItem.item);
@@ -423,8 +425,8 @@ window.Hermes = window.Hermes || {};
       });
     });
 
-    // finalStep 的思考也放入时间线
-    if (finalStep && finalStep.assistant?.reasoning) {
+    // finalStep 的思考也放入时间线（已在时间线里的步不重复添加）
+    if (finalStep && !finalStepInTimeline && finalStep.assistant?.reasoning) {
       var thinkDur2 = stepDurs ? (stepDurs.thinkDurs[thinkDurIdx] || null) : null;
       const thinkItem = renderThinkingItem(finalStep.assistant.reasoning, false, thinkDur2);
       if (thinkItem) {
@@ -475,7 +477,7 @@ window.Hermes = window.Hermes || {};
         // P#4: 拆分 md-stable/md-active 容器，让流式更新只 patch 活跃块 DOM。
         // 与静态 renderAnswerBlock 共用 .step-answer-wrap>.step-answer.collapsible 外壳。
         var _sfSplit = window.Hermes.renderStreamingMarkdownSplit(assistantContent, 'sf');
-        var _ansId = 'ans-' + (++window.Hermes.answerBlockCounter);
+        var _ansId = answerBlockId(turn);
         html += '<div class="step-answer-wrap" id="' + _ansId + '">';
         html += '<div class="step-answer collapsible"><div class="md-stable">' + _sfSplit.stableHtml + '</div><div class="md-active">' + _sfSplit.activeHtml + '</div></div>';
         // 按钮与静态分支同构：流式期由 CSS（.streaming-content 内）置 opacity:0 + pointer-events:none，
@@ -494,7 +496,7 @@ window.Hermes = window.Hermes || {};
         var staticFinalClass = 'step step-final' + (finalStep._aborted ? ' _aborted' : '');
         html += '<div class="' + staticFinalClass + '">';
         html += '<div class="step-header"><span class="step-num step-num-final">✦</span><span class="step-label">回复</span><span class="step-time">' + esc(agentTime) + '</span>' + totalBadge + '</div>';
-        html += window.Hermes.renderAnswerBlock(assistantContent);
+        html += window.Hermes.renderAnswerBlock(assistantContent, answerBlockId(turn));
         // token 用量（pi Usage：input/output/totalTokens；message_end 权威消息携带）
         var _u = finalStep.assistant?.usage;
         if (_u && (_u.totalTokens || _u.input || _u.output)) {
@@ -554,14 +556,13 @@ window.Hermes = window.Hermes || {};
       <div class="turn-time turn-time-user">${esc(userTime)}</div>`;
 
     if (turn.steps.length > 0) {
+      // 注意 .turn-steps 内部**不要留空白文本节点**：流式分支（_applyStreaming）是用
+      // renderTurnStepsHTML 的紧凑片段 morph 进来的（无空白），若静态分支在这里插入缩进，
+      // live→static 时 morphdom 会在 #text↔.ow-tools 处失配 → 整块时间线 + 正文被丢弃重建
+      // （代码块掉色、spinner 动画重启）。
       html += `<div class="turn-agent">
         <div class="turn-avatar agent-avatar">H</div>
-        <div class="turn-agent-body">
-          <div class="turn-steps">
-            ${renderTurnStepsHTML(turn)}
-          </div>
-        </div>
-        ${renderThinkingMargin(turn)}
+        <div class="turn-agent-body"><div class="turn-steps">${renderTurnStepsHTML(turn)}</div></div>
       </div>`;
     }
     html += `</div>`;
@@ -1059,7 +1060,7 @@ window.Hermes = window.Hermes || {};
   window.Hermes.renderSingleTurnHTML = renderSingleTurnHTML;
   window.Hermes.renderToolCard = renderToolCard;
   window.Hermes.fmtTimelineDur = fmtTimelineDur;
-  window.Hermes.renderThinkingMargin = renderThinkingMargin;
+  window.Hermes.renderThinkingItem = renderThinkingItem;
   window.Hermes.initSessionListEvents = initSessionListEvents;
   window.Hermes.deleteSession = deleteSession;
   window.Hermes.exportSession = exportSession;

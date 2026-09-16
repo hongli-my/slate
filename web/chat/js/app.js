@@ -433,6 +433,8 @@ window.Hermes = window.Hermes || {};
       var el = _searchMatches[_searchIdx];
       _clearHighlight();
       el.classList.add('search-highlight');
+      // 程序化跳转：先解除自动追底（否则流式期会被拽回底部/抢滚动）
+      if (H.chatScrollEscape) H.chatScrollEscape();
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 

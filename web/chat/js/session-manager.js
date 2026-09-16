@@ -384,6 +384,8 @@ window.Hermes = window.Hermes || {};
           dom.chatSessionLabel.textContent = '对话: ' + sid.substring(0, 16);
         }
         H.renderCurrentChat();
+        // 切会话：新会话瞬时落到底部（滚动控制器可能因上一会话的上滚而处于解锁态，这里重置）
+        if (H.pinChatToBottom) H.pinChatToBottom(true);
         // 根据当前焦点会话的流状态，正确设置输入框启用/禁用
         if (H.updateChatUIState) H.updateChatUIState();
         // P2: 切回有 running 工具步骤的会话时重启实时计时器（秒数跳动）

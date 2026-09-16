@@ -208,11 +208,11 @@
 }
 .step-final {
   margin-bottom: 0;
-  /* 同宽透明左边框：让 .streaming-content 的有色边框 → 去类后的透明边框可平滑过渡
-     （CSS 无法从 1.5px solid 过渡到 border:none，故基态保持同尺寸透明边框）。 */
+  /* 基态保持同尺寸透明边框（历史遗留的结构对齐），但**不加 transition**：
+     live→static 去 .streaming-content 类时，任何过渡都会让边框/透明度渐变一次
+     → 流式结束"闪一下"。装饰性过渡已经在流式路径上全部移除。 */
   border-left: 1.5px solid transparent;
   padding-left: 8px;
-  transition: border-left-color 0.18s ease, opacity 0.15s ease;
 }
 
 .answer-stats {
@@ -543,49 +543,15 @@
 @keyframes ow-spin { to { transform: rotate(360deg); } }
 @keyframes ow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-/* ---- 思考气泡（Word 批注式右侧 margin）----
-   只在"正在思考"时显示的实时预览窗，独立于 .turn-steps，不被每帧 innerHTML 重建，
-   隔离工具重排闪烁。思考结束/历史无气泡——思考留在时间线 item。
-   宽屏在正文气泡右侧空白处并排；窄屏折到下方。 */
-.turn-margin {
-  flex-shrink: 0;
-  width: clamp(280px, 24vw, 400px);
-  align-self: flex-start;
-}
-.tm-block {
-  margin: 6px 0;
+/* ---- 思考：时间线内联面板（不再有右侧批注气泡）----
+   右侧独立列会挤压正文宽度 → 整篇重排，思考中/结束时各抖一次，已移除。
+   现在思考在时间线 item 里就地展开（.ow-ep-think + ow-show），正文/工具一开始即收起。
+   面板体继承 .ow-ep-b-md（max-height + overflow-y），流式中贴底滚动。 */
+.ow-ep-think {
   border-left: 2px solid #af52de;
-  background: var(--bg-weak);
-  border-radius: 0 6px 6px 0;
-  padding: 6px 10px;
-  font-size: 12px;
 }
-.tm-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.tm-icon { font-size: 12px; flex-shrink: 0; }
-.tm-label { font-weight: 500; color: #af52de; font-size: 12px; flex-shrink: 0; }
-.tm-body {
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-weaker);
-  max-height: 200px;
-  overflow-y: auto;
-  margin-top: 4px;
-}
-.tm-spin { color: #af52de; }
-
-/* 窄屏：思考气泡折到正文下方堆叠（不抢正文宽度） */
-@media (max-width: 1100px) {
-  .turn-agent { flex-wrap: wrap; }
-  .turn-margin {
-    flex-basis: 100%;
-    width: auto;
-    max-width: 760px;
-    margin-left: 48px;
-  }
+.ow-ep-think .ow-ep-b-md {
+  max-height: 260px;
 }
 
 /* Expand panel (toggled by clicking timeline item) */

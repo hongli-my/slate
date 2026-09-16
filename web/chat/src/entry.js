@@ -23,6 +23,7 @@ import "../js/eventsource-parser.js";
 import "../js/view-model.js"; // 纯函数 view-model（分组/分解/签名），在 session/render 之前
 import "../js/session.js";
 import "../js/render.js";       // keyed element-map reconciler（依赖 view-model + session 构建器）
+import "../js/scroll-anchor.js"; // stick-to-bottom 滚动控制器（ResizeObserver+rAF 弹簧，chat.js 使用）
 import "../js/chat.js";
 import "../js/gateway.js";
 import "../js/shortcuts.js";

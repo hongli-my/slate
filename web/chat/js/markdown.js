@@ -99,25 +99,29 @@ window.Hermes = window.Hermes || {};
   }
 
   // 渲染最终回复区域（含复制 markdown 原文按钮 + 折叠按钮）
-  function renderAnswerBlock(markdownText) {
-    const id = 'ans-' + (++window.Hermes.answerBlockCounter);
-    return `
-      <div class="step-answer-wrap" id="${id}">
-        <div class="step-answer collapsible">${renderMarkdown(markdownText)}</div>
-        <button class="collapse-btn" data-action="toggle-collapse" data-target="${id}" style="display:none">
-          <span class="arrow">▼</span><span class="label">展开</span>
-        </button>
-        <button class="copy-md-btn" data-action="copy-markdown" data-target="${id}" title="复制 Markdown 原文">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          <span>复制</span>
-        </button>
-        <textarea class="md-raw" readonly>${esc(markdownText)}</textarea>
-      </div>`;
+  // idHint：**稳定 id**（由调用方按 turn key 传）。不能用自增计数器——id 是 morphdom 的
+  // 匹配键（getNodeKey），每次渲染换 id 会让 morph 把整个 .step-answer-wrap 子树当"新
+  // 节点"重建：流式期已异步上色的代码块会掉色→再上色（可见闪），图片/表格节点也全重建。
+  function renderAnswerBlock(markdownText, idHint) {
+    const id = idHint || ('ans-' + (++window.Hermes.answerBlockCounter));
+    // 两个硬约束（都是 morphdom 的脾气，别改回缩进模板字符串）：
+    // 1) 必须与流式分支（session.js 的字符串拼接版）**逐节点同构**；
+    // 2) 元素之间不能有空白文本节点。morphdom 的 children 并行游走遇到
+    //    #text↔ELEMENT 失配时，会「删 from 子节点 + 末尾 append to 子节点」——
+    //    结果就是整棵 .step-answer（含已异步上色的代码块）被丢弃重建 → 掉色重上色（可见闪）。
+    // 结构：.step-answer-wrap > [.step-answer(.md-stable+.md-active), 折叠钮, 复制钮, md-raw]
+    return '<div class="step-answer-wrap" id="' + id + '">'
+      + '<div class="step-answer collapsible"><div class="md-stable">' + renderMarkdown(markdownText) + '</div><div class="md-active"></div></div>'
+      + '<button class="collapse-btn" data-action="toggle-collapse" data-target="' + id + '" style="display:none"><span class="arrow">▼</span><span class="label">展开</span></button>'
+      + '<button class="copy-md-btn" data-action="copy-markdown" data-target="' + id + '" title="复制 Markdown 原文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg><span>复制</span></button>'
+      + '<textarea class="md-raw" readonly>' + esc(markdownText) + '</textarea>'
+      + '</div>';
   }
 
   // 复制 markdown 原文
   function copyMarkdown(id, btn) {
-    const wrap = document.getElementById(id);
+    // 优先用按钮自身定位（data-target/id 只是兜底）：避免任何 id 重名時拿错容器
+    const wrap = (btn && btn.closest ? btn.closest('.step-answer-wrap') : null) || document.getElementById(id);
     const raw = wrap?.querySelector('.md-raw');
     if (!raw) return;
     navigator.clipboard.writeText(raw.value).then(() => {
@@ -132,7 +136,8 @@ window.Hermes = window.Hermes || {};
 
   // 展开/折叠长回答
   function toggleCollapse(id, btn) {
-    const wrap = document.getElementById(id);
+    // 优先用按钮自身定位（同 copyMarkdown：多容器/重复 id 兜底）
+    const wrap = (btn && btn.closest ? btn.closest('.step-answer-wrap') : null) || document.getElementById(id);
     const answer = wrap?.querySelector('.step-answer.collapsible');
     if (!answer) return;
     const isCollapsed = answer.classList.contains('collapsed');
@@ -295,11 +300,16 @@ window.Hermes = window.Hermes || {};
       if (cachedBlocks[bi] && cachedBlocks[bi].text === btext) {
         htmlBlocks.push(cachedBlocks[bi]); // 命中：复用已 sanitize 的 html
       } else {
-        _streamingMode = true;
+        // 稳定块 = 已闭合的内容，不会再变：**不置 _streamingMode**，
+        // 让代码块带上 need-auto-highlight（闭围栏就已可异步上色，不必等到整条回复结束），
+        // 且异步上色后的 DOM 在 live→static 时由 morph 跳过（文本一致）→ 零闪。
+        // 活跃块仍走 _streamingMode（每帧重解析，不上色）。
+        var _prevStreamingMode = _streamingMode;
+        _streamingMode = false;
         var bh;
         try { bh = marked.parse(btext); }
         catch(e) { bh = '<p>' + esc(btext) + '</p>'; }
-        finally { _streamingMode = false; }
+        finally { _streamingMode = _prevStreamingMode; }
         // 流式期也必须 sanitize：marked.parse 会保留 raw inline HTML（<img onerror>、
         // <svg onload> 等），morphdom/innerHTML 写入即执行，live 流式窗口即可触发。
         if (typeof DOMPurify !== 'undefined' && bh) {
@@ -350,11 +360,6 @@ window.Hermes = window.Hermes || {};
     return { stableHtml: c.stableHtml || '', activeHtml: activeHtml, stableChanged: stableChanged, fullHtml: full };
   }
 
-  // 兼容旧调用：返回完整 HTML 字符串（= split 的 fullHtml）
-  function renderStreamingMarkdown(text, cacheKey) {
-    return renderStreamingMarkdownSplit(text, cacheKey).fullHtml;
-  }
-
   // 清除流式缓存（新对话时调用，防止跨 turn 串内容）
   function clearStreamingMdCache(cacheKey) {
     if (cacheKey) delete _mdStreamCache[cacheKey];
@@ -385,6 +390,9 @@ window.Hermes = window.Hermes || {};
             } else {
               codeEl.innerHTML = hljs.highlightAuto(text).value;
             }
+            // 标记"已上色"：render.js 的 morph 跳过它（文本未变就不再覆盖 innerHTML），
+            // 避免流结束整 turn 重渲时"掉色 → 异步再上色"的可见闪。
+            codeEl.setAttribute('data-highlighted', 'yes');
           } catch(e) {}
           codeEl.classList.remove('need-auto-highlight');
           i++;
@@ -399,8 +407,7 @@ window.Hermes = window.Hermes || {};
     });
   }
 
-  // ---- Exports ----
-  // Define as function declarations first so they're hoisted within the IIFE
+  // answerBlockCounter 仅作为无 idHint 时的兜底（正常路径用 turn key 派生稳定 id）
   var _mdCache = new Map();
   var _MD_CACHE_MAX = 256;
   function renderMarkdown(md) {
@@ -435,7 +442,6 @@ window.Hermes = window.Hermes || {};
   }
 
   window.Hermes.renderMarkdown = renderMarkdown;
-  window.Hermes.renderStreamingMarkdown = renderStreamingMarkdown;
   window.Hermes.renderStreamingMarkdownSplit = renderStreamingMarkdownSplit;
   window.Hermes.clearStreamingMdCache = clearStreamingMdCache;
   window.Hermes.clearMdCache = clearMdCache;

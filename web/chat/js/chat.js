@@ -91,10 +91,27 @@ window.Hermes = window.Hermes || {};
     _renderTimers = {};
   }
 
-  /** 判断用户是否在底部附近 */
+  /** 判断用户是否在底部附近（保留旧语义：供非渲染路径的轻量判定） */
   function isNearBottom(el) {
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }
+
+  // ------------------------------------------------------------
+  // 滚动控制器（stick-to-bottom）：ResizeObserver + rAF 弹簧追底，见 scroll-anchor.js
+  // 旧实现是"渲染函数里写一次 scrollTop = scrollHeight"，覆盖不了帧后长高
+  // （hljs 异步上色 / 图片 / 字体 / 浏览器重排）→ 漂移-回弹。
+  // ------------------------------------------------------------
+  var _scrollAnchor = null;
+  var _scrollAnchorFresh = false;
+  function getScrollAnchor() {
+    var d = window.Hermes.dom || {};
+    if (_scrollAnchor && _scrollAnchor.el === d.chatMessages) return _scrollAnchor;
+    if (!d.chatMessages || !H.createScrollAnchor) return null;
+    _scrollAnchor = H.createScrollAnchor(d.chatMessages);
+    _scrollAnchor.onChange(function () { _updateScrollBtn(); });
+    _scrollAnchorFresh = true;   // 首次创建：直接落底，不做弹簧动画
+    return _scrollAnchor;
   }
 
   // E#7: 滚动到底部按钮
@@ -109,8 +126,9 @@ window.Hermes = window.Hermes || {};
     _scrollBtn.style.pointerEvents = 'none';
     _scrollBtn.addEventListener('click', function() {
       var el = window.Hermes.dom.chatMessages;
-      // 回底按钮：单次触发平滑滚动（css 已移除全局 smooth，这里显式指定）
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+      var anchor = getScrollAnchor();
+      if (anchor) { anchor.scrollToBottom(); }   // 弹簧追底（带收尾回弹感）
+      else if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
       _scrollBtn.style.display = 'none';
       _scrollBtn.style.pointerEvents = 'none';
       _scrollBtnShown = false;
@@ -153,13 +171,14 @@ window.Hermes = window.Hermes || {};
     });
   }
 
-  // 钉底：在渲染 rAF 内同步执行（renderDiff 写完 DOM 立即 scrollTop=scrollHeight）。
-  // 旧实现用独立的嵌套 rAF 把 scrollTop 推迟到下一帧 → DOM 先 paint 到错误滚动位置，
-  // 下一帧才 snap，流式期每帧 ~16ms 微抖。同步执行接受一次 forced layout（~1ms），
-  // 换取零视觉跳变：scrollHeight 反映刚写入的 DOM，同帧 paint 即正确位置。
-  function _pinToBottom() {
+  // 钉底：交给滚动控制器（ResizeObserver + rAF 弹簧）。
+  // instant=true 立即到位（发送消息/切会话/加载历史），否则逐帧渐近追底
+  // （流式长高、异步上色、图片加载都能自动跟齐，不会留半途）。
+  function pinToBottom(instant) {
+    var anchor = getScrollAnchor();
+    if (anchor) { anchor.pin(!!instant); return; }
     var el = window.Hermes.dom.chatMessages;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) el.scrollTop = el.scrollHeight;   // 降级
   }
 
   // ----------------------------------------------------------
@@ -204,8 +223,18 @@ window.Hermes = window.Hermes || {};
       console.warn('[renderCurrentChat] renderDiff failed, fallback full render', e);
       window.Hermes.rendererReset(container);
       changed = window.Hermes.renderFull(container, msgs, sid);
+      changed = true;
     }
-    if (changed && atBottom) _pinToBottom();
+    var anchor = getScrollAnchor();
+    if (anchor) {
+      // 1) 同步钉底：刚写的 DOM（内容已长高）本帧就到尾，避免"先画到错位置"的抖
+      // 2) update() 重新订阅新子元素的尺寸变化，并用弹簧兼帧后长高（异步 hljs/图片/字体）
+      if (changed) anchor.sync();
+      anchor.update();
+      if (_scrollAnchorFresh) { _scrollAnchorFresh = false; anchor.pin(true); }
+    } else if (changed && atBottom) {
+      pinToBottom(true);
+    }
     _updateScrollBtn();
   }
 
@@ -890,7 +919,7 @@ window.Hermes = window.Hermes || {};
     scheduleRender(sid, true);
     window.Hermes.updateStreamingHints();
     // 发送后直接钉到底（与旧 appendNewTurn 语义一致：用户刚发送，聚焦新 turn）
-    if (dom.chatMessages) dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+    pinToBottom(true);
 
     try {
       const res = await fetch(window.Hermes.API_BASE + '/chat/stream', {
@@ -1163,6 +1192,12 @@ window.Hermes = window.Hermes || {};
   window.Hermes.abortCurrentStream = abortCurrentStream;
   window.Hermes.handleStreamEvent = handleStreamEvent;
   window.Hermes.renderCurrentChat = renderCurrentChat;
+  // 供会话切换使用：瞬时落到底部（不做弹簧动画）并重置"用户脱离"状态
+  window.Hermes.pinChatToBottom = pinToBottom;
+  // 供程序化跳转（搜索定位等）使用：放弃自动追底，别把用户拽回底部
+  window.Hermes.chatScrollEscape = function () {
+    if (_scrollAnchor) _scrollAnchor.escape();
+  };
   window.Hermes.currentMsgs = currentMsgs;
   window.Hermes.updateChatUIState = updateChatUIState;
   window.Hermes.clearAllRenderTimers = clearAllRenderTimers;
