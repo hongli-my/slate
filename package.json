@@ -9,7 +9,8 @@
     "build:chat": "node esbuild.chat.config.mjs",
     "build:watch": "node esbuild.config.mjs --watch",
     "build:chat:watch": "node esbuild.chat.config.mjs --watch",
-    "build:pi-bridge": "bash scripts/build-pi-bridge.sh"
+    "build:pi-bridge": "bash scripts/build-pi-bridge.sh",
+    "check:chat": "bun run scripts/chat-smoke.mjs && node scripts/chat-render-check.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",

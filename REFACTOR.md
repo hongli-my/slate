@@ -139,3 +139,65 @@ HTML 是双根（`.ow-tools` 时间线 + `.step-final` 正文）→ childrenOnly
 - 15 模块装载序契约 39 导出全在、已删符号不导出。
 - 无头浏览器连真实 sidecar E2E：长文本流式逐帧出现、思考→工具→正文、中途 Stop 保留内容、
   重历史 view 渲染（264 消息/252 工具项）无错；桌面 release 打包启动冒烟通过。
+
+---
+
+## P6 完成记录（2026-09）—— 对话"闪 / 抖 / 不丝滑"根治
+
+> 背景：P4 之后用户仍反馈"对话还是闪、抖动、不够丝滑"。这次不再靠读代码猜，
+> 用**真实 index.html + 真实 bundle + 无头 Chrome(CDP)** 逐帧量化，先测出真因再改。
+> 完整方案与实测证据见 `PLAN.smooth.md`；回归入口 `scripts/chat-render-check.mjs`。
+
+### 实测抓到的真因（都不是"再加点 CSS 过渡"能解决的）
+
+| # | 真因 | 实测证据 |
+|---|---|---|
+| R1 | `_morph()` 的**单根语义错位**：`_applyStatic` 传单根 `<div class="turn">`，却按"片段"语义 childrenOnly 比 → morphdom 拿 `.turn` 的 children 对 `[新 .turn]`，把 `.turn-user` 就地 morph 成**重复的 `.turn`** | `.turn` 2→3、嵌套 1 层、`data-key` 重复 2 份、回复左位置 244→264（右移 20px）、`.turn-agent-body`/`.ow-tl` 节点被重建 |
+| R2 | 思考气泡是 flex 兄弟列（`clamp(280px,24vw,400px)`），出现/消失会**挤压正文宽度**；且 `_syncThinkingMargin` 在 `.turn` 直接子元素里找 `.turn-margin`（实际挂在 `.turn-agent` 下）→ **永远找不到 → 正文阶段气泡不消失** | 1280 窗口正文宽度 760→634→760（每次回答两次整篇重排）；`margins` 全程 1，仅 finalize 归零 |
+| R3 | **空白文本节点导致的 morphdom 走位失配**：静态分支的缩进模板字符串在 `.turn-steps`/`.step-final`/`.step-answer-wrap` 里插入 `#text` 空白节点，流式分支是紧凑拼接（无空白）→ `#text↔ELEMENT` 失配时 morphdom「删 from 子节点 + 末尾 append to」→ 整棵 `.step-answer`（含已上色代码块）被丢弃重建 | 隔离复现：`discardEl .step-answer` + `discardCODE(hl=true)` + `added`；表现为回复结束"代码块掉色→异步再上色"闪一下 |
+| R4 | answer 块 id 用全局自增计数器（`ans-N`），而 **id 是 morphdom 的匹配键**（`getNodeKey`）→ 每次渲染换 id 等于告诉 morph"这是新节点"，整棵子树重建 | `ans-u-cur` vs `ans-chat-messages-u-cur`（前缀缺失期）→ `wrapSame:false` |
+| R5 | 钉底是"渲染函数里写一次 `scrollTop=scrollHeight`"，**覆盖不了帧后长高**（hljs 异步上色 / 图片 / 字体 / 浏览器重排）→ 漂移-回弹 | 帧后追加 240px 内容，旧实现永久留在半途 |
+| R6 | 流式路径上还挂着 CSS 过渡（`.step-final` 边框色 0.18s）→ live→static 去类即触发一次渐变 | — |
+
+### 改法（对齐开源实现）
+
+- **use-stick-to-bottom**（StackBlitz, MIT, zero-dep；assistant-ui / AI SDK Elements 在用）
+  → 新增 `web/chat/js/scroll-anchor.js`：ResizeObserver 监听内容子元素 + rAF 弹簧追底、
+  `targetScrollTop = scrollHeight - clientHeight`（≤1px 视为到位，防亚像素振荡）、
+  用户滚轮上滚/触摸/翻页键/拖滚动条 → 立即解锁（`escapedFromLock`）且**不抢滚动**，
+  回到离底 70px 内自动重新粘住；写 scrollTop 前临时覆盖 `scroll-behavior`；
+  渲染函数内仍保留 `anchor.sync()` 同步钉底（本帧 paint 就在底部），RO+rAF 负责帧后长高。
+  **踩坑**：流式期 ResizeObserver 每帧都触发，若把"刚 resize"门控也套在"向下滚回底重粘"分支上，
+  就永远无法重新粘住 → 向下滚分支必须不受 resize 门控影响。
+- **streamdown (Vercel)** 的块级流式思路 → 稳定段（已闭合块）**提前**异步上色（不必等整条回复结束），
+  活跃块仍不上色；`_skipMorph` 对"已 `data-highlighted` 且文本一致"的 `<code>` 直接跳过 morph。
+- **deepseek / chatgpt** 的思考交互 → **去掉右侧独立批注气泡**，思考改为时间线内就地展开：
+  思考中展开（流式 md 稳定段/活跃段，贴底滚动），正文/工具一开始即自动收起。
+- **结构同构**（这是在 P4 就该做对的）：静态与流式分支**逐节点同构且不留空白文本节点**；
+  answer 块 id 改为 `ans-<容器id>-<turnKey>`（跨容器唯一 + 同容器两次渲染稳定）。
+- 删除流式路径上的装饰性过渡；`.step-body` 的 max-height 过渡保留但其类已无人产出。
+
+### 验证
+
+- **新增 `scripts/chat-render-check.mjs` + `.driver.js`**（零新依赖，用系统 Chrome + CDP + node 内置
+  WebSocket）：一条命令跑 20 条断言，覆盖上表全部现象 + 用户滚动意图：
+  ```
+  node scripts/chat-render-check.mjs --width=1100,1280,1440   # ALL GREEN
+  ```
+  关键断言：无嵌套 `.turn`、无重复 `data-key`、回复左位置/正文宽度恒定、finalize 与 reFetch 后
+  `.turn-agent-body` 与已高亮 `<code>` **节点身份保留**、流式全程 `|scrollDev| ≤ 2px`、
+  帧后长高自动追齐、用户上滚不被拽回/回底自动重粘、流式期零 `renderFull`。
+- `bun run scripts/chat-smoke.mjs` 89 断言全绿（view-model/形态契约未受影响）。
+- 长历史实测：230 turns → 虚拟化渲染 200 + 占位，落底 dev=0；切会话瞬时落底；
+  view 模式与 chat 模式同时渲染同一 turn 时 answer id 唯一（`ans-message-list-u1` / `ans-chat-messages-u1`），
+  折叠/复制只影响本容器。
+- 未验证项（无环境）：WKWebView（Tauri macOS）真机手感 —— 改动集中在 morphdom/CSS/滚动控制，
+  用到的 API（ResizeObserver / pointerdown / getComputedStyle）Safari 16 均支持。
+
+### 被本次推翻的 P4 结论（留档）
+
+- P4 的"思考气泡独立于 `.turn-steps`，不被每帧重建，隔离工具重排闪烁"——结论相反：
+  独立 flex 列挤压正文宽度造成的重排，比它想隔离的抖动更严重；且层级查找写错导致气泡不消失。
+- P4 的"`_morph` 先解析进包裹 div 再 childrenOnly morph（多根/单根均安全）"——**单根不安全**，
+  正是 R1。多根用 childrenOnly、单根必须**元素对元素** morph（`{root:true}`）。
+- P4 的"保留公开契约 …"里的 `renderThinkingMargin` / `renderStreamingMarkdown` 已删除（无调用方）。
